@@ -1266,7 +1266,7 @@ void main() {
 
     /// Drives one launch against fakes, returning the instance and the
     /// devicectl process the test can keep writing console output to.
-    Future<(AppInstance, FakeProcess)> launchFaked() async {
+    Future<(AppInstance, FakeProcess, FakeProcess)> launchFakedWithLldb() async {
       final devicectl = FakeProcess();
       final lldb = FakeProcess();
 
@@ -1328,7 +1328,13 @@ void main() {
       await pumpEventQueue();
       devicectl.emitStderr('flutter: $vmServiceLine\n');
 
-      return (await pending, devicectl);
+      return (await pending, devicectl, lldb);
+    }
+
+    /// The common case: callers that do not need the lldb fake.
+    Future<(AppInstance, FakeProcess)> launchFaked() async {
+      final (instance, devicectl, _) = await launchFakedWithLldb();
+      return (instance, devicectl);
     }
 
     test('keeps forwarding console output after VM-service discovery',
@@ -1357,6 +1363,28 @@ void main() {
           .lines
           .firstWhere((l) => l.text.contains('an ordinary print'));
       expect(line.isError, isFalse);
+    });
+
+    test('keeps draining lldb after launch returns', () async {
+      // lldb outlives launch() and holds the debugserver that keeps the app's
+      // JIT alive. Stop reading its pipes and it blocks on write once its
+      // stdout buffer fills; a blocked lldb never services the process it
+      // controls, so the app hangs on device until the dev tool is killed.
+      final (_, _, lldb) = await launchFakedWithLldb();
+
+      // Far more than a pipe buffer would hold. If nothing is draining, a
+      // real lldb would be blocked by now.
+      for (var i = 0; i < 2000; i++) {
+        lldb.emitStdout('lldb chatter line $i with padding ${'x' * 200}');
+      }
+      await pumpEventQueue();
+
+      // The fake cannot block, so assert the property that matters: a live
+      // reader is still attached to both channels.
+      expect(lldb.stdoutHasListener, isTrue,
+          reason: 'lldb stdout must stay drained for the process lifetime');
+      expect(lldb.stderrHasListener, isTrue,
+          reason: 'lldb stderr carries the reason for real lldb failures');
     });
 
     test('closes the log stream when devicectl exits', () async {

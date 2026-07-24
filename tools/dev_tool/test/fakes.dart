@@ -90,6 +90,14 @@ class FakeProcess implements Process {
     if (!_stderrAttached.isCompleted) _stderrAttached.complete();
   });
 
+  /// Whether something is currently reading this process's stdout / stderr.
+  ///
+  /// A real process blocks on write once an unread pipe fills, so "is anyone
+  /// still draining this?" is the property a test needs to assert; a fake's
+  /// in-memory controller would happily absorb output forever.
+  bool get stdoutHasListener => _stdoutController.hasListener;
+  bool get stderrHasListener => _stderrController.hasListener;
+
   /// Completes once the code under test is listening to both output streams.
   ///
   /// These are broadcast controllers, so anything emitted before a listener

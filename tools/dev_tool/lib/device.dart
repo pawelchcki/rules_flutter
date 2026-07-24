@@ -1352,10 +1352,17 @@ class IOSDevice extends Device {
       '--enable-checked-mode',
     ]);
 
-    // devicectl sends its own progress messages to stdout and the app's
-    // console output to stderr. Both feed the app log stream: the launch
-    // banners are few, and dropping the stderr channel would drop the app's
-    // own output with it.
+    // devicectl sends its own progress messages to stdout. Both channels feed
+    // the app log stream — the launch banners are few, and a device that did
+    // deliver app output would put it on stderr.
+    //
+    // KNOWN GAP, verified on hardware: `devicectl --console` does not deliver
+    // the app's own stdout to a pipe, so nothing the app prints — including
+    // the engine's VM-service announcement — arrives here, and physical-device
+    // runs get no hot reload. flutter_tools does not use this channel for
+    // discovery at all; it races mDNS (`MDnsVmServiceDiscovery`) against
+    // `idevicesyslog` device logs (`ios/devices.dart`). Adopting one of those
+    // is the fix. See README § Dev Tool.
     //
     // stderr is deliberately *not* flagged as an error channel: devicectl
     // routes the app's ordinary console output there, so treating that channel
@@ -1409,6 +1416,7 @@ class IOSDevice extends Device {
     // _attachToAppProcess, _resumeProcess.
     final lldb = await _startProcess('lldb', []);
     _lldbProcess = lldb;
+    _startLldbOutput(lldb);
     await _lldbCommand(lldb, 'device select $udid');
     final bpOutput = await _lldbCommand(
         lldb, r"breakpoint set --func-regex '^NOTIFY_DEBUGGER_ABOUT_RX_PAGES$'",
@@ -1464,39 +1472,78 @@ if not error.Success():
 return False
 ''';
 
-  /// Broadcast stream for lldb stdout (created once per launch).
-  Stream<String>? _lldbStdoutBroadcast;
+  /// Every line lldb has written, live and replayable.
+  ///
+  /// lldb outlives `launch()` — it holds the debugserver that keeps the app's
+  /// JIT alive — so **something must keep reading its pipes for as long as it
+  /// runs**. It is also chatty: it forwards the app's own logs and any crash
+  /// report. Left unread, its stdout pipe fills, lldb blocks on write, and a
+  /// blocked lldb never services the process it is controlling — the app hangs
+  /// on device and only springs to life when the dev tool is killed and the
+  /// pipes are closed.
+  ///
+  /// Backing this with an [AppLogStream] rather than an ad-hoc broadcast
+  /// stream fixes a second bug in the same place: a broadcast stream drops
+  /// events while nobody is listening, so any lldb output arriving between two
+  /// commands — including the pattern the *next* command is about to wait for
+  /// — was silently discarded. Replay makes the wait race-free.
+  ///
+  /// Mirrors flutter_tools' `LLDBLogForwarder`, which exists for these reasons.
+  AppLogStream? _lldbOutput;
+
+  /// Start draining [lldb] into [_lldbOutput]. Both channels are captured:
+  /// lldb reports real failures (a breakpoint that resolved nowhere, a refused
+  /// attach) on stderr, and dropping that channel turns an explainable failure
+  /// into a 30-second timeout with no reason attached.
+  void _startLldbOutput(Process lldb) {
+    final out = AppLogStream();
+    _lldbOutput = out;
+    pumpProcessLines(lldb, out, stderrIsError: true);
+  }
 
   /// Send a command to lldb stdin and optionally wait for expected output.
   /// If [returnMatch] is true, returns the matched line; otherwise returns null.
   Future<String?> _lldbCommand(Process lldb, String command,
       {RegExp? waitFor, bool returnMatch = false}) async {
-    _lldbStdoutBroadcast ??= lldb.stdout
-        .transform(utf8.decoder)
-        .transform(const LineSplitter())
-        .asBroadcastStream();
-
-    String? matchedLine;
-    final completer = waitFor != null ? Completer<void>() : null;
-    StreamSubscription<String>? sub;
-
-    if (completer != null) {
-      sub = _lldbStdoutBroadcast!.listen((line) {
-        if (waitFor!.hasMatch(line) && !completer.isCompleted) {
-          matchedLine = line;
-          completer.complete();
-          sub?.cancel();
-        }
-      });
+    final output = _lldbOutput;
+    if (output == null) {
+      throw StateError('lldb output is not being drained; '
+          'call _startLldbOutput before issuing commands.');
     }
 
-    lldb.stdin.writeln(command);
-    if (completer != null) {
-      await completer.future.timeout(const Duration(seconds: 30));
-    } else {
-      await Future<void>.delayed(const Duration(milliseconds: 200));
+    if (waitFor == null) {
+      // Fire-and-forget commands (`device select`, the breakpoint script
+      // lines) produce no distinctive output to wait on. Yield rather than
+      // sleeping a fixed interval: the following command's own wait is what
+      // actually orders this sequence, and lldb reads its stdin in order.
+      lldb.stdin.writeln(command);
+      await Future<void>.delayed(Duration.zero);
+      return null;
     }
-    return returnMatch ? matchedLine : null;
+
+    // Subscribe before writing so a fast reply cannot land first — and because
+    // the stream replays, output already buffered still counts.
+    final completer = Completer<String>();
+    final sub = output.lines.listen((line) {
+      if (!completer.isCompleted && waitFor.hasMatch(line.text)) {
+        completer.complete(line.text);
+      }
+    });
+
+    try {
+      lldb.stdin.writeln(command);
+      final matched = await completer.future.timeout(
+        const Duration(seconds: 30),
+        onTimeout: () => throw StateError(
+          'lldb did not answer "$command" within 30s (waiting for '
+          '${waitFor.pattern}).\nlldb said:\n'
+          '${output.read(-40).lines.map((l) => '  ${l.text}').join('\n')}',
+        ),
+      );
+      return returnMatch ? matched : null;
+    } finally {
+      await sub.cancel();
+    }
   }
 
   /// Write a line to lldb stdin without waiting for output.
@@ -1570,6 +1617,8 @@ return False
       await _lldbProcess!.exitCode;
       _lldbProcess = null;
     }
+    await _lldbOutput?.close();
+    _lldbOutput = null;
     instance.process.kill();
     await instance.process.exitCode;
     await instance.logs.close();
