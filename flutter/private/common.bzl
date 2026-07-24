@@ -491,17 +491,30 @@ def compute_desktop_bundle_copies(is_debug, kernel_dill_path, aot_output_path, a
 
     return copies
 
-def compute_android_jni_path(abi, basename):
+def compute_android_jni_path(target_name, abi, basename):
     """Compute the JNI symlink path for an Android native library.
 
+    Scoped by [target_name] because `ctx.actions.declare_file` resolves
+    package-relative: two Android bundles in one package would otherwise both
+    declare `jni/<abi>/libapp.so` and collide. That is not hypothetical — the
+    Tier 1 `flutter_android_app` macro generates a bundle internally, so a
+    package holding two apps (or an app plus an explicit Tier 2 bundle) hits
+    it, and `bazel build //...` fails with conflicting actions. Bazel only
+    tolerates the duplicate while both symlinks happen to point at the *same*
+    source file, which masks the bug until the two apps differ.
+
+    Mirrors the same scoping already applied to the mobile-install assets
+    directory in `flutter_android_application.bzl`.
+
     Args:
+        target_name: Name of the declaring target (`ctx.label.name`).
         abi: Android ABI string (e.g. "arm64-v8a").
         basename: Filename within the ABI directory.
 
     Returns:
-        Path string like "jni/arm64-v8a/libapp.so".
+        Path string like "my_app_jni/arm64-v8a/libapp.so".
     """
-    return "jni/{}/{}".format(abi, basename)
+    return "{}_jni/{}/{}".format(target_name, abi, basename)
 
 # Android ABIs with AOT cross-compilation support. Single source of truth
 # mapping each ABI to the Bazel platform Android rules transition to and the

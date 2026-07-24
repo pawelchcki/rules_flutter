@@ -183,6 +183,12 @@ ios_application(
     deps = [
         ":ios_runner_lib",
         ":plugin_ios_framework",
+        # Native-asset frameworks (objective_c.framework, needed by modern
+        # path_provider_foundation). Without this the manifest still records
+        # `objective_c.framework/objective_c`, but nothing embeds it, so dyld's
+        # rpath lookup falls through and every path_provider call fails at
+        # runtime while the app otherwise renders normally.
+        ":plugin_ios_native_frameworks",
     ],
 )
 

@@ -119,8 +119,8 @@ def _android_jni_path_arm64_test_impl(ctx):
     """Default ABI arm64-v8a produces correct JNI path."""
     env = unittest.begin(ctx)
 
-    path = compute_android_jni_path("arm64-v8a", "libapp.so")
-    asserts.equals(env, "jni/arm64-v8a/libapp.so", path)
+    path = compute_android_jni_path("my_app", "arm64-v8a", "libapp.so")
+    asserts.equals(env, "my_app_jni/arm64-v8a/libapp.so", path)
 
     return unittest.end(env)
 
@@ -128,8 +128,8 @@ def _android_jni_path_x86_64_test_impl(ctx):
     """x86_64 ABI produces correct JNI path."""
     env = unittest.begin(ctx)
 
-    path = compute_android_jni_path("x86_64", "libapp.so")
-    asserts.equals(env, "jni/x86_64/libapp.so", path)
+    path = compute_android_jni_path("my_app", "x86_64", "libapp.so")
+    asserts.equals(env, "my_app_jni/x86_64/libapp.so", path)
 
     return unittest.end(env)
 
@@ -137,8 +137,25 @@ def _android_jni_path_custom_basename_test_impl(ctx):
     """Custom basename (FFI lib) works correctly."""
     env = unittest.begin(ctx)
 
-    path = compute_android_jni_path("arm64-v8a", "libfoo.so")
-    asserts.equals(env, "jni/arm64-v8a/libfoo.so", path)
+    path = compute_android_jni_path("my_app", "arm64-v8a", "libfoo.so")
+    asserts.equals(env, "my_app_jni/arm64-v8a/libfoo.so", path)
+
+    return unittest.end(env)
+
+def _android_jni_path_scoped_per_target_test_impl(ctx):
+    """Two targets in one package get distinct JNI paths.
+
+    Regression guard: an unscoped `jni/<abi>/libapp.so` made two Android
+    bundles in the same package conflicting actions, breaking
+    `bazel build //...` for any package holding two apps.
+    """
+    env = unittest.begin(ctx)
+
+    asserts.false(
+        env,
+        compute_android_jni_path("free", "arm64-v8a", "libapp.so") ==
+        compute_android_jni_path("pro", "arm64-v8a", "libapp.so"),
+    )
 
     return unittest.end(env)
 
@@ -189,6 +206,7 @@ _t7_test = unittest.make(_android_jni_path_custom_basename_test_impl)
 _t8_test = unittest.make(_android_abi_platform_test_impl)
 _t9_test = unittest.make(_android_abi_elf_machine_test_impl)
 _t10_test = unittest.make(_android_abi_table_complete_test_impl)
+_t11_test = unittest.make(_android_jni_path_scoped_per_target_test_impl)
 
 def platform_bundle_test_suite(name):
     unittest.suite(
@@ -204,4 +222,5 @@ def platform_bundle_test_suite(name):
         _t8_test,
         _t9_test,
         _t10_test,
+        _t11_test,
     )

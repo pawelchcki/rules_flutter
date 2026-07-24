@@ -262,6 +262,7 @@ load("@rules_flutter//flutter:ios.bzl",
     "flutter_ios_engine",
     "flutter_ios_framework_gen",
     "flutter_ios_info_plist_gen",
+    "flutter_ios_native_frameworks_gen",
     "flutter_ios_registrant_gen",
     "flutter_ios_runner_lib_gen")
 
@@ -269,6 +270,11 @@ flutter_ios_framework_gen(name = "my_framework", application = ":my_app")
 flutter_ios_registrant_gen(name = "my_registrant", application = ":my_app")
 flutter_ios_engine(name = "my_engine")
 flutter_ios_info_plist_gen(name = "my_info_plist", app_name = "My App")
+
+# Frameworks for the app's native assets and `native_deps` dylibs. Omitting
+# this from `deps` below builds and renders a perfectly normal-looking app
+# that fails every native-asset call at runtime.
+flutter_ios_native_frameworks_gen(name = "my_native_frameworks", application = ":my_app")
 
 flutter_ios_runner_lib_gen(
     name = "my_runner",
@@ -281,7 +287,7 @@ ios_application(
     bundle_id = "com.example.myapp",
     families = ["iphone"],
     minimum_os_version = "12.0",
-    deps = [":my_framework", ":my_runner"],
+    deps = [":my_framework", ":my_native_frameworks", ":my_runner"],
 )
 ```
 

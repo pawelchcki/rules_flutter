@@ -179,6 +179,11 @@ ios_application(
     version = ":ffi_plugin_ios_version",
     deps = [
         ":ffi_plugin_ios_framework",
+        # Native-asset frameworks. Declared above but easy to leave
+        # unwired: the app still builds and renders, then fails every
+        # native-asset call at runtime because dyld cannot resolve the
+        # framework-relative path the manifest records.
+        ":ffi_plugin_ios_native_frameworks",
         ":ios_runner_lib",
         ":multiply_cc",
     ],

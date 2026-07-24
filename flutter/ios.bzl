@@ -45,7 +45,14 @@ Two tiers of API:
             bundle_id = "com.example.myapp",
             infoplists = [":my_info_plist"],
             launch_storyboard = IOS_DEFAULT_LAUNCH_STORYBOARD,
-            deps = [":my_framework", ":my_runner"],
+            deps = [
+                ":my_framework",
+                # Frameworks for native assets / `native_deps` dylibs. Leave
+                # this out and the app still builds and renders — it just
+                # cannot resolve any native asset at runtime.
+                ":my_native_frameworks",
+                ":my_runner",
+            ],
         )
 """
 

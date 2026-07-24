@@ -85,7 +85,9 @@ validate_android_elf() {
 
 def _symlink_to_jni(ctx, src, abi, basename):
     """Create a symlink placing a native lib into the jni/<abi>/ tree."""
-    out = ctx.actions.declare_file(compute_android_jni_path(abi, basename))
+    out = ctx.actions.declare_file(
+        compute_android_jni_path(ctx.label.name, abi, basename),
+    )
     ctx.actions.symlink(output = out, target_file = src)
     return out
 

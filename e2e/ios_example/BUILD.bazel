@@ -120,6 +120,11 @@ ios_application(
     version = ":app_version",
     deps = [
         ":app_framework",
+        # Native-asset frameworks. Declared above but easy to leave
+        # unwired: the app still builds and renders, then fails every
+        # native-asset call at runtime because dyld cannot resolve the
+        # framework-relative path the manifest records.
+        ":app_native_frameworks",
         ":bazel_runner_lib",
     ],
 )
@@ -163,6 +168,11 @@ ios_application(
     version = ":app_version",
     deps = [
         ":app_framework",
+        # Native-asset frameworks. Declared above but easy to leave
+        # unwired: the app still builds and renders, then fails every
+        # native-asset call at runtime because dyld cannot resolve the
+        # framework-relative path the manifest records.
+        ":app_native_frameworks",
         ":custom_runner_lib",
     ],
 )
