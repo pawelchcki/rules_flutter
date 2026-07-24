@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_bazel_dev_tool/command_runner.dart';
+import 'package:flutter_bazel_dev_tool/device.dart';
 import 'package:flutter_bazel_dev_tool/http_control_channel.dart';
 import 'package:flutter_bazel_dev_tool/session.dart';
 import 'package:test/test.dart';
@@ -272,5 +273,197 @@ void main() {
         await stopFuture;
       });
     });
+
+    group('GET /sessions/{appId}/logs', () {
+      late AppLogStream logs;
+
+      /// Register a session whose app has printed [count] numbered lines.
+      void seedSession(String appId, {int count = 0, int capacity = 2000}) {
+        logs = AppLogStream(capacity: capacity);
+        for (var i = 0; i < count; i++) {
+          logs.add('line$i');
+        }
+        sessions[appId] = DeviceSession(
+          device: _StubDevice(),
+          appInstance: AppInstance(process: _StubProcess(), logs: logs),
+          vmClient: null,
+          appId: appId,
+        );
+      }
+
+      Future<Map<String, dynamic>> getLogs(String query) async {
+        final request = await client.getUrl(channel.uri.replace(
+          path: '/sessions/app1/logs',
+          query: 'token=test-token-abc${query.isEmpty ? '' : '&$query'}',
+        ));
+        final response = await request.close();
+        final body = await utf8.decoder.bind(response).join();
+        expect(response.statusCode, HttpStatus.ok, reason: body);
+        return json.decode(body) as Map<String, dynamic>;
+      }
+
+      List<String> textsOf(Map<String, dynamic> page) => [
+            for (final l in page['lines'] as List) (l as Map)['t'] as String,
+          ];
+
+      test('with no cursor, tails the most recent lines', () async {
+        seedSession('app1', count: 500);
+        final page = await getLogs('');
+
+        // The default is a tail, so an agent arriving with no cursor sees what
+        // just happened rather than the start of the run.
+        expect(textsOf(page).last, 'line499');
+        expect(textsOf(page).length, lessThan(500));
+        expect(page['nextCursor'], 500);
+      });
+
+      test('since=-N returns the last N lines', () async {
+        seedSession('app1', count: 20);
+        expect(textsOf(await getLogs('since=-3')),
+            ['line17', 'line18', 'line19']);
+      });
+
+      test('since=0 reads from the start of the buffer', () async {
+        seedSession('app1', count: 5);
+        expect(textsOf(await getLogs('since=0')),
+            ['line0', 'line1', 'line2', 'line3', 'line4']);
+      });
+
+      test('polling with nextCursor neither overlaps nor gaps', () async {
+        seedSession('app1', count: 3);
+        final first = await getLogs('since=0');
+        expect(textsOf(first), ['line0', 'line1', 'line2']);
+
+        logs.add('line3');
+        logs.add('line4');
+        final second = await getLogs('since=${first['nextCursor']}');
+
+        expect(textsOf(second), ['line3', 'line4']);
+        expect(second['nextCursor'], 5);
+      });
+
+      test('polling with nothing new returns an empty page, not an error',
+          () async {
+        seedSession('app1', count: 2);
+        final page = await getLogs('since=2');
+        expect(page['lines'], isEmpty);
+        expect(page['nextCursor'], 2);
+      });
+
+      test('reports missed lines when the cursor has been evicted', () async {
+        seedSession('app1', count: 10, capacity: 3);
+        final page = await getLogs('since=0');
+
+        expect(textsOf(page), ['line7', 'line8', 'line9']);
+        expect(page['missed'], 7,
+            reason: 'a poller must learn it has a gap rather than read a '
+                'short page as if it were complete');
+        expect(page['dropped'], 7);
+      });
+
+      test('a cursor still inside the buffer reports no gap', () async {
+        seedSession('app1', count: 10, capacity: 5);
+        expect((await getLogs('since=7'))['missed'], 0);
+      });
+
+      test('limit caps the page', () async {
+        seedSession('app1', count: 20);
+        final page = await getLogs('since=0&limit=4');
+        expect(textsOf(page), ['line0', 'line1', 'line2', 'line3']);
+        expect(page['nextCursor'], 4);
+      });
+
+      test('an oversized limit is clamped rather than honoured', () async {
+        seedSession('app1', count: 900);
+        final page = await getLogs('since=0&limit=100000');
+        expect((page['lines'] as List).length, lessThanOrEqualTo(500));
+      });
+
+      test('carries the error flag per line', () async {
+        seedSession('app1');
+        logs.add('fine');
+        logs.add('broken', isError: true);
+
+        final lines = (await getLogs('since=0'))['lines'] as List;
+        expect((lines[0] as Map)['err'], isFalse);
+        expect((lines[1] as Map)['err'], isTrue);
+      });
+
+      test('reports closed once the app output source has ended', () async {
+        seedSession('app1', count: 1);
+        expect((await getLogs('since=0'))['closed'], isFalse);
+
+        await logs.close();
+
+        final page = await getLogs('since=0');
+        expect(page['closed'], isTrue,
+            reason: 'a poller needs to know when to stop');
+        expect(textsOf(page), ['line0'],
+            reason: "an exited app's final output must still be readable");
+      });
+
+      test('rejects a non-numeric since with 400', () async {
+        seedSession('app1', count: 3);
+        final request = await client.getUrl(channel.uri.replace(
+          path: '/sessions/app1/logs',
+          query: 'token=test-token-abc&since=abc',
+        ));
+        final response = await request.close();
+        final body = await utf8.decoder.bind(response).join();
+
+        expect(response.statusCode, HttpStatus.badRequest);
+        expect(body, contains('since'),
+            reason: 'silently serving the default would make a typo look like '
+                'a working poll loop');
+      });
+
+      test('rejects a non-positive limit with 400', () async {
+        seedSession('app1', count: 3);
+        final request = await client.getUrl(channel.uri.replace(
+          path: '/sessions/app1/logs',
+          query: 'token=test-token-abc&limit=0',
+        ));
+        expect((await request.close()).statusCode, HttpStatus.badRequest);
+      });
+
+      test('404s an unknown appId', () async {
+        final response = await _get('/sessions/nope/logs');
+        expect(response.statusCode, HttpStatus.notFound);
+      });
+
+      test('401s without a valid token', () async {
+        seedSession('app1', count: 1);
+        final response = await _get('/sessions/app1/logs', withToken: false);
+        expect(response.statusCode, HttpStatus.unauthorized);
+      });
+    });
   });
+}
+
+/// Minimal [Device] for session fixtures — the logs endpoint never touches it.
+class _StubDevice extends Device {
+  @override
+  String get name => 'stub';
+
+  @override
+  Future<AppInstance> launch(String appPath, {AppLogListener? onLog}) =>
+      throw UnimplementedError();
+
+  @override
+  Future<void> stop(AppInstance instance) async {}
+}
+
+class _StubProcess implements Process {
+  @override
+  Stream<List<int>> get stdout => const Stream.empty();
+  @override
+  Stream<List<int>> get stderr => const Stream.empty();
+  @override
+  IOSink get stdin => throw UnimplementedError();
+  @override
+  int get pid => -1;
+  @override
+  Future<int> get exitCode => Completer<int>().future;
+  @override
+  bool kill([ProcessSignal signal = ProcessSignal.sigterm]) => false;
 }

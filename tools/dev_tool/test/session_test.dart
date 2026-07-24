@@ -165,7 +165,7 @@ class _TrackingDevice extends Device {
   String get name => _name;
 
   @override
-  Future<AppInstance> launch(String appPath) =>
+  Future<AppInstance> launch(String appPath, {AppLogListener? onLog}) =>
       throw UnsupportedError('Not used in this test');
 
   @override

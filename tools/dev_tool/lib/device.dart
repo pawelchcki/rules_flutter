@@ -2,18 +2,51 @@
 ///
 /// Handles platform-specific launch, VM service discovery, and
 /// process lifecycle management.
+///
+/// ## One log source per platform
+///
+/// Every launched app exposes its console output on [AppInstance.logs]. Which
+/// source feeds that stream is a per-platform decision, and there is exactly
+/// one source per platform — this is an invariant, not a preference:
+///
+/// | Platform            | Source                                    |
+/// | ------------------- | ----------------------------------------- |
+/// | macOS/Linux/Windows | the app process's stdout + stderr          |
+/// | Android             | `adb logcat`                               |
+/// | iOS Simulator       | a dedicated `simctl spawn log stream`      |
+/// | iOS device          | `devicectl --console` stdout + stderr      |
+/// | Chrome (DDC)        | DWDS VM service `Stdout`/`Stderr` streams  |
+/// | Chrome (WASM)       | CDP `Runtime.consoleAPICalled`             |
+/// | attach mode         | VM service `Stdout`/`Stderr` streams       |
+///
+/// A Dart `print()` on a native device reaches *both* the process's stdout and
+/// the VM service's `Stdout` stream, so subscribing to both would print every
+/// line twice. VM-service streams are therefore used only where no process log
+/// source exists (web, attach). This mirrors flutter_tools' `DeviceLogReader`
+/// and is the reason the tempting "just read the VM service everywhere"
+/// simplification is wrong.
+///
+/// Discovery of the VM-service URI is a *reader* of the log stream, never an
+/// owner of the underlying subscriptions. See [pumpProcessLines].
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
 import 'package:path/path.dart' as p;
 
+import 'app_log.dart';
+import 'cdp_console.dart';
 import 'compiler_config.dart';
 import 'reload_strategy.dart';
 import 'runfiles_helper.dart';
 import 'toolchain_info.dart';
 import 'vm_service_client.dart';
 import 'web_module_server.dart';
+
+export 'app_log.dart' show AppLogLine, AppLogStream, LogPage;
+
+/// Called for each line of a running app's console output.
+typedef AppLogListener = void Function(AppLogLine line);
 
 /// A running Flutter application instance.
 class AppInstance {
@@ -23,7 +56,32 @@ class AppInstance {
   /// Optional HTTP server (used by WebDevice).
   final HttpServer? server;
 
-  AppInstance({required this.process, this.vmServiceUri, this.server});
+  /// The app's console output, for the lifetime of the run.
+  ///
+  /// Buffered, so a consumer that attaches after launch still sees everything
+  /// printed during startup. Closed by the owning device's `stop()`.
+  final AppLogStream logs;
+
+  /// Helper processes spawned alongside [process] that must die with the run —
+  /// e.g. the iOS Simulator's second `log stream`. Tracked here so `stop()`
+  /// cannot leak them, rather than each device inventing its own field.
+  final List<Process> auxiliaryProcesses;
+
+  AppInstance({
+    required this.process,
+    this.vmServiceUri,
+    this.server,
+    AppLogStream? logs,
+    this.auxiliaryProcesses = const [],
+  }) : logs = logs ?? AppLogStream();
+
+  /// Kill every [auxiliaryProcesses] entry and await its exit.
+  Future<void> disposeAuxiliaryProcesses() async {
+    for (final aux in auxiliaryProcesses) {
+      aux.kill();
+    }
+    await Future.wait(auxiliaryProcesses.map((a) => a.exitCode));
+  }
 }
 
 /// Abstract device that can launch and manage a Flutter app.
@@ -31,7 +89,14 @@ abstract class Device {
   /// Launch the app and return the running instance.
   ///
   /// [appPath] is the path to the built application artifact.
-  Future<AppInstance> launch(String appPath);
+  ///
+  /// [onLog] is attached to the app's output stream *before* VM-service
+  /// discovery begins, so a caller sees startup output as it happens rather
+  /// than in a burst once `launch` returns. That matters most when discovery
+  /// never succeeds: an app that crashes before binding its VM service prints
+  /// the reason during the discovery window. Callers that pass [onLog] must
+  /// not also subscribe to [AppInstance.logs], or every line arrives twice.
+  Future<AppInstance> launch(String appPath, {AppLogListener? onLog});
 
   /// Stop the running app.
   Future<void> stop(AppInstance instance);
@@ -119,7 +184,7 @@ class MacOSDevice extends Device {
   String get name => 'macOS';
 
   @override
-  Future<AppInstance> launch(String appPath) async {
+  Future<AppInstance> launch(String appPath, {AppLogListener? onLog}) async {
     // Extract .app from .zip if needed (Bazel macOS bundles are zipped).
     String resolvedPath = appPath;
     if (appPath.endsWith('.zip')) {
@@ -141,10 +206,11 @@ class MacOSDevice extends Device {
       [],
     );
 
-    // Listen for the VM service URI on stdout.
-    final vmServiceUri = await _discoverVmServiceUri(process);
+    final logs = _startProcessLogs(process, onLog);
+    final vmServiceUri = await discoverVmServiceUri(logs);
 
-    return AppInstance(process: process, vmServiceUri: vmServiceUri);
+    return AppInstance(
+        process: process, vmServiceUri: vmServiceUri, logs: logs);
   }
 
   @override
@@ -154,6 +220,7 @@ class MacOSDevice extends Device {
           'Warning: Failed to kill macOS app process (pid ${instance.process.pid}).');
     }
     await instance.process.exitCode;
+    await instance.logs.close();
   }
 
   /// Captures the launched app's windows via the bundled Swift helper.
@@ -241,7 +308,7 @@ class LinuxDevice extends Device {
       : const ['--platforms=@rules_flutter//flutter/platforms:linux_x64'];
 
   @override
-  Future<AppInstance> launch(String appPath) async {
+  Future<AppInstance> launch(String appPath, {AppLogListener? onLog}) async {
     // Bundle directories contain the executable at <dir>/<name>.
     String executable = appPath;
     if (FileSystemEntity.isDirectorySync(appPath)) {
@@ -250,8 +317,10 @@ class LinuxDevice extends Device {
     }
 
     final process = await _startProcess(executable, []);
-    final vmServiceUri = await _discoverVmServiceUri(process);
-    return AppInstance(process: process, vmServiceUri: vmServiceUri);
+    final logs = _startProcessLogs(process, onLog);
+    final vmServiceUri = await discoverVmServiceUri(logs);
+    return AppInstance(
+        process: process, vmServiceUri: vmServiceUri, logs: logs);
   }
 
   @override
@@ -261,6 +330,7 @@ class LinuxDevice extends Device {
           'Warning: Failed to kill Linux app process (pid ${instance.process.pid}).');
     }
     await instance.process.exitCode;
+    await instance.logs.close();
   }
 
   @override
@@ -300,7 +370,7 @@ class WindowsDevice extends Device {
       : const ['--platforms=@rules_flutter//flutter/platforms:windows_x64'];
 
   @override
-  Future<AppInstance> launch(String appPath) async {
+  Future<AppInstance> launch(String appPath, {AppLogListener? onLog}) async {
     // Bundle directories contain the executable at <dir>/<name>.exe.
     String executable = appPath;
     if (FileSystemEntity.isDirectorySync(appPath)) {
@@ -309,8 +379,10 @@ class WindowsDevice extends Device {
     }
 
     final process = await _startProcess(executable, []);
-    final vmServiceUri = await _discoverVmServiceUri(process);
-    return AppInstance(process: process, vmServiceUri: vmServiceUri);
+    final logs = _startProcessLogs(process, onLog);
+    final vmServiceUri = await discoverVmServiceUri(logs);
+    return AppInstance(
+        process: process, vmServiceUri: vmServiceUri, logs: logs);
   }
 
   @override
@@ -320,6 +392,7 @@ class WindowsDevice extends Device {
           'Warning: Failed to kill Windows app process (pid ${instance.process.pid}).');
     }
     await instance.process.exitCode;
+    await instance.logs.close();
   }
 
   @override
@@ -480,7 +553,7 @@ class AndroidDevice extends Device {
   }
 
   @override
-  Future<AppInstance> launch(String appPath) async {
+  Future<AppInstance> launch(String appPath, {AppLogListener? onLog}) async {
     // Auto-detect package info from APK if not provided.
     if (_packageName == null && appPath.endsWith('.apk')) {
       try {
@@ -507,11 +580,25 @@ class AndroidDevice extends Device {
       await _verifyInternetPermission(_packageName!, appPath);
     }
 
-    // Step 2: Start adb logcat to capture VM service URI.
+    // Step 2: Start adb logcat — the app's log source as well as where the
+    // VM-service announcement appears.
+    //
+    // Deliberately unfiltered at the adb level (`-v time`, no tag spec) with
+    // filtering done in Dart by [androidLogFilter]. The previous
+    // `flutter:I *:S` silenced everything but the `flutter` tag, which hid
+    // Java exceptions (`AndroidRuntime`), VM messages (`DartVM`) and native
+    // crashes — exactly the output you most need when an app misbehaves.
+    // Matches flutter_tools' AdbLogReader, which filters host-side for the
+    // same reason.
     final logcat = await _startProcess(
       adbPath,
-      _adbArgs(['logcat', '-T', '1', 'flutter:I', '*:S']),
+      _adbArgs(['logcat', '-v', 'time', '-T', '1']),
     );
+    // logcat has no stdout/stderr split: severity lives in the line's tag, so
+    // [androidLogFilter] decides, and the raw stderr channel (adb's own
+    // diagnostics) is not treated as app error output.
+    final logs = _startProcessLogs(logcat, onLog,
+        stderrIsError: false, transform: androidLogFilter);
 
     // Step 3: Launch the activity.
     if (_packageName != null) {
@@ -529,7 +616,7 @@ class AndroidDevice extends Device {
     // Step 4: Discover VM service URI from logcat.
     Uri? vmServiceUri;
     if (_packageName != null) {
-      final deviceUri = await _discoverVmServiceUriFromLogcat(logcat);
+      final deviceUri = await discoverVmServiceUri(logs);
 
       // Port forwarding — the VM service URI from logcat is device-local.
       if (deviceUri != null) {
@@ -560,7 +647,8 @@ class AndroidDevice extends Device {
       }
     }
 
-    return AppInstance(process: logcat, vmServiceUri: vmServiceUri);
+    return AppInstance(
+        process: logcat, vmServiceUri: vmServiceUri, logs: logs);
   }
 
   /// Fails the launch when the installed [packageName] does not request
@@ -641,6 +729,7 @@ class AndroidDevice extends Device {
           'Warning: Failed to kill Android logcat process (pid ${instance.process.pid}).');
     }
     await instance.process.exitCode;
+    await instance.logs.close();
   }
 
   @override
@@ -703,35 +792,111 @@ Future<void> waitForLocalTcpPort(
   }
 }
 
-/// Discover the VM service URI from adb logcat output.
-Future<Uri?> _discoverVmServiceUriFromLogcat(Process logcat) async {
-  final completer = Completer<Uri?>();
-  Timer? timeout;
+/// One parsed `adb logcat -v time` record.
+///
+/// The `-v time` format is
+/// `MM-DD HH:MM:SS.mmm L/Tag( pid): message`, where the pid is space-padded to
+/// a fixed width and the tag may itself contain dots (`System.err`).
+class LogcatLine {
+  /// Priority letter: V, D, I, W, E or F.
+  final String level;
+  final String tag;
+  final String message;
 
-  timeout = Timer(const Duration(seconds: 30), () {
-    if (!completer.isCompleted) completer.complete(null);
+  /// The record without its timestamp — what gets shown.
+  final String display;
+
+  const LogcatLine({
+    required this.level,
+    required this.tag,
+    required this.message,
+    required this.display,
   });
+}
 
-  StreamSubscription<String>? subscription;
-  subscription = logcat.stdout
-      .transform(utf8.decoder)
-      .transform(const LineSplitter())
-      .listen(
-    (line) {
-      final match = vmServiceUriPattern.firstMatch(line);
-      if (match != null && !completer.isCompleted) {
-        timeout?.cancel();
-        completer.complete(Uri.parse(match.group(1)!));
-        subscription?.cancel();
-      }
-    },
-    onDone: () {
-      timeout?.cancel();
-      if (!completer.isCompleted) completer.complete(null);
-    },
+const _logcatTimestamp = r'^\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3}\s+';
+final _logcatTimestampPrefix = RegExp(_logcatTimestamp);
+final _logcatTimeFormat =
+    RegExp('$_logcatTimestamp' r'([VDIWEF])/(.*?)\(\s*\d+\):\s?(.*)$');
+
+/// Parse a `-v time` logcat record, or null if the line isn't one (banners,
+/// continuation lines, partial reads).
+///
+/// Parsing once and matching on the parsed tag is deliberate: flutter_tools'
+/// equivalent allowlist is a set of regexes written against a tag-only format
+/// even though it requests `-v time`, so several of them — `AndroidRuntime`,
+/// `System.err`, fatal `F/` — never match a real padded-pid line. Copying them
+/// verbatim would have silently dropped exactly the crash output this is here
+/// to surface.
+LogcatLine? parseLogcatLine(String rawLine) {
+  final match = _logcatTimeFormat.firstMatch(rawLine);
+  if (match == null) return null;
+  final level = match.group(1)!;
+  final tag = match.group(2)!.trim();
+  final message = match.group(3)!;
+  return LogcatLine(
+    level: level,
+    tag: tag,
+    message: message,
+    display: rawLine.replaceFirst(_logcatTimestampPrefix, ''),
   );
+}
 
-  return completer.future;
+/// Tags worth showing from an Android device.
+///
+/// `adb logcat` carries the whole device's logging, almost none of which
+/// concerns the app under development, so this is an allowlist. The set is
+/// flutter_tools' (`AdbLogReader._allowedTags`):
+///
+///   * `flutter*` — Dart `print`/`debugPrint` output.
+///   * `DartVM*` — VM messages, including the VM-service announcement.
+///   * `AndroidRuntime` — uncaught Java exceptions, i.e. crashes.
+///   * `System.err` — Java stderr.
+///   * `ActivityManager` — but only when it mentions the app.
+///   * any tag at all when the record is fatal (`F`).
+///
+/// Not ported: flutter's tombstone state machine and repeated-line collapsing.
+/// Those polish a crash report; the allowlist is what makes crashes *visible*,
+/// which is the gap being closed here.
+bool _isAndroidTagOfInterest(LogcatLine line) {
+  final tag = line.tag.toLowerCase();
+  if (line.level == 'F') return true;
+  if (tag.startsWith('flutter')) return true;
+  if (tag.startsWith('dartvm') && (line.level == 'I' || line.level == 'E')) {
+    return true;
+  }
+  if (!const {'W', 'E', 'F'}.contains(line.level)) return false;
+  if (tag == 'androidruntime' || tag == 'system.err') return true;
+  if (tag == 'activitymanager') {
+    return RegExp(r'\b(flutter|domokit|sky)\b').hasMatch(line.message);
+  }
+  return false;
+}
+
+/// Messages that pass the tag allowlist but are never actionable.
+///
+/// From flutter_tools' `AdbLogReader._filteredMessages`.
+final _androidFilteredMessages = <RegExp>[
+  RegExp(r'^Failed to find sync for id=\d+$'),
+  RegExp(r'^updateAcquireFence: Did not find frame\.$'),
+  RegExp(r'ViewPostIme pointer'),
+  RegExp(r'mali\.instrumentation\.graph\.work'),
+];
+
+/// Decide whether a raw `adb logcat -v time` line is worth showing, returning
+/// it with the timestamp stripped, or null to drop it.
+///
+/// Exposed for testing.
+String? androidLogFilter(String rawLine) {
+  final line = parseLogcatLine(rawLine);
+  // Banners ("--------- beginning of main") and anything else that isn't a
+  // record.
+  if (line == null) return null;
+  if (!_isAndroidTagOfInterest(line)) return null;
+  if (_androidFilteredMessages.any((re) => re.hasMatch(line.message))) {
+    return null;
+  }
+  return line.display;
 }
 
 /// Pattern matching Dart VM service URI announcements from Flutter apps.
@@ -740,57 +905,65 @@ final vmServiceUriPattern = RegExp(
   r'The Dart VM service is listening on ((http|//)[a-zA-Z0-9:/=_\-\.\[\]]+)',
 );
 
-/// Detect the VM service URI from a Flutter app's stdout and stderr.
+/// How long a launch waits for the VM-service announcement before giving up.
+const _vmServiceDiscoveryTimeout = Duration(seconds: 30);
+
+/// Watch [logs] for the VM-service announcement.
 ///
 /// The Flutter engine prints a line like:
 ///   "The Dart VM service is listening on http://127.0.0.1:XXXXX/..."
 ///
-/// Matches Flutter's own approach: merge stdout + stderr into a single stream
-/// and search for the VM service announcement in both.
-Future<Uri?> _discoverVmServiceUri(Process process) async {
+/// This is a pure *reader*: it owns only its own subscription to [logs] and
+/// cancels only that, leaving whatever feeds the stream running for the app's
+/// lifetime. An earlier version cancelled the app's stdout/stderr
+/// subscriptions here, which killed all subsequent output and left the OS
+/// pipes unread — see the library docs.
+///
+/// Returns null if nothing announced a VM service within
+/// [_vmServiceDiscoveryTimeout] or the stream ended first.
+Future<Uri?> discoverVmServiceUri(
+  AppLogStream logs, {
+  Duration timeout = _vmServiceDiscoveryTimeout,
+}) async {
   final completer = Completer<Uri?>();
-  Timer? timeout;
-  final subscriptions = <StreamSubscription<String>>[];
-
-  timeout = Timer(const Duration(seconds: 30), () {
+  final timer = Timer(timeout, () {
     if (!completer.isCompleted) completer.complete(null);
   });
 
-  void handleLine(String line) {
-    stdout.writeln(line);
-    final match = vmServiceUriPattern.firstMatch(line);
-    if (match != null && !completer.isCompleted) {
-      timeout?.cancel();
-      completer.complete(Uri.parse(match.group(1)!));
-      for (final s in subscriptions) {
-        s.cancel();
-      }
-    }
+  final sub = logs.lines.listen(
+    (line) {
+      if (completer.isCompleted) return;
+      final match = vmServiceUriPattern.firstMatch(line.text);
+      if (match != null) completer.complete(Uri.parse(match.group(1)!));
+    },
+    onDone: () {
+      if (!completer.isCompleted) completer.complete(null);
+    },
+  );
+
+  try {
+    return await completer.future;
+  } finally {
+    timer.cancel();
+    await sub.cancel();
   }
+}
 
-  subscriptions.add(
-    process.stdout
-        .transform(utf8.decoder)
-        .transform(const LineSplitter())
-        .listen(
-      handleLine,
-      onDone: () {
-        timeout?.cancel();
-        if (!completer.isCompleted) completer.complete(null);
-      },
-    ),
-  );
-
-  subscriptions.add(
-    process.stderr
-        .transform(utf8.decoder)
-        .transform(const LineSplitter())
-        .listen(
-          handleLine,
-        ),
-  );
-
-  return completer.future;
+/// Create the log stream for a launch, attach [onLog], and start draining
+/// [process] into it.
+///
+/// [onLog] is wired before the pump starts so no line can slip past it.
+AppLogStream _startProcessLogs(
+  Process process,
+  AppLogListener? onLog, {
+  bool stderrIsError = true,
+  String? Function(String line)? transform,
+}) {
+  final logs = AppLogStream();
+  if (onLog != null) logs.lines.listen(onLog);
+  pumpProcessLines(process, logs,
+      stderrIsError: stderrIsError, transform: transform);
+  return logs;
 }
 
 /// Detect the appropriate device for the current platform.
@@ -889,7 +1062,7 @@ class IOSSimulatorDevice extends Device {
   List<String> get buildArgs => const ['--ios_multi_cpus=sim_arm64'];
 
   @override
-  Future<AppInstance> launch(String appPath) async {
+  Future<AppInstance> launch(String appPath, {AppLogListener? onLog}) async {
     // Extract .app from .ipa if needed — simctl install requires .app.
     String installPath = appPath;
     if (appPath.endsWith('.ipa')) {
@@ -906,8 +1079,16 @@ class IOSSimulatorDevice extends Device {
       throw StateError('simctl install failed: ${installResult.stderr}');
     }
 
-    // Start log stream for VM service URI.
-    final log = await _startProcess('xcrun', [
+    // Two log streams, deliberately.
+    //
+    // Discovery matches on message content and nothing else. App output needs
+    // a process-scoped predicate with several NOT(...) noise filters
+    // ([iosSimulatorLogPredicate]). Folding the two together would make
+    // VM-service discovery — which hot reload, screenshots and agent control
+    // all depend on — contingent on those exclusion clauses continuing to
+    // spare the announcement. Two narrow streams fail independently and
+    // visibly; one broad stream fails silently.
+    final discoveryLog = await _startProcess('xcrun', [
       'simctl',
       'spawn',
       udid,
@@ -917,14 +1098,37 @@ class IOSSimulatorDevice extends Device {
       'eventMessage contains "Observatory" or eventMessage contains "Dart VM service"',
     ]);
 
+    final appName = p.basename(installPath).replaceAll('.app', '');
+    final outputLog = await _startProcess('xcrun', [
+      'simctl',
+      'spawn',
+      udid,
+      'log',
+      'stream',
+      '--style',
+      'json',
+      '--predicate',
+      iosSimulatorLogPredicate(appName),
+    ]);
+
+    // Unified logging carries no stdout/stderr split, so nothing is flagged as
+    // an error channel here.
+    final logs = _startProcessLogs(outputLog, onLog,
+        stderrIsError: false, transform: parseUnifiedLoggingLine);
+
     // Launch app.
     final bundleId = _bundleId ?? await _extractBundleId(installPath);
     await _runProcess('xcrun', ['simctl', 'launch', udid, bundleId]);
 
-    // Discover VM service URI from log stream.
-    final uri = await _discoverVmServiceUriFromStream(log);
+    // Discover VM service URI from the dedicated discovery stream.
+    final uri = await discoverVmServiceUriFromProcess(discoveryLog);
 
-    return AppInstance(process: log, vmServiceUri: uri);
+    return AppInstance(
+      process: discoveryLog,
+      vmServiceUri: uri,
+      logs: logs,
+      auxiliaryProcesses: [outputLog],
+    );
   }
 
   @override
@@ -934,6 +1138,8 @@ class IOSSimulatorDevice extends Device {
     }
     instance.process.kill();
     await instance.process.exitCode;
+    await instance.disposeAuxiliaryProcesses();
+    await instance.logs.close();
   }
 
   /// iOS Simulator uses `simctl io screenshot` because `_flutter.screenshot`
@@ -1020,14 +1226,14 @@ class _IOSSimulatorDeviceBooted extends IOSSimulatorDevice {
   }
 
   @override
-  Future<AppInstance> launch(String appPath) async {
+  Future<AppInstance> launch(String appPath, {AppLogListener? onLog}) async {
     final resolvedUdid = await _resolveBootedUdid();
     final real = IOSSimulatorDevice(
       udid: resolvedUdid,
       runProcess: _runProcess,
       startProcess: _startProcess,
     );
-    return real.launch(appPath);
+    return real.launch(appPath, onLog: onLog);
   }
 }
 
@@ -1077,7 +1283,7 @@ class IOSDevice extends Device {
   List<String> get buildArgs => const ['--ios_multi_cpus=arm64'];
 
   @override
-  Future<AppInstance> launch(String appPath) async {
+  Future<AppInstance> launch(String appPath, {AppLogListener? onLog}) async {
     // Extract .app from .ipa if needed — devicectl install requires .app.
     String installPath = appPath;
     if (appPath.endsWith('.ipa')) {
@@ -1146,39 +1352,57 @@ class IOSDevice extends Device {
       '--enable-checked-mode',
     ]);
 
-    // Listen on both stdout and stderr for launch confirmation and VM URI.
-    // devicectl sends its own messages to stdout, app console output to stderr.
-    final launchCompleter = Completer<void>();
-    final vmUriCompleter = Completer<Uri?>();
-    Timer(const Duration(seconds: 30), () {
-      if (!launchCompleter.isCompleted) launchCompleter.complete();
-    });
-    Timer(const Duration(seconds: 30), () {
-      if (!vmUriCompleter.isCompleted) vmUriCompleter.complete(null);
-    });
-    void handleConsoleOutput(String data) {
-      if (!launchCompleter.isCompleted &&
-          (data.contains('Waiting for the application to terminate') ||
-              data.contains('Launched application with'))) {
-        launchCompleter.complete();
-      }
-      final match = vmServiceUriPattern.firstMatch(data);
-      if (match != null && !vmUriCompleter.isCompleted) {
-        vmUriCompleter.complete(Uri.parse(match.group(1)!));
-      }
-    }
+    // devicectl sends its own progress messages to stdout and the app's
+    // console output to stderr. Both feed the app log stream: the launch
+    // banners are few, and dropping the stderr channel would drop the app's
+    // own output with it.
+    //
+    // Caveat, and it is a real one: `devicectl --console` does not flush the
+    // app's output when its stdout is a pipe rather than a terminal, so a
+    // physical-device run can legitimately show far less output than the same
+    // app on a simulator or desktop. That is a devicectl behaviour, not a gap
+    // in the forwarding below — see README § Dev Tool.
+    //
+    // stderr is deliberately *not* flagged as an error channel: devicectl
+    // routes the app's ordinary console output there, so treating that channel
+    // as errors would mark every `print()` as one.
+    final logs = _startProcessLogs(_consoleLauncherProcess!, onLog,
+        stderrIsError: false);
 
-    _consoleLauncherProcess!.stdout
-        .transform(utf8.decoder)
-        .listen(handleConsoleOutput, onDone: () {
+    final launchCompleter = Completer<void>();
+    // Cancelled below once the launch resolves. An uncancelled 30s timer keeps
+    // the isolate alive for its full duration after the work is done — which
+    // is how it surfaced: a test binary that finished in 2s took 31s to exit.
+    final launchTimeout = Timer(const Duration(seconds: 30), () {
       if (!launchCompleter.isCompleted) launchCompleter.complete();
-      if (!vmUriCompleter.isCompleted) vmUriCompleter.complete(null);
     });
-    _consoleLauncherProcess!.stderr
-        .transform(utf8.decoder)
-        .listen(handleConsoleOutput);
+
+    // devicectl's own launch banners are progress reporting, not app output.
+    bool isDevicectlBanner(String line) =>
+        line.contains('Waiting for the application to terminate') ||
+        line.contains('Launched application with');
+
+    // Another reader of the same stream, like discovery below. `onDone` fires
+    // when devicectl's output ends, so a launch that dies before ever printing
+    // a banner stops waiting immediately rather than sitting out the timeout.
+    final bannerSub = logs.lines.listen(
+      (line) {
+        if (!launchCompleter.isCompleted && isDevicectlBanner(line.text)) {
+          launchCompleter.complete();
+        }
+      },
+      onDone: () {
+        if (!launchCompleter.isCompleted) launchCompleter.complete();
+      },
+    );
+
+    // Discovery reads the same stream rather than owning a subscription, so
+    // console output keeps flowing for the whole run.
+    final vmUriFuture = discoverVmServiceUri(logs);
 
     await launchCompleter.future;
+    launchTimeout.cancel();
+    await bannerSub.cancel();
 
     // Step 2: Get PID from running process list.
     final processId = await _findAppProcessId(bundleId);
@@ -1207,8 +1431,8 @@ class IOSDevice extends Device {
     await _lldbCommand(lldb, 'process continue',
         waitFor: RegExp(r'Process \d+ resuming'));
 
-    // Step 6: Discover VM service URI from devicectl --console stdout.
-    final deviceUri = await vmUriCompleter.future;
+    // Step 6: Discover VM service URI from devicectl --console output.
+    final deviceUri = await vmUriFuture;
 
     // Port-forward VM service from device to host via iproxy.
     Uri? vmServiceUri;
@@ -1226,7 +1450,8 @@ class IOSDevice extends Device {
       vmServiceUri = deviceUri.replace(host: '127.0.0.1');
     }
 
-    return AppInstance(process: lldb, vmServiceUri: vmServiceUri);
+    return AppInstance(
+        process: lldb, vmServiceUri: vmServiceUri, logs: logs);
   }
 
   /// Python script for the JIT page notification breakpoint.
@@ -1353,6 +1578,7 @@ return False
     }
     instance.process.kill();
     await instance.process.exitCode;
+    await instance.logs.close();
   }
 
   /// iOS physical device screenshot via pymobiledevice3 DVT service.
@@ -1485,44 +1711,86 @@ class _IOSDeviceConnected extends IOSDevice {
   }
 
   @override
-  Future<AppInstance> launch(String appPath) async {
+  Future<AppInstance> launch(String appPath, {AppLogListener? onLog}) async {
     final resolvedUdid = await _resolveConnectedUdid();
     final real = IOSDevice(
       udid: resolvedUdid,
       runProcess: _runProcess,
       startProcess: _startProcess,
     );
-    return real.launch(appPath);
+    return real.launch(appPath, onLog: onLog);
   }
 }
 
-/// Discover VM service URI from a log stream process.
-Future<Uri?> _discoverVmServiceUriFromStream(Process log) async {
-  final completer = Completer<Uri?>();
-  Timer? timeout;
+/// NSPredicate selecting an app's own log output on the iOS Simulator.
+///
+/// Ported from flutter_tools' `launchDeviceUnifiedLogging`
+/// (`ios/simulators.dart`). Scoped to the app's process, then narrowed to
+/// messages from the Flutter engine, the Swift runtime, or the app image
+/// itself, then stripped of known-irrelevant noise.
+///
+/// This is *only* an app-output predicate. VM-service discovery uses its own
+/// stream with a content match — see [IOSSimulatorDevice.launch] for why the
+/// two are not merged.
+String iosSimulatorLogPredicate(String appName) {
+  String orP(List<String> clauses) => '(${clauses.join(" OR ")})';
+  String andP(List<String> clauses) => clauses.join(' AND ');
+  String notP(String clause) => 'NOT($clause)';
 
-  timeout = Timer(const Duration(seconds: 30), () {
-    if (!completer.isCompleted) completer.complete(null);
-  });
+  return andP(<String>[
+    'eventType = logEvent',
+    'processImagePath ENDSWITH "$appName"',
+    // From Flutter, from Swift (assertions/fatal errors), or from the app.
+    orP(<String>[
+      'senderImagePath ENDSWITH "/Flutter"',
+      'senderImagePath ENDSWITH "/libswiftCore.dylib"',
+      'processImageUUID == senderImageUUID',
+    ]),
+    notP(
+        'eventMessage CONTAINS ": could not find icon for representation -> com.apple."'),
+    notP('eventMessage BEGINSWITH "assertion failed: "'),
+    notP('eventMessage CONTAINS " libxpc.dylib "'),
+  ]);
+}
 
-  StreamSubscription<String>? subscription;
-  subscription =
-      log.stdout.transform(utf8.decoder).transform(const LineSplitter()).listen(
-    (line) {
-      final match = vmServiceUriPattern.firstMatch(line);
-      if (match != null && !completer.isCompleted) {
-        timeout?.cancel();
-        completer.complete(Uri.parse(match.group(1)!));
-        subscription?.cancel();
-      }
-    },
-    onDone: () {
-      timeout?.cancel();
-      if (!completer.isCompleted) completer.complete(null);
-    },
-  );
+/// `"eventMessage" : "flutter: 21",` — one field of `log stream --style json`.
+final _unifiedLoggingEventMessage = RegExp(r'.*"eventMessage" : (".*")');
 
-  return completer.future;
+/// Extract the message from a `log stream --style json` output line, or null
+/// if the line carries no message (the format is pretty-printed across many
+/// lines, most of which are other fields).
+///
+/// The predicate does the filtering, so every message that reaches here is
+/// meant to be shown. Mirrors flutter_tools'
+/// `_IOSSimulatorLogReader._onUnifiedLoggingLine`.
+String? parseUnifiedLoggingLine(String line) {
+  final match = _unifiedLoggingEventMessage.firstMatch(line);
+  if (match == null) return null;
+  try {
+    final decoded = json.decode(match.group(1)!);
+    return decoded is String ? decoded : null;
+  } on FormatException {
+    return null;
+  }
+}
+
+/// Watch a log-emitting helper process for the VM-service announcement.
+///
+/// For sources where the helper process exists *only* to find the URI (the iOS
+/// Simulator's discovery stream); app output comes from a separate stream. Like
+/// [discoverVmServiceUri], this owns only its own subscription.
+Future<Uri?> discoverVmServiceUriFromProcess(
+  Process log, {
+  Duration timeout = _vmServiceDiscoveryTimeout,
+}) async {
+  final logs = AppLogStream();
+  final pump = pumpProcessLines(log, logs);
+  try {
+    return await discoverVmServiceUri(logs, timeout: timeout);
+  } finally {
+    await pump.dispose();
+    await logs.close();
+  }
 }
 
 /// Chrome launch flags matching Flutter's defaults for web dev mode.
@@ -1555,6 +1823,20 @@ class WebDevice extends Device {
 
   /// Module server for DDC dev mode. Set by RunCommand before launch.
   WebModuleServer? _moduleServer;
+
+  /// Chrome's own process output — browser diagnostics, not app output.
+  ///
+  /// Kept drained for the browser's lifetime so its pipes can never fill, and
+  /// used to discover the CDP port. Deliberately *not* surfaced as app output:
+  /// the app's console lives inside the page, and Chrome's own chatter would
+  /// bury it.
+  AppLogStream? _browserDiagnostics;
+
+  /// Forwards the page's console when there is no DWDS to do it (WASM and
+  /// production JS builds). Null in DDC dev mode, where `run_command` wires
+  /// the DWDS VM service instead — see the one-source-per-platform note in the
+  /// library docs.
+  CdpConsoleClient? _consoleClient;
 
   WebDevice({ProcessStarter? startProcess})
       : _startProcess = startProcess ?? Process.start;
@@ -1601,15 +1883,15 @@ class WebDevice extends Device {
   }
 
   @override
-  Future<AppInstance> launch(String appPath) async {
+  Future<AppInstance> launch(String appPath, {AppLogListener? onLog}) async {
     if (_moduleServer != null) {
-      return _launchWithModuleServer();
+      return _launchWithModuleServer(onLog);
     }
-    return _launchStaticServer(appPath);
+    return _launchStaticServer(appPath, onLog);
   }
 
   /// Launch using DDC module server (dev mode with hot restart).
-  Future<AppInstance> _launchWithModuleServer() async {
+  Future<AppInstance> _launchWithModuleServer(AppLogListener? onLog) async {
     final url = _moduleServer!.uri.toString();
     _appUrl = url;
 
@@ -1627,12 +1909,16 @@ class WebDevice extends Device {
       url,
     ]);
 
-    _cdpPort = await _discoverCdpPort(chrome);
-    return AppInstance(process: chrome, vmServiceUri: null);
+    final logs = _startChromeLogs(chrome, onLog);
+    _cdpPort = await _discoverCdpPort(_browserDiagnostics!);
+    // No CDP console client here: DDC mode gets the app's output from the DWDS
+    // VM service, and running both would print every line twice.
+    return AppInstance(process: chrome, vmServiceUri: null, logs: logs);
   }
 
   /// Launch using static file server (production/WASM mode).
-  Future<AppInstance> _launchStaticServer(String appPath) async {
+  Future<AppInstance> _launchStaticServer(
+      String appPath, AppLogListener? onLog) async {
     final server = await HttpServer.bind('localhost', 0);
     final port = server.port;
     final url = 'http://localhost:$port';
@@ -1655,15 +1941,51 @@ class WebDevice extends Device {
       url,
     ]);
 
-    _cdpPort = await _discoverCdpPort(chrome);
-    return AppInstance(process: chrome, vmServiceUri: null, server: server);
+    final logs = _startChromeLogs(chrome, onLog);
+    _cdpPort = await _discoverCdpPort(_browserDiagnostics!);
+
+    // No DWDS on this path (WASM / production JS), so CDP is the only source
+    // of the app's console output.
+    if (_cdpPort != null) {
+      _consoleClient = CdpConsoleClient(
+        cdpPort: _cdpPort!,
+        appUrl: _appUrl,
+        logs: logs,
+      );
+      try {
+        await _consoleClient!.start();
+      } catch (e) {
+        // Console forwarding is not worth failing a launch over, but a silent
+        // loss of all app output would be worse than the noise.
+        stderr.writeln(
+            'Warning: could not attach to the browser console ($e). '
+            'App output will not appear in this run.');
+        _consoleClient = null;
+      }
+    }
+
+    return AppInstance(
+        process: chrome, vmServiceUri: null, server: server, logs: logs);
+  }
+
+  /// Create the app log stream and start draining Chrome's own pipes.
+  AppLogStream _startChromeLogs(Process chrome, AppLogListener? onLog) {
+    _browserDiagnostics = AppLogStream(capacity: 200);
+    pumpProcessLines(chrome, _browserDiagnostics!);
+
+    final logs = AppLogStream();
+    if (onLog != null) logs.lines.listen(onLog);
+    return logs;
   }
 
   @override
   Future<void> stop(AppInstance instance) async {
+    await _consoleClient?.close();
+    _consoleClient = null;
     await _moduleServer?.stop();
     await instance.server?.close();
     instance.process.kill();
+    await instance.logs.close();
   }
 
   @override
@@ -1711,40 +2033,43 @@ ContentType _contentType(String ext) {
   };
 }
 
-/// Discover the CDP debugging port from Chrome's stderr.
-///
-/// Chrome prints "DevTools listening on ws://127.0.0.1:<port>/..." to stderr
-/// when launched with `--remote-debugging-port=0`.
-Future<int?> _discoverCdpPort(Process chrome) async {
-  final completer = Completer<int?>();
-  Timer? timeout;
+/// Chrome's announcement of its debugging port, printed to stderr when
+/// launched with `--remote-debugging-port=0`:
+/// `DevTools listening on ws://127.0.0.1:PORT/devtools/browser/...`
+final cdpPortPattern = RegExp(r'DevTools listening on ws://\S+?:(\d+)/');
 
-  timeout = Timer(const Duration(seconds: 15), () {
+/// Discover the CDP debugging port from Chrome's own diagnostic output.
+///
+/// Reads [browserDiagnostics] rather than subscribing to Chrome's pipes
+/// directly, so finding the port doesn't stop those pipes being drained — an
+/// unread stderr on a browser as chatty as Chrome is the likeliest place for a
+/// full-pipe stall.
+Future<int?> _discoverCdpPort(
+  AppLogStream browserDiagnostics, {
+  Duration timeout = const Duration(seconds: 15),
+}) async {
+  final completer = Completer<int?>();
+  final timer = Timer(timeout, () {
     if (!completer.isCompleted) completer.complete(null);
   });
 
-  StreamSubscription<String>? subscription;
-  subscription = chrome.stderr
-      .transform(utf8.decoder)
-      .transform(const LineSplitter())
-      .listen(
+  final sub = browserDiagnostics.lines.listen(
     (line) {
-      // Chrome prints: DevTools listening on ws://127.0.0.1:PORT/devtools/browser/...
-      final match =
-          RegExp(r'DevTools listening on ws://\S+?:(\d+)/').firstMatch(line);
-      if (match != null && !completer.isCompleted) {
-        timeout?.cancel();
-        completer.complete(int.parse(match.group(1)!));
-        subscription?.cancel();
-      }
+      if (completer.isCompleted) return;
+      final match = cdpPortPattern.firstMatch(line.text);
+      if (match != null) completer.complete(int.parse(match.group(1)!));
     },
     onDone: () {
-      timeout?.cancel();
       if (!completer.isCompleted) completer.complete(null);
     },
   );
 
-  return completer.future;
+  try {
+    return await completer.future;
+  } finally {
+    timer.cancel();
+    await sub.cancel();
+  }
 }
 
 /// Capture a screenshot via Chrome DevTools Protocol.
@@ -1756,38 +2081,9 @@ Future<void> _cdpScreenshot(int cdpPort, String outputPath,
     {String? appUrl}) async {
   final client = HttpClient();
   try {
-    // Get the list of targets (tabs).
-    final listReq =
-        await client.getUrl(Uri.parse('http://127.0.0.1:$cdpPort/json'));
-    final listResp = await listReq.close();
-    final listBody = await listResp.transform(utf8.decoder).join();
-    final targets = json.decode(listBody) as List;
-    if (targets.isEmpty) {
-      throw StateError('No CDP targets found');
-    }
-    // Find the target matching our app URL, falling back to first page target.
-    final pageTargets =
-        targets.where((t) => (t as Map)['type'] == 'page').toList();
-    Map target;
-    if (appUrl != null) {
-      final appTarget = pageTargets.where((t) {
-        final url = (t as Map)['url'] as String? ?? '';
-        return url.startsWith(appUrl);
-      });
-      target = appTarget.isNotEmpty
-          ? appTarget.first as Map
-          : (pageTargets.isNotEmpty
-              ? pageTargets.first as Map
-              : targets.first as Map);
-    } else {
-      target = pageTargets.isNotEmpty
-          ? pageTargets.first as Map
-          : targets.first as Map;
-    }
-    final wsUrl = target['webSocketDebuggerUrl'] as String?;
-    if (wsUrl == null) {
-      throw StateError('No WebSocket URL in CDP target');
-    }
+    // Same target selection the console forwarder uses — see
+    // `cdp_console.dart`.
+    final wsUrl = await resolveCdpPageTarget(cdpPort, appUrl: appUrl);
 
     // Connect WebSocket and send Page.captureScreenshot.
     final ws = await WebSocket.connect(wsUrl);

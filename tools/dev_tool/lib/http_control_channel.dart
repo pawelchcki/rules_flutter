@@ -127,6 +127,8 @@ class HttpControlChannel {
         } else {
           await _handleNativeScreenshot(request, match.appId);
         }
+      } else if (request.method == 'GET' && _sessionLogsMatch(path) != null) {
+        await _handleLogs(request, _sessionLogsMatch(path)!);
       } else {
         request.response.statusCode = HttpStatus.notFound;
         request.response.headers.contentType = ContentType.json;
@@ -244,6 +246,88 @@ class HttpControlChannel {
     }
   }
 
+  /// Default page size for `/logs`, and the cap on a caller-supplied `limit`
+  /// beyond [AppLogStream]'s own.
+  static const _defaultLogLimit = 500;
+
+  /// How much a caller with no cursor gets: the tail, because "show me what
+  /// the app just printed" is the question an agent or a human almost always
+  /// arrives with.
+  static const _defaultLogTail = -200;
+
+  /// `GET /sessions/{appId}/logs?since=<cursor>&limit=<n>`.
+  ///
+  /// Cursor polling rather than a streaming response: a caller reads only what
+  /// it asks for, and there is no long-lived connection to manage on either
+  /// end. See the README for the full contract.
+  Future<void> _handleLogs(HttpRequest request, String appId) async {
+    Future<void> fail(int status, String error) async {
+      request.response.statusCode = status;
+      request.response.headers.contentType = ContentType.json;
+      request.response.write(json.encode({'error': error}));
+      await request.response.close();
+    }
+
+    final session = _findSession(appId);
+    if (session == null) {
+      return fail(HttpStatus.notFound, 'Unknown appId: $appId');
+    }
+
+    final params = request.uri.queryParameters;
+
+    // A malformed cursor is an error, not a reason to quietly serve the
+    // default: a caller polling with a typo'd cursor would otherwise re-read
+    // the tail forever and never notice.
+    final sinceRaw = params['since'];
+    final int since;
+    if (sinceRaw == null) {
+      since = _defaultLogTail;
+    } else {
+      final parsed = int.tryParse(sinceRaw);
+      if (parsed == null) {
+        return fail(HttpStatus.badRequest,
+            'Invalid `since`: "$sinceRaw" is not an integer. Use a cursor '
+            'from a previous `nextCursor`, 0 for the start of the buffer, or '
+            'a negative number to tail that many lines.');
+      }
+      since = parsed;
+    }
+
+    final limitRaw = params['limit'];
+    final int limit;
+    if (limitRaw == null) {
+      limit = _defaultLogLimit;
+    } else {
+      final parsed = int.tryParse(limitRaw);
+      if (parsed == null || parsed <= 0) {
+        return fail(HttpStatus.badRequest,
+            'Invalid `limit`: "$limitRaw" is not a positive integer.');
+      }
+      limit = parsed > _defaultLogLimit ? _defaultLogLimit : parsed;
+    }
+
+    final logs = session.appInstance.logs;
+    final page = logs.read(since, limit: limit);
+
+    request.response.statusCode = HttpStatus.ok;
+    request.response.headers.contentType = ContentType.json;
+    request.response.write(json.encode({
+      'lines': [
+        for (final line in page.lines)
+          {'i': line.index, 't': line.text, 'err': line.isError},
+      ],
+      'nextCursor': page.nextCursor,
+      // Lines lost between the requested cursor and this page…
+      'missed': page.missed,
+      // …versus lines evicted over the whole run.
+      'dropped': logs.dropped,
+      // True once the app's output source has ended — no more lines will ever
+      // arrive, so a poller can stop.
+      'closed': logs.isClosed,
+    }));
+    await request.response.close();
+  }
+
   /// Parse `/sessions/{appId}/screenshot/{type}` from a path.
   _ScreenshotMatch? _sessionScreenshotMatch(String path) {
     final match =
@@ -254,6 +338,13 @@ class HttpControlChannel {
       appId: Uri.decodeComponent(match.group(1)!),
       type: match.group(2)!,
     );
+  }
+
+  /// Parse `/sessions/{appId}/logs` from a path, returning the appId.
+  String? _sessionLogsMatch(String path) {
+    final match = RegExp(r'^/sessions/([^/]+)/logs$').firstMatch(path);
+    if (match == null) return null;
+    return Uri.decodeComponent(match.group(1)!);
   }
 }
 

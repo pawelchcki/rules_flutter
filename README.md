@@ -857,6 +857,33 @@ Propagated by `flutter_application`. Contains the outputs of the compilation pip
 
 The `tools/dev_tool/` directory contains `flutter_bazel`, a Dart program that handles the iterative development workflow: device management, app installation, hot reload, and hot restart. It speaks the `--machine` JSON-RPC protocol for IDE compatibility with existing Flutter IDE plugins (VS Code, IntelliJ).
 
+### App output
+
+A running app's console output — `print`, `debugPrint`, `NSLog`, Java stack traces, uncaught errors — is forwarded for the whole life of the run, starting before the VM service comes up so that startup failures are visible.
+
+Where it goes depends on the mode:
+
+| Mode | Destination |
+| --- | --- |
+| terminal (default) | the app's stdout → the tool's stdout, its stderr → the tool's stderr, matching `flutter run` |
+| `--machine` | `app.log` events. Nothing app-related is written to raw stdout, which belongs to the JSON-RPC stream |
+
+With more than one `-d`, terminal output is prefixed `[<device>] ` so an interleaved multi-device run stays readable — same convention as `flutter run -d all`. Machine mode never prefixes: each `app.log` event already carries its `appId`.
+
+Each platform has exactly **one** log source, because a Dart `print()` reaches both the process's stdout and the VM service's `Stdout` stream, and reading both would duplicate every line:
+
+| Platform | Source |
+| --- | --- |
+| macOS / Linux / Windows | the app process's stdout + stderr |
+| Android | `adb logcat`, filtered host-side to `flutter*`, `DartVM`, `AndroidRuntime`, `System.err` and fatal records |
+| iOS Simulator | a dedicated `simctl spawn log stream` scoped to the app process (separate from the stream used for VM-service discovery) |
+| iOS device | `devicectl --console` |
+| Chrome, DDC dev mode | the DWDS VM service's `Stdout`/`Stderr` streams |
+| Chrome, WASM / production JS | CDP `Runtime.consoleAPICalled` |
+| `attach` | the VM service's `Stdout`/`Stderr` streams — the app wasn't spawned here, so there is no process to read |
+
+**Known limitation, physical iOS devices.** `devicectl --console` does not flush the app's output when its stdout is a pipe rather than a terminal. A device run can therefore show markedly less output than the same app on a simulator or desktop. That is devicectl's behaviour, not a gap in the forwarding.
+
 ### Agent / external-tool control surface
 
 `flutter_bazel run` starts an HTTP control channel by default (disable with `--no-http-control-channel`). External tools — IDE integrations, AI coding agents, end-to-end test harnesses — drive the running app over this channel without needing a TTY.
@@ -875,6 +902,29 @@ Once the channel is up:
 | `/command?token=<token>` | `POST` | Run a machine-protocol method against a running session. Body: `{"method":"app.<X>", "params":{"appId":"...", ...}}`. |
 | `/sessions/{appId}/screenshot/flutter?token=<token>` | `GET` | PNG of the Flutter widget tree (`_flutter.screenshot` via VM service). |
 | `/sessions/{appId}/screenshot/native?token=<token>` | `GET` | PNG of the native window (`screencapture` / `scrot` / `adb screencap` / etc.). |
+| `/sessions/{appId}/logs?token=<token>` | `GET` | The app's console output, from a bounded ring buffer. See below. |
+
+**Reading logs.** `/logs` is a cursor-polling endpoint rather than a stream: there is no long-lived connection, and a caller reads exactly as much as it asks for.
+
+| `since` | meaning |
+| --- | --- |
+| omitted | tail the last 200 lines — what you want with no prior cursor |
+| `-N` | tail the last `N` lines |
+| `0` | everything still buffered, oldest first |
+| `N > 0` | resume at line `N` (feed back a previous `nextCursor`) |
+
+`limit` caps the page (default and maximum 500). A non-numeric `since`, or a non-positive `limit`, is a `400` rather than a silent fallback — a typo'd cursor would otherwise look like a working poll loop that re-reads the tail forever.
+
+```sh
+# Tail, then poll forward.
+curl -s "$URI/sessions/$APP/logs?token=$T"
+# {"lines":[{"i":812,"t":"flutter: meter -18dB","err":false}],
+#  "nextCursor":813,"missed":0,"dropped":0,"closed":false}
+
+curl -s "$URI/sessions/$APP/logs?token=$T&since=813"
+```
+
+`err` marks lines from an error channel. `missed` is non-zero when the requested cursor had already been evicted, so a poller learns it has a gap instead of reading a short page as though it were complete; `dropped` is the total evicted over the run. `closed` turns true once the app's output source has ended — no further lines can arrive, so a poll loop can stop. The buffer survives the app's exit, so a crashed app's final output is still readable.
 
 App-driving methods (proxied to the agent extensions registered from the generated plugin registrant, which the engine invokes before `main()` on every launch — so they survive hot restart):
 

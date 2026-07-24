@@ -9,7 +9,12 @@
 ///   app.start          — app is launching
 ///   app.debugPort      — VM service URI available
 ///   app.started        — app is running and ready for interaction
-///   app.log            — log output from the app
+///   app.log            — one line of the app's console output. `error` is
+///                        true for lines from an error channel (the process's
+///                        stderr, a VM-service `Stderr` event, `console.error`).
+///                        In machine mode this is the *only* way app output is
+///                        surfaced: writing it to raw stdout would interleave
+///                        non-JSON text into this protocol stream.
 ///   app.progress       — build/reload progress updates
 ///   app.stop           — app has stopped
 ///

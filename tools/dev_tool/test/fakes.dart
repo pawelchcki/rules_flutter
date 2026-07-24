@@ -62,14 +62,54 @@ class BufferSink implements IOSink {
   }
 }
 
+/// Decode the single machine-protocol message written to [sink].
+///
+/// The protocol wraps every message in a `[...]` array, so unwrapping is
+/// two steps; doing it here keeps the assertion in the test about the
+/// message rather than the envelope.
+Map<String, dynamic> decodeSingleEvent(BufferSink sink) {
+  final lines = sink.lines;
+  if (lines.length != 1) {
+    throw StateError('expected exactly one protocol line, got ${lines.length}: '
+        '$lines');
+  }
+  return (json.decode(lines.single) as List).single as Map<String, dynamic>;
+}
+
 /// A controllable fake [Process] for testing.
 class FakeProcess implements Process {
-  final StreamController<List<int>> _stdoutController =
-      StreamController<List<int>>.broadcast();
-  final StreamController<List<int>> _stderrController =
-      StreamController<List<int>>.broadcast();
+  final Completer<void> _stdoutAttached = Completer<void>();
+  final Completer<void> _stderrAttached = Completer<void>();
+
+  late final StreamController<List<int>> _stdoutController =
+      StreamController<List<int>>.broadcast(onListen: () {
+    if (!_stdoutAttached.isCompleted) _stdoutAttached.complete();
+  });
+  late final StreamController<List<int>> _stderrController =
+      StreamController<List<int>>.broadcast(onListen: () {
+    if (!_stderrAttached.isCompleted) _stderrAttached.complete();
+  });
+
+  /// Completes once the code under test is listening to both output streams.
+  ///
+  /// These are broadcast controllers, so anything emitted before a listener
+  /// attaches is dropped. Await this instead of pumping the event queue a
+  /// fixed number of times: a launch that does real I/O before subscribing
+  /// (creating temp dirs, awaiting an install) takes an unpredictable number
+  /// of turns to get there, which makes a pump-based barrier flaky.
+  Future<void> get outputAttached =>
+      Future.wait([_stdoutAttached.future, _stderrAttached.future]);
   final StringBuffer stdinBuffer = StringBuffer();
+  final StreamController<String> _stdinLines =
+      StreamController<String>.broadcast();
   final Completer<int> _exitCompleter = Completer<int>();
+
+  /// Lines written to this process's stdin, as they are written.
+  ///
+  /// Lets a test script a request/response protocol — e.g. replying to the
+  /// lldb commands the iOS device launch issues — rather than only asserting
+  /// on [stdinBuffer] afterwards.
+  Stream<String> get stdinLines => _stdinLines.stream;
 
   @override
   Stream<List<int>> get stdout => _stdoutController.stream;
@@ -78,7 +118,7 @@ class FakeProcess implements Process {
   Stream<List<int>> get stderr => _stderrController.stream;
 
   @override
-  IOSink get stdin => _FakeStdin(stdinBuffer);
+  IOSink get stdin => _FakeStdin(stdinBuffer, _stdinLines);
 
   @override
   int get pid => 12345;
@@ -113,12 +153,17 @@ class FakeProcess implements Process {
     _stdoutController.close();
     _stderrController.close();
   }
+
+  /// End stdout only, leaving stderr open — the shape of a process that is
+  /// still complaining after its normal output has finished.
+  Future<void> closeStdout() => _stdoutController.close();
 }
 
 class _FakeStdin implements IOSink {
   final StringBuffer _buffer;
+  final StreamController<String>? _lines;
 
-  _FakeStdin(this._buffer);
+  _FakeStdin(this._buffer, [this._lines]);
 
   @override
   Encoding encoding = utf8;
@@ -156,7 +201,10 @@ class _FakeStdin implements IOSink {
   void writeCharCode(int charCode) => _buffer.writeCharCode(charCode);
 
   @override
-  void writeln([Object? object = '']) => _buffer.writeln(object);
+  void writeln([Object? object = '']) {
+    _buffer.writeln(object);
+    if (_lines != null && !_lines!.isClosed) _lines!.add('$object');
+  }
 }
 
 /// A fake [VmService] for testing hot reload/restart.
@@ -192,6 +240,20 @@ class FakeVmService implements VmService {
 
   final StreamController<Event> _extController =
       StreamController<Event>.broadcast();
+  final StreamController<Event> _stdoutController =
+      StreamController<Event>.broadcast();
+  final StreamController<Event> _stderrController =
+      StreamController<Event>.broadcast();
+
+  /// Stream IDs passed to [streamListen], in call order.
+  final List<String> streamListens = [];
+
+  /// Stream IDs for which [streamListen] should report
+  /// `kStreamAlreadySubscribed` — what a real VM service does on re-subscribe.
+  final Set<String> alreadySubscribedStreams = {};
+
+  /// Stream IDs for which [streamListen] should fail with an unrelated error.
+  final Set<String> failingStreams = {};
 
   FakeVmService({
     this.isolates = const [],
@@ -207,6 +269,13 @@ class FakeVmService implements VmService {
   @override
   Future<Success> streamListen(String streamId) async {
     _checkAlive('streamListen');
+    streamListens.add(streamId);
+    if (alreadySubscribedStreams.contains(streamId)) {
+      throw RPCError('streamListen', 103, 'Stream already subscribed');
+    }
+    if (failingStreams.contains(streamId)) {
+      throw RPCError('streamListen', 104, 'Stream cannot be subscribed');
+    }
     return Success();
   }
 
@@ -215,6 +284,27 @@ class FakeVmService implements VmService {
 
   @override
   Stream<Event> get onExtensionEvent => _extController.stream;
+
+  @override
+  Stream<Event> get onStdoutEvent => _stdoutController.stream;
+
+  @override
+  Stream<Event> get onStderrEvent => _stderrController.stream;
+
+  /// Emit a `Stdout` event carrying [text], encoded the way the VM does.
+  void emitStdoutEvent(String text) {
+    _stdoutController.add(_logEvent(EventKind.kWriteEvent, text));
+  }
+
+  /// Emit a `Stderr` event carrying [text].
+  void emitStderrEvent(String text) {
+    _stderrController.add(_logEvent(EventKind.kWriteEvent, text));
+  }
+
+  Event _logEvent(String kind, String text) => Event(
+        kind: kind,
+        timestamp: 0,
+      )..bytes = base64.encode(utf8.encode(text));
 
   /// Simulate the underlying WebSocket dying.
   ///
@@ -403,6 +493,8 @@ class FakeVmService implements VmService {
   Future<void> dispose() async {
     disposed = true;
     await _extController.close();
+    await _stdoutController.close();
+    await _stderrController.close();
   }
 
   @override

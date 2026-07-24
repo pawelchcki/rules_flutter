@@ -164,6 +164,94 @@ void main() {
           await dt.dispose();
         }
       }, timeout: const Timeout(Duration(minutes: 4)));
+
+      // Regression: the dev tool used to cancel the app's stdout/stderr
+      // subscriptions the instant it matched the VM-service announcement, so
+      // every line the app printed afterwards was dropped. `lib/main.dart`
+      // emits `plugin_example_results …` via debugPrint from a FutureBuilder
+      // — i.e. well after `app.started` — which is squarely inside the window
+      // that was being lost. `test/verify_macos_app_test.dart` already proves
+      // the app emits the line when launched directly, so a failure here
+      // isolates to the dev tool's forwarding rather than the app.
+      test('app output reaches the client after launch', () async {
+        // Launched through the Bazel-built binary rather than `dart run`,
+        // because this test asserts stdout carries nothing but protocol
+        // envelopes. `dart run` prepends its own SDK chatter ("Running build
+        // hooks...") to stdout before `main()` is ever reached, which would
+        // fail the assertion for a reason that has nothing to do with the dev
+        // tool. The compiled binary is also what users actually run.
+        final dt = await startDevTool(
+          workspace: workspace,
+          target: ':plugin_macos',
+          device: 'macos',
+          useBazelBuiltBinary: true,
+        );
+        try {
+          await dt.waitForEvent('app.started');
+
+          final summary = await dt.waitForAppLog(
+            'plugin_example_results',
+            timeout: const Duration(seconds: 90),
+          );
+          // Not just "a line arrived" — the right line, with real content.
+          expect(summary, contains('appName=Plugin Example'));
+          expect(summary, contains('documentsPath=/'));
+
+          // In machine mode stdout is the JSON-RPC stream. App output must
+          // travel as app.log events and never as raw text, which would
+          // corrupt what an IDE is parsing.
+          expect(dt.nonProtocolStdoutLines, isEmpty,
+              reason: 'raw text on the machine-protocol stdout stream');
+
+          await dt.sendCommand(1, 'app.stop');
+        } finally {
+          await dt.dispose();
+        }
+      }, timeout: const Timeout(Duration(minutes: 4)));
+
+      test('app output is readable from the /logs control endpoint', () async {
+        final dt = await startDevTool(
+          workspace: workspace,
+          target: ':plugin_macos',
+          device: 'macos',
+        );
+        try {
+          await dt.waitForEvent('app.started');
+          await dt.waitForHttpControl();
+          await dt.waitForAppLog('plugin_example_results',
+              timeout: const Duration(seconds: 90));
+          final appId = dt.appId!;
+
+          // Default (no cursor) tails, which is what a tool arriving mid-run
+          // wants.
+          final tail = await dt.httpLogs(appId);
+          final tailTexts = [
+            for (final l in tail['lines'] as List) (l as Map)['t'] as String,
+          ];
+          expect(tailTexts.any((t) => t.contains('plugin_example_results')),
+              isTrue,
+              reason: 'the endpoint must serve the same output the machine '
+                  'protocol emitted');
+
+          // Resuming from nextCursor must not re-serve what was just read.
+          final resumed =
+              await dt.httpLogs(appId, since: tail['nextCursor'] as int);
+          final resumedIndices = [
+            for (final l in resumed['lines'] as List) (l as Map)['i'] as int,
+          ];
+          final tailIndices = [
+            for (final l in tail['lines'] as List) (l as Map)['i'] as int,
+          ];
+          expect(resumedIndices.toSet().intersection(tailIndices.toSet()),
+              isEmpty,
+              reason: 'a poll loop must not re-read lines it already has');
+          expect(tail['missed'], 0);
+
+          await dt.sendCommand(1, 'app.stop');
+        } finally {
+          await dt.dispose();
+        }
+      }, timeout: const Timeout(Duration(minutes: 4)));
     },
     skip: !Platform.isMacOS ? 'macOS only' : null,
   );

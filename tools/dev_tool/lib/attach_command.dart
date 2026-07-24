@@ -8,6 +8,7 @@ import 'dart:io';
 
 import 'package:args/args.dart';
 
+import 'app_log_sink.dart';
 import 'bazel.dart';
 import 'command_runner.dart';
 import 'compiler_config.dart';
@@ -20,6 +21,7 @@ import 'run_command.dart';
 import 'session.dart';
 import 'toolchain_info.dart';
 import 'vm_service_client.dart';
+import 'vm_service_logs.dart';
 
 class AttachCommand {
   static final parser = ArgParser()
@@ -157,9 +159,32 @@ class AttachCommand {
       );
       protocol.appStarted(appId);
 
+      final appInstance = _AttachedAppInstance(uri);
+
+      // The dev tool didn't spawn this app, so there are no pipes to read and
+      // no logcat to tail — the VM service is the only log source. That also
+      // makes it safe: on a device the tool launched itself, subscribing here
+      // would double every line already coming from the process.
+      final service = vmClient.service;
+      if (service != null) {
+        try {
+          await forwardVmServiceLogs(service, appInstance.logs);
+        } catch (e) {
+          stderr.writeln(
+              'Warning: could not forward app output from $uri ($e). '
+              'The session continues; app logs will not appear.');
+        }
+      }
+      appInstance.logs.lines.listen(appLogSinkFor(
+        protocol: protocol,
+        appId: appId,
+        deviceName: deviceName,
+        multiDevice: debugUrls.length > 1,
+      ));
+
       sessions.add(DeviceSession(
         device: _AttachedPseudoDevice(deviceName),
-        appInstance: _AttachedAppInstance(uri),
+        appInstance: appInstance,
         vmClient: vmClient,
         appId: appId,
       ));
@@ -244,7 +269,8 @@ class AttachCommand {
         'text': 'HTTP control channel:\n'
             '  POST $base/command?token=$t  — execute a machine protocol command\n'
             '  GET  $base/sessions/{appId}/screenshot/flutter?token=$t  — Flutter widget tree screenshot (PNG)\n'
-            '  GET  $base/sessions/{appId}/screenshot/native?token=$t  — native OS screenshot (PNG)',
+            '  GET  $base/sessions/{appId}/screenshot/native?token=$t  — native OS screenshot (PNG)\n'
+            '  GET  $base/sessions/{appId}/logs?token=$t  — app console output (tails by default; &since=<cursor> to poll)',
         'uri': base.toString(),
         'token': t,
       });
@@ -287,12 +313,14 @@ class _AttachedPseudoDevice extends Device {
   String get name => _name;
 
   @override
-  Future<AppInstance> launch(String appPath) =>
+  Future<AppInstance> launch(String appPath, {AppLogListener? onLog}) =>
       throw UnsupportedError('Attach mode does not launch apps');
 
   @override
   Future<void> stop(AppInstance instance) async {
-    // Nothing to stop — the app was started externally.
+    // The app was started externally, so there is nothing to kill — but the
+    // log stream is ours and its subscribers need to complete.
+    await instance.logs.close();
   }
 }
 

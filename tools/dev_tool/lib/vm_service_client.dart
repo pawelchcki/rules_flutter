@@ -20,6 +20,14 @@ typedef VmServiceConnector = Future<VmService> Function(String wsUri);
 class VmServiceClient {
   final VmServiceConnector _connector;
   VmService? _service;
+
+  /// The live `package:vm_service` connection, or null before [connect] (or
+  /// after [disconnect]).
+  ///
+  /// Exposed so callers can subscribe to streams this client doesn't wrap —
+  /// notably `Stdout`/`Stderr` for app output forwarding in attach mode, where
+  /// the VM service is the only available log source.
+  VmService? get service => _service;
   String? _mainIsolateId;
 
   /// The HTTP address of the VM service (for devFS file uploads).

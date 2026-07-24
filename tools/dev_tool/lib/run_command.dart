@@ -18,6 +18,7 @@ import 'package:webkit_inspection_protocol/webkit_inspection_protocol.dart'
     show ChromeConnection;
 
 import 'agent_command.dart';
+import 'app_log_sink.dart';
 import 'bazel.dart';
 import 'command_runner.dart';
 import 'compiler_config.dart';
@@ -38,6 +39,7 @@ import 'reload_strategy.dart';
 import 'session.dart';
 import 'toolchain_info.dart';
 import 'vm_service_client.dart';
+import 'vm_service_logs.dart';
 import 'web_bootstrap.dart';
 import 'web_module_server.dart';
 
@@ -723,9 +725,19 @@ class RunCommand {
         'device': device.name,
       });
 
+      // Attached before the launch so startup output — including whatever an
+      // app prints on its way to crashing before it ever binds a VM service —
+      // is visible as it happens rather than after discovery gives up.
+      final logSink = appLogSinkFor(
+        protocol: protocol,
+        appId: appId,
+        deviceName: device.name,
+        multiDevice: devices.length > 1,
+      );
+
       final AppInstance appInstance;
       try {
-        appInstance = await device.launch(appFile);
+        appInstance = await device.launch(appFile, onLog: logSink);
       } on StateError catch (e) {
         throw DevToolException('Launch failed on ${device.name}: ${e.message}');
       }
@@ -885,6 +897,7 @@ class RunCommand {
           appUrl: webModuleServer.uri.toString(),
         );
         reloadStrategy = dwdsReload;
+        VmServiceLogForwarder? webLogForwarder;
 
         webModuleServer.connectedApps!.listen((appConnection) async {
           logger.info({
@@ -900,8 +913,19 @@ class RunCommand {
               scheme: dwdsUri.scheme == 'https' ? 'wss' : 'ws',
               path: '${dwdsUri.path}ws',
             );
-            dwdsReload
-                .attachVmService(await vm.vmServiceConnectUri(wsUri.toString()));
+            final webVmService = await vm.vmServiceConnectUri(wsUri.toString());
+            dwdsReload.attachVmService(webVmService);
+
+            // A browser page has no process pipes, so the VM service is the
+            // app's log source here. Re-attached on every connection because a
+            // web hot restart is a page reload, which replaces the isolate and
+            // its VM service; without this, output stops after the first
+            // restart.
+            final session = sessions.firstWhere((s) => s.device is WebDevice);
+            await webLogForwarder?.dispose();
+            webLogForwarder = await forwardVmServiceLogs(
+                webVmService, session.appInstance.logs);
+
             logger.info({
               'message': 'dwds_vm_service',
               'text': 'DWDS VM service ready — hot reload enabled.',
@@ -1146,8 +1170,20 @@ class RunCommand {
                     for (final s in sessions) {
                       if (s.appInstance.vmServiceUri == null) continue;
                       await s.vmClient?.disconnect();
+                      // Stopping closes the old instance's log stream, so the
+                      // sink attached below is the only live one — the
+                      // relaunched app's output never doubles up with the
+                      // previous instance's.
                       await s.device.stop(s.appInstance);
-                      final inst = await s.device.launch(appFile);
+                      final inst = await s.device.launch(
+                        appFile,
+                        onLog: appLogSinkFor(
+                          protocol: protocol,
+                          appId: s.appId,
+                          deviceName: s.device.name,
+                          multiDevice: sessions.length > 1,
+                        ),
+                      );
                       VmServiceClient? client;
                       if (inst.vmServiceUri != null) {
                         for (var attempt = 0; attempt < 5; attempt++) {
@@ -1255,7 +1291,8 @@ class RunCommand {
         'text': 'HTTP control channel:\n'
             '  POST $base/command?token=$t  — execute a machine protocol command\n'
             '  GET  $base/sessions/{appId}/screenshot/flutter?token=$t  — Flutter widget tree screenshot (PNG)\n'
-            '  GET  $base/sessions/{appId}/screenshot/native?token=$t  — native OS screenshot (PNG)',
+            '  GET  $base/sessions/{appId}/screenshot/native?token=$t  — native OS screenshot (PNG)\n'
+            '  GET  $base/sessions/{appId}/logs?token=$t  — app console output (tails by default; &since=<cursor> to poll)',
         'uri': base.toString(),
         'token': t,
       });

@@ -70,6 +70,48 @@ dart_test(
 )
 
 dart_test(
+    name = "app_log_test",
+    srcs = ["test/fakes.dart"],
+    main = "test/app_log_test.dart",
+    deps = [
+        ":lib",
+        "@dev_tool_deps//:test",
+        "@dev_tool_deps//:vm_service",
+    ],
+)
+
+dart_test(
+    name = "app_log_sink_test",
+    srcs = ["test/fakes.dart"],
+    main = "test/app_log_sink_test.dart",
+    deps = [
+        ":lib",
+        "@dev_tool_deps//:test",
+        "@dev_tool_deps//:vm_service",
+    ],
+)
+
+dart_test(
+    name = "cdp_console_test",
+    main = "test/cdp_console_test.dart",
+    deps = [
+        ":lib",
+        "@dev_tool_deps//:test",
+    ],
+)
+
+dart_test(
+    name = "vm_service_logs_test",
+    srcs = ["test/fakes.dart"],
+    main = "test/vm_service_logs_test.dart",
+    deps = [
+        ":lib",
+        "@dev_tool_deps//:test",
+        "@dev_tool_deps//:vm_service",
+    ],
+)
+
+dart_test(
     name = "device_test",
     srcs = ["test/fakes.dart"],
     main = "test/device_test.dart",

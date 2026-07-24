@@ -53,6 +53,10 @@ class DevToolProcess {
   final Process process;
   final List<Map<String, dynamic>> events = [];
   final List<String> stderrLines = [];
+
+  /// Stdout lines that were not machine-protocol envelopes. Must stay empty in
+  /// `--machine` mode; see the listener in the constructor.
+  final List<String> nonProtocolStdoutLines = [];
   final StreamController<Map<String, dynamic>> _eventController =
       StreamController.broadcast();
   final StreamController<String> _stderrController =
@@ -66,17 +70,34 @@ class DevToolProcess {
         .transform(const LineSplitter())
         .listen((line) {
       // Machine protocol wraps each message in [...].
-      if (line.startsWith('[{') && line.endsWith('}]')) {
+      //
+      // Anything on this stream that isn't an envelope is corruption an IDE
+      // would choke on. It is recorded rather than silently skipped: the dev
+      // tool used to write app output raw to stdout during VM-service
+      // discovery, and this harness dropping it on the floor is why that went
+      // unnoticed for so long.
+      //
+      // A prefix is tolerated but still recorded. When the tool is launched
+      // via `dart run` (rather than the compiled binary), the Dart SDK can
+      // print "Running build hooks..." with no trailing newline, so the first
+      // envelope arrives glued to it. Discarding the whole line loses
+      // `daemon.connected` — the event every machine-protocol test waits for
+      // first — which showed up as unexplained timeouts across the suite.
+      final start = line.indexOf('[{');
+      if (start >= 0 && line.endsWith('}]')) {
+        if (start > 0) nonProtocolStdoutLines.add(line.substring(0, start));
         try {
-          final list = json.decode(line) as List;
+          final list = json.decode(line.substring(start)) as List;
           for (final item in list) {
             final msg = item as Map<String, dynamic>;
             events.add(msg);
             _eventController.add(msg);
           }
         } catch (_) {
-          // Not JSON — skip.
+          nonProtocolStdoutLines.add(line);
         }
+      } else if (line.isNotEmpty) {
+        nonProtocolStdoutLines.add(line);
       }
     });
     _stderrSub = process.stderr
@@ -121,6 +142,70 @@ class DevToolProcess {
         .where((msg) => msg['event'] == eventName)
         .first
         .timeout(timeout);
+  }
+
+  /// Every `app.log` line seen so far.
+  List<String> get appLogLines => [
+        for (final e in events)
+          if (e['event'] == 'app.log') e['params']?['log'] as String? ?? '',
+      ];
+
+  /// Wait for an `app.log` event whose text contains [needle].
+  ///
+  /// App output is only visible in machine mode as `app.log` — raw text on
+  /// stdout would corrupt the JSON-RPC stream, and [DevToolProcess] discards
+  /// non-`[{…}]` lines for exactly that reason. So this is the assertion that
+  /// actually proves the dev tool forwards a running app's output.
+  Future<String> waitForAppLog(
+    Pattern needle, {
+    Duration timeout = const Duration(seconds: 120),
+  }) {
+    bool matches(String log) => log.contains(needle);
+
+    for (final log in appLogLines) {
+      if (matches(log)) return Future.value(log);
+    }
+    return _eventController.stream
+        .where((msg) => msg['event'] == 'app.log')
+        .map((msg) => msg['params']?['log'] as String? ?? '')
+        .where(matches)
+        .first
+        .timeout(
+          timeout,
+          onTimeout: () => throw StateError(
+            'No app.log line matching "$needle" within '
+            '${timeout.inSeconds}s. Saw ${appLogLines.length} app.log '
+            'line(s): ${appLogLines.take(20).join(" | ")}',
+          ),
+        );
+  }
+
+  /// Fetch a page of app output from the HTTP control channel's `/logs`
+  /// endpoint. [since] follows the endpoint's cursor rules: omitted tails,
+  /// negative tails that many lines, 0 reads from the start, positive resumes.
+  Future<Map<String, dynamic>> httpLogs(String appId, {int? since, int? limit}) async {
+    final info = httpControl;
+    if (info == null) throw StateError('HTTP control channel not available');
+    final client = HttpClient();
+    try {
+      final url = info.uri.replace(
+        path: '/sessions/$appId/logs',
+        queryParameters: {
+          'token': info.token,
+          if (since != null) 'since': '$since',
+          if (limit != null) 'limit': '$limit',
+        },
+      );
+      final request = await client.getUrl(url);
+      final response = await request.close();
+      final body = await utf8.decoder.bind(response).join();
+      if (response.statusCode != 200) {
+        throw StateError('logs failed (${response.statusCode}): $body');
+      }
+      return json.decode(body) as Map<String, dynamic>;
+    } finally {
+      client.close();
+    }
   }
 
   /// Extract the HTTP control channel info from structured JSON stderr lines.

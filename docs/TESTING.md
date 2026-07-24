@@ -427,4 +427,43 @@ These are not Bazel tests — they're standalone Dart scripts for manual investi
 | dev_tool (unit) | `cd tools/dev_tool && dart test --exclude-tags=e2e` |
 | dev_tool (e2e) | `cd tools/dev_tool && dart test test/e2e/ --tags=e2e --concurrency=1` |
 | dev_tool reload paths (`run_command.dart`, `vm_service_client.dart`, `hot_reload/**`, `session.dart`) | dev_tool unit + e2e **and** manual hot reload **and** hot restart — see "Hot reload / hot restart (manual)" |
+| dev_tool app-output forwarding (`app_log.dart`, `app_log_sink.dart`, `cdp_console.dart`, `vm_service_logs.dart`, `device.dart` launch paths) | dev_tool unit + e2e **and** the manual per-platform checks below |
 | Everything | All sections above |
+
+### App output forwarding (manual)
+
+Unit tests cover the buffering, filtering and routing; they cannot prove that a
+real device's output actually arrives. Each launch path has its own log source
+(see README § Dev Tool → App output), so each one needs its own check. The bar
+is **"I saw the app's own output in my terminal"**, not "the tests passed".
+
+```sh
+# macOS — the reference case. plugin_example prints `plugin_example_results …`
+# from a FutureBuilder, i.e. well after the VM service comes up.
+cd e2e/plugin_example
+flutter_bazel run -t :plugin_macos -d macos
+#  → expect the `plugin_example_results …` line, and output that keeps
+#    flowing rather than stopping right after the VM-service line.
+
+# Machine mode: app output must travel as app.log and stdout must stay pure.
+flutter_bazel run -t :plugin_macos -d macos --machine \
+  | tee /tmp/machine.log >/dev/null
+grep -c '"event":"app.log"' /tmp/machine.log     # > 0
+grep -vc '^\[{' /tmp/machine.log                 # 0 — no raw text on stdout
+```
+
+Then per platform: `-d chrome` (both DDC and `--wasm`), `-d ios-simulator`,
+`-d ios` on attached hardware, and an Android device or emulator. On Android
+also confirm a deliberately thrown Java exception shows up as
+`E/AndroidRuntime` — the old adb-level `flutter:I *:S` filter silenced those
+entirely, so their absence used to look like normal operation.
+
+Finally, check the pipe-pressure case, which is what the forwarding rewrite
+removes: run an app that prints continuously well past 64 KB and confirm it
+neither stalls nor dies. An unread pipe is the failure mode that only shows up
+under sustained logging.
+
+The `/logs` control endpoint is exercised by
+`tools/dev_tool/test/e2e/plugin_example_e2e_test.dart`; to check it by hand,
+tail it, then poll `nextCursor` twice and confirm the pages neither overlap nor
+gap.
