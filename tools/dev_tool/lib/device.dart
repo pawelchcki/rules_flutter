@@ -1357,12 +1357,6 @@ class IOSDevice extends Device {
     // banners are few, and dropping the stderr channel would drop the app's
     // own output with it.
     //
-    // Caveat, and it is a real one: `devicectl --console` does not flush the
-    // app's output when its stdout is a pipe rather than a terminal, so a
-    // physical-device run can legitimately show far less output than the same
-    // app on a simulator or desktop. That is a devicectl behaviour, not a gap
-    // in the forwarding below — see README § Dev Tool.
-    //
     // stderr is deliberately *not* flagged as an error channel: devicectl
     // routes the app's ordinary console output there, so treating that channel
     // as errors would mark every `print()` as one.

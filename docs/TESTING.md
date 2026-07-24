@@ -22,6 +22,29 @@ E2e tests (spawn real builds, require platform toolchains — run sequentially):
 cd tools/dev_tool && dart test test/e2e/ --tags=e2e --concurrency=1
 ```
 
+### macOS permission prerequisites
+
+Two e2e groups drive the OS, not just the app, and macOS gates both behind
+permissions granted to **the terminal (or IDE) that launches the tests** —
+neither can be granted programmatically. Grant them in
+System Settings → Privacy & Security:
+
+| Permission | Needed by | Symptom when missing |
+|---|---|---|
+| **Screen Recording** | `macos_e2e_test.dart` and `multi_window_e2e_test.dart` native-screenshot tests (ScreenCaptureKit) | Test **fails**: `Failed to start stream due to audio/video capture failure` / `No capturable windows for the target pid` |
+| **Accessibility** | `agent_e2e_test.dart` occlusion test, which minimizes the app window to pause the embedder's vsync | Test **skips**: `could not minimize the window (no Accessibility permission?)` |
+
+These dependencies are essential rather than incidental: there is no way to
+capture a real window without Screen Recording, and no way to put the embedder
+into its frames-paused state — the condition the occlusion regression is about
+— without OS-level window control. Stubbing either would mean the test no
+longer exercises the behaviour it exists to guard.
+
+Note the asymmetry: a missing Screen Recording permission fails loudly, while a
+missing Accessibility permission skips. A skip is easy to overlook in a long
+run, so check for `~` in the summary line before treating the agent suite as
+fully green.
+
 ### Dev tool e2e test matrix
 
 | Test file | Platform | What it validates |
@@ -33,7 +56,7 @@ cd tools/dev_tool && dart test test/e2e/ --tags=e2e --concurrency=1
 | `attach_e2e_test.dart` | macOS | Launch app externally → attach → VM service connects |
 | `dart_defines_e2e_test.dart` | macOS | `--dart-define` reaches the app (comma-in-value intact) and survives a hot reload (frontend_server -D replay) |
 | `agent_e2e_test.dart` | macOS | Full `app.*` agent surface (tap/enterText/getText/…), and that it still works **after `app.restart`** (engine-hook registrant re-registers extensions) |
-| `plugin_example_e2e_test.dart` | macOS/iOS-sim/Android | Plugin apps render non-blank frames; Dart plugin registration survives `app.restart` (macOS) |
+| `plugin_example_e2e_test.dart` | macOS/iOS-sim/Android/Chrome | Plugin apps render non-blank frames; Dart plugin registration survives `app.restart` (macOS); web plugins register in both DDC and `--wasm` dev mode (Chrome) |
 
 ### Dev tool screenshot mechanisms
 

@@ -597,6 +597,13 @@ def _flutter_web_bundle_impl(ctx):
             "frontendServer": flutter_sdk_info.frontend_server.path,
             "patchedSdkRoot": flutter_sdk_info.platform_kernel_dill.path.rsplit("/", 1)[0],
             "appEntrypoint": app_entrypoint,
+            # The generated web plugin registrant (`registerPlugins()`). The
+            # bundled build reaches it through the wrapper main's relative
+            # import; DDC dev mode builds its own synthetic entrypoint, so the
+            # dev tool needs the path named explicitly — it stages the file
+            # beside that entrypoint and imports it the same way. Empty when
+            # the app has no web plugins.
+            "webPluginRegistrant": registrant.path if registrant else "",
             # Merged user defines (attr + extra_dart_defines flag). The dev
             # tool replays these as -D on its resident frontend_server so
             # hot reload/restart recompiles keep the same environment.
@@ -624,6 +631,13 @@ def _flutter_web_bundle_impl(ctx):
 
         # Include package_config in debug outputs.
         ddc_files.append(config_file)
+
+        # The web plugin registrant is otherwise only an input to the
+        # dart2wasm/dart2js compile actions; declaring it a top-level debug
+        # output guarantees it is materialized locally for the dev tool to
+        # stage next to its synthetic entrypoint.
+        if registrant:
+            ddc_files.append(registrant)
 
         return [DefaultInfo(files = depset([output_dir] + ddc_files))]
 

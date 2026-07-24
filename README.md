@@ -882,7 +882,7 @@ Each platform has exactly **one** log source, because a Dart `print()` reaches b
 | Chrome, WASM / production JS | CDP `Runtime.consoleAPICalled` |
 | `attach` | the VM service's `Stdout`/`Stderr` streams — the app wasn't spawned here, so there is no process to read |
 
-**Known limitation, physical iOS devices.** `devicectl --console` does not flush the app's output when its stdout is a pipe rather than a terminal. A device run can therefore show markedly less output than the same app on a simulator or desktop. That is devicectl's behaviour, not a gap in the forwarding.
+**Physical iOS devices.** `devicectl --console` splits its output: its own progress messages go to stdout, the app's console output to stderr. Both are forwarded, and neither channel is treated as an error channel for that reason. This path is exercised by unit tests against a faked devicectl/lldb sequence but is **not covered by an automated test on real hardware**, so treat device-side output as the least-proven of the platforms here.
 
 ### Agent / external-tool control surface
 

@@ -575,22 +575,29 @@ class RunCommand {
         final syntheticMain =
             File(p.join(syntheticDir.path, 'web_entrypoint.dart'));
 
-        // Check for plugin registrant in the build output.
-        String? pluginRegistrant;
-        for (final f in result.outputFiles) {
-          if (f.endsWith('_web_plugin_registrant.dart') ||
-              f.endsWith('generated_plugin_registrant.dart')) {
-            pluginRegistrant = f;
-            break;
-          }
+        // Stage the build's web plugin registrant next to the synthetic
+        // entrypoint and import it relatively — exactly what Flutter's
+        // `resident_web_runner` does (`web_plugin_registrant.dart` written
+        // into the same generated-entrypoint directory). `syntheticDir` is the
+        // first `--filesystem-root`, so `org-dartlang-app:/web_entrypoint.dart`
+        // resolves the sibling import there. The registrant's own
+        // `package:` imports resolve through the frontend server's
+        // package_config like any other library.
+        //
+        // The path is named explicitly by the build in `_dev_config.json`;
+        // nothing here derives or searches for a filename.
+        String? pluginRegistrantImport;
+        if (devConfig.webPluginRegistrant.isNotEmpty) {
+          const stagedName = 'web_plugin_registrant.dart';
+          File(p.join(syntheticDir.path, stagedName)).writeAsStringSync(
+              File(devConfig.webPluginRegistrant).readAsStringSync());
+          pluginRegistrantImport = stagedName;
         }
 
         syntheticMain.writeAsStringSync(
           generateSyntheticMainDart(
             appEntrypoint: devConfig.appEntrypoint,
-            pluginRegistrantEntrypoint: pluginRegistrant != null
-                ? 'package:${packageNameFromEntrypoint(devConfig.appEntrypoint)}/generated_plugin_registrant.dart'
-                : null,
+            pluginRegistrantEntrypoint: pluginRegistrantImport,
           ),
         );
 
@@ -1356,15 +1363,6 @@ class RunCommand {
     }
   }
 
-}
-
-/// The package name from a `package:<name>/...` entrypoint URI, or null.
-String? packageNameFromEntrypoint(String entrypoint) {
-  const prefix = 'package:';
-  if (!entrypoint.startsWith(prefix)) return null;
-  final rest = entrypoint.substring(prefix.length);
-  final slash = rest.indexOf('/');
-  return slash > 0 ? rest.substring(0, slash) : null;
 }
 
 /// Categorize build output files by type.

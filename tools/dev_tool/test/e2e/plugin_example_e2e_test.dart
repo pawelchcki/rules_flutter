@@ -277,6 +277,61 @@ void main() {
     skip: !Platform.isMacOS ? 'macOS only (needs Xcode Simulator)' : null,
   );
 
+  // -- Web / Chrome -----------------------------------------------------
+  //
+  // The web registrant is a build artifact of `flutter_web_bundle`. The
+  // bundled build reaches it through the wrapper main it compiles in; DDC
+  // dev mode compiles a *synthetic* entrypoint instead, so the registrant
+  // has to be staged beside it and imported explicitly. When that wiring
+  // is missing the app still launches and renders — it just answers every
+  // plugin call with `MissingPluginException` — which is why the assertion
+  // here is on the app's own diagnostic line, not on a screenshot.
+  group(
+    'Web e2e',
+    () {
+      /// The app's single diagnostic line, forwarded as `app.log`.
+      Future<String> pluginResults(List<String> extraArgs) async {
+        final dt = await startDevTool(
+          workspace: workspace,
+          target: ':plugin_web',
+          device: 'chrome',
+          extraArgs: extraArgs,
+        );
+        try {
+          return await dt.waitForAppLog('plugin_example_results',
+              timeout: const Duration(minutes: 4));
+        } finally {
+          await dt.dispose();
+        }
+      }
+
+      void expectPluginsRegistered(String line) {
+        expect(line, isNot(contains('MissingPluginException')),
+            reason: 'method-channel web plugins (package_info_plus, '
+                'url_launcher) must be registered');
+        expect(line, contains('greeting=Hello from GreetingPlugin!'),
+            reason: 'the hand-written web plugin must be registered');
+        expect(line, contains('appName=plugin_example'));
+        expect(line, contains('launchOk=launch ok'));
+      }
+
+      // Regression: the DDC synthetic entrypoint was generated with neither
+      // the registrant import nor the `registerPlugins:` callback, because
+      // the registrant was not among the target's outputs and the dev tool
+      // derived an unresolvable `package:` URI for it anyway.
+      test('web plugins register in DDC dev mode', () async {
+        expectPluginsRegistered(await pluginResults(const []));
+      }, timeout: const Timeout(Duration(minutes: 6)));
+
+      // WASM dev mode serves the Bazel-built bundle verbatim, so it shares
+      // the bundled build's registration path. Asserted so the two web dev
+      // modes can never silently diverge.
+      test('web plugins register in WASM dev mode', () async {
+        expectPluginsRegistered(await pluginResults(const ['--wasm']));
+      }, timeout: const Timeout(Duration(minutes: 6)));
+    },
+  );
+
   // -- Android ----------------------------------------------------------
   //
   // Operates against whatever `adb devices` exposes — emulator or

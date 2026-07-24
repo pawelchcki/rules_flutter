@@ -228,6 +228,16 @@ class DevConfig {
   /// firing after hot restart. Absolutized by [parseDevConfig].
   final String dartPluginRegistrant;
 
+  /// Absolute path to the generated Flutter **web** plugin registrant
+  /// (`registerPlugins()`), or `''` when the app has no web plugins.
+  ///
+  /// Distinct from [dartPluginRegistrant]: the native registrant is injected
+  /// into the isolate via `--source` + `-Dflutter.dart_plugin_registrant` and
+  /// invoked by the engine before `main()`, while the web registrant is
+  /// imported by the synthetic web entrypoint and called from
+  /// `ui_web.bootstrapEngine(registerPlugins: …)`.
+  final String webPluginRegistrant;
+
   DevConfig({
     required this.engineRevision,
     required this.flutterVersion,
@@ -244,6 +254,7 @@ class DevConfig {
     this.sourcePackages = const [],
     this.dartDefines = const [],
     this.dartPluginRegistrant = '',
+    this.webPluginRegistrant = '',
   });
 
   /// Generated files as `{package: URI → absolute path}` for reload
@@ -277,6 +288,7 @@ class DevConfig {
       generatedSourceUris: strList('generatedSourceUris'),
       dartDefines: strList('dartDefines'),
       dartPluginRegistrant: (json['dartPluginRegistrant'] as String?) ?? '',
+      webPluginRegistrant: (json['webPluginRegistrant'] as String?) ?? '',
       sourcePackages: [
         for (final e in (json['sourcePackages'] as List?) ?? const [])
           (
@@ -345,6 +357,7 @@ DevConfig parseDevConfig(String path) {
       'patchedSdkRoot',
       'devPackageConfig',
       'dartPluginRegistrant',
+      'webPluginRegistrant',
     ]) {
       final value = json[key];
       if (value is String && value.isNotEmpty) json[key] = abs(value);
