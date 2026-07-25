@@ -888,9 +888,13 @@ Each platform has exactly **one** log source, because a Dart `print()` reaches b
 | Chrome, WASM / production JS | CDP `Runtime.consoleAPICalled` |
 | `attach` | the VM service's `Stdout`/`Stderr` streams — the app wasn't spawned here, so there is no process to read |
 
-**Known limitation, physical iOS devices.** App output does **not** currently reach you on a physical device, and consequently neither does the VM service URI — so `flutter_bazel run -d ios` gives you no hot reload on real hardware. Verified on an iPhone 12 Pro: `devicectl --console` delivers its own progress messages to a pipe (`Acquired tunnel connection…`, `Launched application with…`) but not the app's stdout, so the engine's `Dart VM service is listening on …` announcement never arrives.
+**Known regression, physical iOS devices.** App output does not currently reach you on a physical device, and neither does the VM service URI — so `flutter_bazel run -d ios` gives no hot reload on real hardware. Verified on an iPhone 12 Pro under Xcode 26.6: `devicectl --console` delivers its own progress messages (`Acquired tunnel connection…`, `Launched application with…`) but not the app's stdout, so the engine's `Dart VM service is listening on …` announcement never arrives.
 
-This is a design gap on our side rather than a devicectl quirk: `flutter_tools` does not parse `devicectl --console` for this at all. It races two other mechanisms — mDNS (`MDnsVmServiceDiscovery`, which also covers wireless devices) and device logs via `idevicesyslog` — see `ios/devices.dart`. Adopting one of those is the fix; the simulator, desktop, Android and web paths are unaffected.
+**This used to work** — commit `30b8c3b` (2026-03-25) established discovery by reading devicectl's stderr, and it was verified at the time. What changed is the surrounding platform, not this code. Flutter's own tree documents the same era: on a CoreDevice with Xcode ≥ 26 it now selects a combined `devicectlAndLldb` log source, noting that `idevicesyslog` "stopped working with at least Xcode 26."
+
+Re-adding the `script -t 0 /dev/null` pty wrapper that `flutter_tools` uses (`ios/core_devices.dart`, to "convince devicectl it has a terminal attached in order to redirect stdout") did **not** restore output here, so buffering is not the whole story.
+
+The likely fix is to adopt what current `flutter_tools` does rather than extend this path: race **mDNS** (`MDnsVmServiceDiscovery`, which also covers wireless devices) against device logs, and treat lldb as a first-class log source alongside devicectl. Note mDNS discovery is gated on the device's Local Network permission prompt — flutter_tools has `throwOnMissingLocalNetworkPermissionsError` for exactly that. Simulator, desktop, Android and web are unaffected.
 
 ### Agent / external-tool control surface
 

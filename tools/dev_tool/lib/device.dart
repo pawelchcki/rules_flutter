@@ -1335,7 +1335,15 @@ class IOSDevice extends Device {
     //   5. Resume
     //   6. Discover VM service URI from devicectl --console stdout
 
-    // Step 1: Launch paused with --console to capture stdout.
+    // Step 1: Launch paused with --console to capture the app's output.
+    //
+    // NOTE: flutter_tools wraps this in `script -t 0 /dev/null` "to convince
+    // devicectl it has a terminal attached in order to redirect stdout"
+    // (`ios/core_devices.dart`). This repo removed that wrapper in 30b8c3b
+    // (2026-03-25) as unnecessary, and device discovery demonstrably worked
+    // then by reading devicectl's stderr. Re-adding it under Xcode 26.6 did
+    // NOT restore app output, so the pty is not the current blocker and the
+    // wrapper stays off pending a real diagnosis — see README § Dev Tool.
     _consoleLauncherProcess = await _startProcess('xcrun', [
       'devicectl',
       'device',
@@ -1416,7 +1424,8 @@ class IOSDevice extends Device {
     // _attachToAppProcess, _resumeProcess.
     final lldb = await _startProcess('lldb', []);
     _lldbProcess = lldb;
-    _startLldbOutput(lldb);
+    // lldb is a log source, not just a control channel — see [_startLldbOutput].
+    _startLldbOutput(lldb, appLogs: logs);
     await _lldbCommand(lldb, 'device select $udid');
     final bpOutput = await _lldbCommand(
         lldb, r"breakpoint set --func-regex '^NOTIFY_DEBUGGER_ABOUT_RX_PAGES$'",
@@ -1495,11 +1504,65 @@ return False
   /// lldb reports real failures (a breakpoint that resolved nowhere, a refused
   /// attach) on stderr, and dropping that channel turns an explainable failure
   /// into a 30-second timeout with no reason attached.
-  void _startLldbOutput(Process lldb) {
+  ///
+  /// [appLogs], when given, additionally receives everything lldb prints that
+  /// is not lldb's own command chatter. Current flutter_tools treats
+  /// `devicectl` **and lldb** as one combined log source on CoreDevices under
+  /// Xcode 26+ (`ios/devices.dart` `logSources` → `devicectlAndLldb`), because
+  /// the debugger carries output the console stream may not.
+  void _startLldbOutput(Process lldb, {AppLogStream? appLogs}) {
     final out = AppLogStream();
     _lldbOutput = out;
     pumpProcessLines(lldb, out, stderrIsError: true);
+
+    if (appLogs != null) {
+      out.lines.listen((line) {
+        if (_isLldbCommandEcho(line.text)) return;
+        appLogs.add(_stripDeviceLogPrefix(line.text), isError: line.isError);
+      });
+    }
   }
+
+  /// lldb's own prompt/echo and disassembly, as opposed to app output.
+  ///
+  /// Only unambiguous markers are filtered; anything unrecognised is treated as
+  /// app output, since losing a real line is worse than showing a noisy one.
+  static bool _isLldbCommandEcho(String line) {
+    final t = line.trim();
+    if (t.isEmpty) return true;
+    if (t.startsWith('(lldb)') ||
+        t.startsWith('Breakpoint ') ||
+        t.startsWith('Target ') ||
+        t == 'DONE' ||
+        t.startsWith('Available devices:') ||
+        t.startsWith('Enter your Python command')) {
+      return true;
+    }
+    if (t.startsWith('Process ') &&
+        (t.contains(' stopped') ||
+            t.contains(' resuming') ||
+            t.contains(' exited') ||
+            t.contains(' launched'))) {
+      return true;
+    }
+    // Disassembly and frame dumps from a breakpoint stop.
+    return t.startsWith('* thread #') ||
+        t.startsWith('frame #') ||
+        t.startsWith('->') ||
+        RegExp(r'^0x[0-9a-f]+ <\+\d+>:').hasMatch(t) ||
+        RegExp(r'^\d+ location(s)? added to breakpoint').hasMatch(t);
+  }
+
+  /// Native/engine logs arrive prefixed with a timestamp and process metadata:
+  ///
+  ///     2020-09-15 19:15:10.931434-0700 Runner[541:226276] Did finish launching.
+  ///
+  /// Dart `print()` output has no such prefix. Strip it so both read alike —
+  /// same handling as flutter_tools' `_debuggerLineHandler`.
+  static final _deviceLogPrefix = RegExp(r'^\S* \S* \S*\[[0-9:]*\] (.*)');
+
+  static String _stripDeviceLogPrefix(String line) =>
+      _deviceLogPrefix.firstMatch(line)?.group(1) ?? line;
 
   /// Send a command to lldb stdin and optionally wait for expected output.
   /// If [returnMatch] is true, returns the matched line; otherwise returns null.
