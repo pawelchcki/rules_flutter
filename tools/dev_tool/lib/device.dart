@@ -9,15 +9,15 @@
 /// source feeds that stream is a per-platform decision, and there is exactly
 /// one source per platform — this is an invariant, not a preference:
 ///
-/// | Platform            | Source                                    |
-/// | ------------------- | ----------------------------------------- |
-/// | macOS/Linux/Windows | the app process's stdout + stderr          |
-/// | Android             | `adb logcat`                               |
-/// | iOS Simulator       | a dedicated `simctl spawn log stream`      |
-/// | iOS device          | `devicectl --console` stdout + stderr      |
-/// | Chrome (DDC)        | DWDS VM service `Stdout`/`Stderr` streams  |
-/// | Chrome (WASM)       | CDP `Runtime.consoleAPICalled`             |
-/// | attach mode         | VM service `Stdout`/`Stderr` streams       |
+/// | Platform            | Source                                        |
+/// | ------------------- | --------------------------------------------- |
+/// | macOS/Linux/Windows | the app process's stdout + stderr             |
+/// | Android             | `adb logcat`                                  |
+/// | iOS Simulator       | a dedicated `simctl spawn log stream`         |
+/// | iOS device          | `devicectl --console`, plus lldb's own output |
+/// | Chrome (DDC)        | DWDS VM service `Stdout`/`Stderr` streams     |
+/// | Chrome (WASM)       | CDP `Runtime.consoleAPICalled`                |
+/// | attach mode         | VM service `Stdout`/`Stderr` streams          |
 ///
 /// A Dart `print()` on a native device reaches *both* the process's stdout and
 /// the VM service's `Stdout` stream, so subscribing to both would print every
@@ -26,8 +26,20 @@
 /// and is the reason the tempting "just read the VM service everywhere"
 /// simplification is wrong.
 ///
-/// Discovery of the VM-service URI is a *reader* of the log stream, never an
-/// owner of the underlying subscriptions. See [pumpProcessLines].
+/// ## Finding the VM service
+///
+/// On every platform above, the VM-service URI arrives in-band: the engine
+/// prints it, so discovery is a *reader* of the log stream and never an owner
+/// of the underlying subscriptions (see [pumpProcessLines] and
+/// [discoverVmServiceUri]).
+///
+/// A physical iOS device is the one exception, and it is out-of-band rather
+/// than a second in-band source: a wirelessly attached device has no console
+/// channel at all, and the one a wired device has belongs to the `devicectl`
+/// invocation that launched the app. The URI is taken from the app's
+/// `_dartVmService._tcp` mDNS advertisement instead
+/// ([MdnsVmServiceDiscovery]). That is the single mechanism for iOS hardware,
+/// wired and wireless alike; nothing races it.
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -37,6 +49,7 @@ import 'package:path/path.dart' as p;
 import 'app_log.dart';
 import 'cdp_console.dart';
 import 'compiler_config.dart';
+import 'mdns_vm_service_discovery.dart';
 import 'reload_strategy.dart';
 import 'runfiles_helper.dart';
 import 'toolchain_info.dart';
@@ -121,6 +134,15 @@ abstract class Device {
 
   /// Display name for this device.
   String get name;
+
+  /// How long a single hot reload or hot restart RPC may take here.
+  ///
+  /// A latency budget, not a correctness knob: the call is abandoned and the
+  /// VM-service connection force-closed when it expires, so it has to be
+  /// longer than the slowest legitimate apply on this platform. The default
+  /// suits a host process, where the VM is local and a restart is
+  /// milliseconds of work.
+  Duration get applyTimeout => const Duration(seconds: 30);
 
   /// Pick the runnable artifact from a target's cquery outputs.
   ///
@@ -1002,7 +1024,7 @@ Device _resolveDevice(String id) {
     case 'ios-simulator':
       return IOSSimulatorDevice.booted();
     case 'ios':
-      return IOSDevice.connected();
+      return IOSDevice();
     default:
       if (id.startsWith('ios-simulator:')) {
         return IOSSimulatorDevice(udid: id.substring('ios-simulator:'.length));
@@ -1237,12 +1259,120 @@ class _IOSSimulatorDeviceBooted extends IOSSimulatorDevice {
   }
 }
 
-/// iOS physical device (via xcrun devicectl + iproxy).
-class IOSDevice extends Device {
+/// How a paired physical device is currently reachable.
+///
+/// This decides two things that have to agree with each other: whether the app
+/// is launched with its VM service bound to all interfaces, and whether that
+/// service is dialed through a port forward or at the device's own address.
+enum IOSDeviceTransport {
+  /// Attached by cable. The VM service binds to the device's loopback — which
+  /// is what `--vm-service-host` defaults to — so it is reached through an
+  /// `iproxy` forward.
+  wired,
+
+  /// Reachable over the network. There is no cable to forward through, so the
+  /// app must be launched with `--vm-service-host=0.0.0.0` and dialed at the
+  /// device's own address.
+  wireless,
+}
+
+/// What `devicectl list devices` reports about one paired physical device.
+class IOSDeviceInfo {
+  /// The hardware UDID, e.g. `00008101-001C512E14D2001E`.
+  ///
+  /// This is the identifier every tool here is addressed with. `devicectl`
+  /// also answers to its own CoreDevice UUID ([coreDeviceId]) and reports that
+  /// one first, but `lldb device select`, `iproxy -u` and the pymobiledevice3
+  /// screenshot helper all go through usbmuxd, which has never heard of it —
+  /// addressing them with it produces a port forward that binds locally and
+  /// then resets every connection.
   final String udid;
+
+  /// The CoreDevice UUID `devicectl` lists as `identifier`. Kept so that a
+  /// UDID copied out of `devicectl list devices` still selects this device.
+  final String coreDeviceId;
+
+  final String name;
+  final IOSDeviceTransport transport;
+
+  /// The device's own mDNS hostnames, e.g. `Arans-iPhone.coredevice.local`.
+  ///
+  /// These are what tell this device's `_dartVmService._tcp` advertisement
+  /// apart from every other advertiser on the network — including this Mac
+  /// running the same bundle id in a simulator. See
+  /// [MdnsVmServiceDiscovery.discover].
+  final List<String> hostnames;
+
+  IOSDeviceInfo({
+    required this.udid,
+    required this.coreDeviceId,
+    required this.name,
+    required this.transport,
+    required this.hostnames,
+  });
+
+  /// Whether [identifier] names this device, in either identifier space.
+  bool matches(String identifier) =>
+      udid == identifier || coreDeviceId == identifier;
+
+  @override
+  String toString() => '$name ($udid, ${transport.name})';
+}
+
+/// The devices `devicectl list devices --json-output` reports as usable now.
+///
+/// Entries without a recognised `transportType` are dropped: a device that was
+/// paired once but is not currently attached is still listed, with no
+/// transport and `tunnelState: unavailable`. Picking one of those produces a
+/// launch that installs nothing and then waits out every timeout, instead of
+/// a "no device attached" error at the first step.
+List<IOSDeviceInfo> parseDevicectlDevices(String jsonText) {
+  final data = json.decode(jsonText) as Map<String, dynamic>;
+  final devices = (data['result']?['devices'] as List?) ?? const [];
+  final result = <IOSDeviceInfo>[];
+  for (final entry in devices) {
+    final device = entry as Map<String, dynamic>;
+    final connection =
+        (device['connectionProperties'] as Map?)?.cast<String, dynamic>() ??
+            const {};
+    final transport = switch (
+        (connection['transportType'] as String?)?.toLowerCase()) {
+      'wired' => IOSDeviceTransport.wired,
+      'localnetwork' => IOSDeviceTransport.wireless,
+      _ => null,
+    };
+    if (transport == null) continue;
+    final coreDeviceId = device['identifier'] as String?;
+    final udid = ((device['hardwareProperties'] as Map?)?['udid']) as String?;
+    if (coreDeviceId == null || udid == null) continue;
+    final properties =
+        (device['deviceProperties'] as Map?)?.cast<String, dynamic>() ??
+            const {};
+    result.add(IOSDeviceInfo(
+      udid: udid,
+      coreDeviceId: coreDeviceId,
+      name: properties['name'] as String? ?? udid,
+      transport: transport,
+      hostnames: ((connection['localHostnames'] as List?) ??
+              (connection['potentialHostnames'] as List?) ??
+              const [])
+          .cast<String>(),
+    ));
+  }
+  return result;
+}
+
+/// iOS physical device (via xcrun devicectl + lldb).
+class IOSDevice extends Device {
+  /// The UDID the user asked for, or null to use whichever device is attached.
+  final String? requestedUdid;
   final String? _bundleId;
   final ProcessRunSync _runProcess;
   final ProcessStarter _startProcess;
+  final MdnsVmServiceDiscovery _mdns;
+
+  /// Filled in by the first [_resolveInfo].
+  IOSDeviceInfo? _info;
 
   /// iproxy process for port forwarding (killed on stop).
   Process? _iproxyProcess;
@@ -1257,33 +1387,109 @@ class IOSDevice extends Device {
   String? _installationUrl;
 
   IOSDevice({
-    required this.udid,
+    String? udid,
     String? bundleId,
     ProcessRunSync? runProcess,
     ProcessStarter? startProcess,
-  })  : _bundleId = bundleId,
+    MdnsVmServiceDiscovery? mdns,
+  })  : requestedUdid = udid,
+        _bundleId = bundleId,
         _runProcess = runProcess ?? Process.run,
-        _startProcess = startProcess ?? Process.start;
+        _startProcess = startProcess ?? Process.start,
+        _mdns = mdns ?? MdnsVmServiceDiscovery();
 
-  /// Create a device targeting the first connected physical device.
-  factory IOSDevice.connected({
-    ProcessRunSync? runProcess,
-    ProcessStarter? startProcess,
-  }) {
-    return _IOSDeviceConnected(
-      runProcess: runProcess ?? Process.run,
-      startProcess: startProcess ?? Process.start,
-    );
+  /// The UDID in play.
+  ///
+  /// The resolved hardware UDID wins over whatever was asked for: a user may
+  /// legitimately pass the CoreDevice UUID (it is what `devicectl list
+  /// devices` prints), but usbmuxd-backed tools cannot use it. Before a device
+  /// is resolved there is nothing else to report, so the request stands in.
+  String? get udid => _info?.udid ?? requestedUdid;
+
+  /// The UDID of the device commands are addressed to.
+  ///
+  /// Throws rather than guessing: every caller runs after [launch] has
+  /// resolved a device, or was handed an explicit UDID.
+  String get _addressedUdid {
+    final resolved = udid;
+    if (resolved == null) {
+      throw StateError('No iOS device has been resolved yet. This device was '
+          'created without a UDID, so launch() must run first.');
+    }
+    return resolved;
   }
 
   @override
-  String get name => 'iOS ($udid)';
+  String get name => 'iOS (${udid ?? 'auto-detect'})';
 
   @override
   List<String> get buildArgs => const ['--ios_multi_cpus=arm64'];
 
+  /// A hot restart re-runs `main()`, which re-JITs the app — and every new
+  /// executable page traps into the `NOTIFY_DEBUGGER_ABOUT_RX_PAGES`
+  /// breakpoint, whose handler round-trips to lldb on the host. That is what
+  /// makes a cold start here take ~43s where a desktop app takes under one,
+  /// and a restart is the same work. The host default would abandon the RPC
+  /// and force-close the connection while the device was still working.
+  @override
+  Duration get applyTimeout => const Duration(minutes: 3);
+
+  /// Ask `devicectl` which device this is, once per run.
+  ///
+  /// Resolves the UDID when none was given, and in every case picks up the
+  /// transport and mDNS hostnames the rest of [launch] needs. Ambiguity is an
+  /// error, not a first-match: two attached devices means the user has to say
+  /// which one, and silently choosing would look like a working run against
+  /// the wrong phone.
+  Future<IOSDeviceInfo> _resolveInfo() async {
+    final cached = _info;
+    if (cached != null) return cached;
+
+    final dir = await Directory.systemTemp.createTemp('flutter_devicectl_');
+    final jsonPath = p.join(dir.path, 'devices.json');
+    final result = await _runProcess('xcrun',
+        ['devicectl', 'list', 'devices', '--json-output', jsonPath]);
+    if (result.exitCode != 0) {
+      throw StateError('devicectl list devices failed: ${result.stderr}');
+    }
+    final jsonFile = File(jsonPath);
+    if (!jsonFile.existsSync()) {
+      throw StateError('devicectl list devices reported success but wrote no '
+          'device list to $jsonPath.');
+    }
+    final available = parseDevicectlDevices(jsonFile.readAsStringSync());
+
+    final requested = requestedUdid;
+    if (requested != null) {
+      final match = available.where((d) => d.matches(requested));
+      if (match.isEmpty) {
+        throw StateError('No attached iOS device with UDID $requested.'
+            '${_availableSuffix(available)}');
+      }
+      return _info = match.first;
+    }
+    if (available.isEmpty) {
+      throw StateError('No iOS device is attached. Connect one by cable, or '
+          'pair it for network debugging in Xcode > Window > Devices and '
+          'Simulators.');
+    }
+    if (available.length > 1) {
+      throw StateError('More than one iOS device is attached; say which one '
+          'with -d ios:<udid>.${_availableSuffix(available)}');
+    }
+    return _info = available.single;
+  }
+
+  static String _availableSuffix(List<IOSDeviceInfo> available) =>
+      available.isEmpty
+          ? ''
+          : '\nAttached devices:\n'
+              '${available.map((d) => '  ${d.udid}  ${d.name} (${d.transport.name})').join('\n')}';
+
   @override
   Future<AppInstance> launch(String appPath, {AppLogListener? onLog}) async {
+    final info = await _resolveInfo();
+
     // Extract .app from .ipa if needed — devicectl install requires .app.
     String installPath = appPath;
     if (appPath.endsWith('.ipa')) {
@@ -1301,7 +1507,7 @@ class IOSDevice extends Device {
       'install',
       'app',
       '--device',
-      udid,
+      info.udid,
       '--json-output',
       installJsonPath,
       installPath,
@@ -1333,7 +1539,7 @@ class IOSDevice extends Device {
     //   3. Attach lldb (which starts debugserver / ptrace)
     //   4. Set JIT page notification breakpoint
     //   5. Resume
-    //   6. Discover VM service URI from devicectl --console stdout
+    //   6. Discover the VM service by its mDNS advertisement
 
     // Step 1: Launch paused with --console to capture the app's output.
     //
@@ -1350,7 +1556,7 @@ class IOSDevice extends Device {
       'process',
       'launch',
       '--device',
-      udid,
+      info.udid,
       '--start-stopped',
       '--console',
       '--environment-variables',
@@ -1358,19 +1564,16 @@ class IOSDevice extends Device {
       bundleId,
       '--enable-dart-profiling',
       '--enable-checked-mode',
+      // A wireless device is dialed at its own address, so the VM service must
+      // not bind to the device's loopback the way it does by default. Matches
+      // flutter_tools' `DebuggingOptions.buildLaunchArguments`, which adds this
+      // exactly when the connection interface is wireless.
+      if (info.transport == IOSDeviceTransport.wireless)
+        '--vm-service-host=0.0.0.0',
     ]);
 
-    // devicectl sends its own progress messages to stdout. Both channels feed
-    // the app log stream — the launch banners are few, and a device that did
-    // deliver app output would put it on stderr.
-    //
-    // KNOWN GAP, verified on hardware: `devicectl --console` does not deliver
-    // the app's own stdout to a pipe, so nothing the app prints — including
-    // the engine's VM-service announcement — arrives here, and physical-device
-    // runs get no hot reload. flutter_tools does not use this channel for
-    // discovery at all; it races mDNS (`MDnsVmServiceDiscovery`) against
-    // `idevicesyslog` device logs (`ios/devices.dart`). Adopting one of those
-    // is the fix. See README § Dev Tool.
+    // devicectl sends its own progress banners on one channel and the app's
+    // console output on the other, so both feed the app log stream.
     //
     // stderr is deliberately *not* flagged as an error channel: devicectl
     // routes the app's ordinary console output there, so treating that channel
@@ -1405,10 +1608,6 @@ class IOSDevice extends Device {
       },
     );
 
-    // Discovery reads the same stream rather than owning a subscription, so
-    // console output keeps flowing for the whole run.
-    final vmUriFuture = discoverVmServiceUri(logs);
-
     await launchCompleter.future;
     launchTimeout.cancel();
     await bannerSub.cancel();
@@ -1426,7 +1625,7 @@ class IOSDevice extends Device {
     _lldbProcess = lldb;
     // lldb is a log source, not just a control channel — see [_startLldbOutput].
     _startLldbOutput(lldb, appLogs: logs);
-    await _lldbCommand(lldb, 'device select $udid');
+    await _lldbCommand(lldb, 'device select ${info.udid}');
     final bpOutput = await _lldbCommand(
         lldb, r"breakpoint set --func-regex '^NOTIFY_DEBUGGER_ABOUT_RX_PAGES$'",
         waitFor: RegExp(r'Breakpoint (\d+):'), returnMatch: true);
@@ -1442,23 +1641,68 @@ class IOSDevice extends Device {
     await _lldbCommand(lldb, 'process continue',
         waitFor: RegExp(r'Process \d+ resuming'));
 
-    // Step 6: Discover VM service URI from devicectl --console output.
-    final deviceUri = await vmUriFuture;
+    // Step 6: Find the VM service by its mDNS advertisement.
+    //
+    // Not by reading the log stream, the way every other platform does. A
+    // wirelessly attached device has no console channel at all, and the one a
+    // wired device has is `devicectl --console`, which dies with the launch it
+    // reports on. The advertisement is the one channel both connections share,
+    // and it is already provisioned: the debug/profile Info.plist declares
+    // `_dartVmService._tcp` under NSBonjourServices
+    // (`flutter/private/runners/ios/DartVmServiceMdns.plist`).
+    //
+    // Generous timeout, because starting a debug app under the JIT breakpoint
+    // is slow: measured ~43s from `process continue` to the engine's first log
+    // on an iPhone 12 Pro. flutter_tools budgets the same way, 60s wired and
+    // 75s wireless, "because this includes time to install and launch the app
+    // on the device" (`ios/devices.dart`).
+    final record = await _mdns.discover(
+      bundleId: bundleId,
+      hostnames: info.hostnames,
+      resolveAddress: info.transport == IOSDeviceTransport.wireless,
+      timeout: switch (info.transport) {
+        IOSDeviceTransport.wired => const Duration(seconds: 60),
+        IOSDeviceTransport.wireless => const Duration(seconds: 75),
+      },
+    );
 
-    // Port-forward VM service from device to host via iproxy.
-    Uri? vmServiceUri;
-    if (deviceUri != null) {
-      final devicePort = deviceUri.port;
-      _iproxyProcess = await _startProcess(
-          'iproxy', ['$devicePort:$devicePort', '-u', udid]);
+    final Uri vmServiceUri;
+    switch (info.transport) {
+      case IOSDeviceTransport.wired:
+        // The advertised port is a device-side port on the device's loopback.
+        final iproxy = await _startProcess(
+            'iproxy', ['${record.port}:${record.port}', '-u', info.udid]);
+        _iproxyProcess = iproxy;
 
-      // Process.start returns at spawn time, before iproxy has bound its
-      // local listener. DDS dials this forward immediately after launch()
-      // returns; an unbound listener means ECONNREFUSED and the session
-      // loses its VM service. Return only once the forward actually accepts.
-      await waitForLocalTcpPort(devicePort,
-          what: 'iproxy forward for the iOS VM service');
-      vmServiceUri = deviceUri.replace(host: '127.0.0.1');
+        // iproxy runs for the whole session and reports what it is doing on
+        // both channels, so both have to be drained — an unread pipe blocks
+        // the writer, and here the writer is the only route to the device.
+        final iproxyOutput = AppLogStream();
+        pumpProcessLines(iproxy, iproxyOutput);
+
+        // Process.start returns at spawn time, before iproxy has bound its
+        // local listener. DDS dials this forward immediately after launch()
+        // returns; an unbound listener means ECONNREFUSED and the session
+        // loses its VM service. Return only once the forward actually accepts.
+        try {
+          await waitForLocalTcpPort(record.port,
+              what: 'iproxy forward for the iOS VM service');
+        } on StateError catch (e) {
+          final said = iproxyOutput
+              .read(0)
+              .lines
+              .map((l) => l.text)
+              .where((t) => t.trim().isNotEmpty);
+          throw StateError('${e.message}\n'
+              'iproxy said: ${said.isEmpty ? '(nothing)' : said.join('; ')}');
+        }
+        vmServiceUri =
+            record.uriFor(host: '127.0.0.1', port: record.port);
+      case IOSDeviceTransport.wireless:
+        // No cable to forward through. `discover(resolveAddress: true)` throws
+        // rather than returning a record without an address, so this is set.
+        vmServiceUri =
+            record.uriFor(host: record.address!.address, port: record.port);
     }
 
     return AppInstance(
@@ -1630,7 +1874,7 @@ return False
       'info',
       'processes',
       '--device',
-      udid,
+      _addressedUdid,
       '--json-output',
       jsonPath,
     ]);
@@ -1719,7 +1963,7 @@ return False
     final result = await Process.run(resolved.path, [
       outputPath,
       '--udid',
-      udid,
+      _addressedUdid,
     ], environment: {
       if (resolved.manifestPath != null)
         'RUNFILES_MANIFEST_FILE': resolved.manifestPath!,
@@ -1767,64 +2011,6 @@ return False
       throw StateError('No .app found in IPA Payload directory');
     }
     return apps.first.path;
-  }
-}
-
-/// An [IOSDevice] that resolves the UDID on first use.
-class _IOSDeviceConnected extends IOSDevice {
-  String? _resolvedUdid;
-
-  _IOSDeviceConnected({
-    required ProcessRunSync runProcess,
-    required ProcessStarter startProcess,
-  }) : super(
-          udid: '',
-          runProcess: runProcess,
-          startProcess: startProcess,
-        );
-
-  @override
-  String get name =>
-      _resolvedUdid != null ? 'iOS ($_resolvedUdid)' : 'iOS (auto-detect)';
-
-  Future<String> _resolveConnectedUdid() async {
-    if (_resolvedUdid != null) return _resolvedUdid!;
-    // Use xctrace to list devices — physical devices have a UDID in parens.
-    final result = await _runProcess('xcrun', ['xctrace', 'list', 'devices']);
-    if (result.exitCode == 0) {
-      final output = result.stdout as String;
-      // Parse lines like: "Name (version) (UDID)"
-      // Physical devices have version + UDID; skip simulators section.
-      bool inDevices = false;
-      for (final line in output.split('\n')) {
-        if (line.startsWith('== Devices ==')) {
-          inDevices = true;
-          continue;
-        }
-        if (line.startsWith('== Simulators ==')) break;
-        if (!inDevices) continue;
-        // Match lines like "My iPhone (26.3.1) (00008101-...)"
-        final match =
-            RegExp(r'\(([0-9A-Fa-f]{8}-[0-9A-Fa-f]{16})\)').firstMatch(line);
-        if (match != null) {
-          _resolvedUdid = match.group(1)!;
-          return _resolvedUdid!;
-        }
-      }
-    }
-    throw StateError('No connected iOS device found. '
-        'Connect a device via USB or run: xcrun xctrace list devices');
-  }
-
-  @override
-  Future<AppInstance> launch(String appPath, {AppLogListener? onLog}) async {
-    final resolvedUdid = await _resolveConnectedUdid();
-    final real = IOSDevice(
-      udid: resolvedUdid,
-      runProcess: _runProcess,
-      startProcess: _startProcess,
-    );
-    return real.launch(appPath, onLog: onLog);
   }
 }
 

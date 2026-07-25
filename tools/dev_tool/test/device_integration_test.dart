@@ -65,10 +65,18 @@ void main() {
         },
       );
 
-      Future.delayed(Duration(milliseconds: 20), () {
-        fakeLogcat.emitStdout(
-            'I/flutter: The Dart VM service is listening on http://127.0.0.1:12345/abc=/');
-      });
+      // Wait for the launch to actually attach its reader to logcat before
+      // announcing. A fixed delay races the install/start steps that run
+      // first, and a line emitted before anyone is listening is dropped —
+      // which left this test timing out rather than failing on an assertion.
+      unawaited(fakeLogcat.outputAttached.then((_) {
+        // A real `adb logcat -v time` record: timestamp, level/tag, padded
+        // pid. Anything else is dropped by [parseLogcatLine], which is what
+        // made this test hang rather than fail when the reader moved to
+        // `-v time`.
+        fakeLogcat.emitStdout('01-01 00:00:00.000 I/flutter ( 1234): '
+            'The Dart VM service is listening on http://127.0.0.1:12345/abc=/');
+      }));
 
       final instance = await device.launch('/path/to/app.apk');
       expect(instance.vmServiceUri, isNotNull);

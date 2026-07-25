@@ -451,6 +451,7 @@ These are not Bazel tests — they're standalone Dart scripts for manual investi
 | dev_tool (e2e) | `cd tools/dev_tool && dart test test/e2e/ --tags=e2e --concurrency=1` |
 | dev_tool reload paths (`run_command.dart`, `vm_service_client.dart`, `hot_reload/**`, `session.dart`) | dev_tool unit + e2e **and** manual hot reload **and** hot restart — see "Hot reload / hot restart (manual)" |
 | dev_tool app-output forwarding (`app_log.dart`, `app_log_sink.dart`, `cdp_console.dart`, `vm_service_logs.dart`, `device.dart` launch paths) | dev_tool unit + e2e **and** the manual per-platform checks below |
+| dev_tool iOS device paths (`mdns_vm_service_discovery.dart`, `IOSDevice` in `device.dart`) | dev_tool unit **and** manual hot reload + hot restart on hardware, **wired and wireless** — see "iOS hardware (manual)" |
 | Everything | All sections above |
 
 ### App output forwarding (manual)
@@ -485,6 +486,40 @@ Finally, check the pipe-pressure case, which is what the forwarding rewrite
 removes: run an app that prints continuously well past 64 KB and confirm it
 neither stalls nor dies. An unread pipe is the failure mode that only shows up
 under sustained logging.
+
+### iOS hardware (manual)
+
+The simulator and a physical device find the VM service by different mechanisms
+(log stream vs mDNS advertisement), and a wired device and a wireless one differ
+again in how that service is reached, so passing on one proves nothing about the
+others. All three need checking whenever `IOSDevice` or
+`mdns_vm_service_discovery.dart` changes.
+
+```sh
+cd e2e/ios_example   # needs device/BUILD.bazel — see device.example/
+
+flutter_bazel run -t //:app -d ios-simulator   # log-stream discovery
+flutter_bazel run -t //device:app -d ios       # mDNS + iproxy forward
+```
+
+For each: confirm the app renders, then press `r` (hot reload) and `R` (hot
+restart) and confirm the change appears on screen. "The tool printed
+`Reloaded`" is not the bar — the UI is.
+
+For the wireless case, unplug the cable with the device paired for network
+debugging (Xcode > Window > Devices and Simulators > *Connect via network*) and
+confirm `xcrun devicectl list devices` reports `transportType: localNetwork`
+before running. A wireless launch must pass `--vm-service-host=0.0.0.0` and dial
+the device's own address; a wired one must do neither. If the device has never
+been used this way it will prompt for Local Network permission once — accept it,
+then re-run.
+
+Expect a physical-device launch to take around a minute: starting a debug build
+under the JIT breakpoint is slow (~43 s from resume to the engine's first log on
+an iPhone 12 Pro), and the mDNS query only resolves once the app is up. If it
+runs out the full timeout, read the error — it names the advertisements it did
+see and which host sent each, which distinguishes "the app never started" from
+"that was the copy running in a simulator on this Mac."
 
 The `/logs` control endpoint is exercised by
 `tools/dev_tool/test/e2e/plugin_example_e2e_test.dart`; to check it by hand,

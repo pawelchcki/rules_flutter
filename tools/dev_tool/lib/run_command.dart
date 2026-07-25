@@ -1110,7 +1110,10 @@ class RunCommand {
               final apps = <hr.AppInstance>[
                 for (final s in sessions)
                   if (s.vmClient != null)
-                    hr.VmServiceAppInstance(id: s.appId, client: s.vmClient!),
+                    hr.VmServiceAppInstance(
+                        id: s.appId,
+                        client: s.vmClient!,
+                        rpcTimeout: s.device.applyTimeout),
               ];
               if (apps.isNotEmpty) {
                 // For codegen apps, rebuild the flutter_application via bazel
@@ -1230,7 +1233,9 @@ class RunCommand {
                         for (final s in sessions)
                           if (s.vmClient != null)
                             hr.VmServiceAppInstance(
-                                id: s.appId, client: s.vmClient!),
+                                id: s.appId,
+                                client: s.vmClient!,
+                                rpcTimeout: s.device.applyTimeout),
                       ]);
                     // The relaunched process runs the freshly built kernel:
                     // every disk file is now live.

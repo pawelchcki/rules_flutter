@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_bazel_dev_tool/device.dart';
+import 'package:flutter_bazel_dev_tool/mdns_vm_service_discovery.dart';
 import 'package:flutter_bazel_dev_tool/runfiles_helper.dart';
 import 'package:test/test.dart';
 
@@ -1252,10 +1253,10 @@ void main() {
   });
 
   // The physical-device launch is a six-step dance (devicectl --console →
-  // pid lookup → lldb attach → resume → discovery), and the app's console
+  // pid lookup → lldb attach → resume → mDNS discovery), and the app's console
   // output rides the same devicectl process throughout. Faking the whole
   // sequence is the only way to prove output survives it.
-  group('IOSDevice.launch console forwarding', () {
+  group('IOSDevice.launch', () {
     final sockets = <ServerSocket>[];
     tearDown(() async {
       for (final s in sockets) {
@@ -1264,33 +1265,79 @@ void main() {
       sockets.clear();
     });
 
-    /// Drives one launch against fakes, returning the instance and the
-    /// devicectl process the test can keep writing console output to.
-    Future<(AppInstance, FakeProcess, FakeProcess)> launchFakedWithLldb() async {
+    /// What `devicectl list devices` reports for one paired device.
+    String devicesJson(String transportType) => json.encode({
+          'result': {
+            'devices': [
+              {
+                'identifier': 'TEST-COREDEVICE-ID',
+                'hardwareProperties': {'udid': 'TEST-UDID'},
+                'deviceProperties': {'name': "Test iPhone"},
+                'connectionProperties': {
+                  'transportType': transportType,
+                  'pairingState': 'paired',
+                  'localHostnames': ['Test-iPhone.coredevice.local'],
+                },
+              },
+            ],
+          },
+        });
+
+    /// Everything one faked launch hands back to the test.
+    ///
+    /// [args] records every argument list passed to [Process.start], so a test
+    /// can assert on what the launch actually asked devicectl to do.
+    Future<
+        ({
+          AppInstance instance,
+          FakeProcess devicectl,
+          FakeProcess lldb,
+          List<List<String>> starts,
+        })> launchFaked({
+      String transportType = 'wired',
+      List<String> deviceAddresses = const [],
+    }) async {
       final devicectl = FakeProcess();
       final lldb = FakeProcess();
+      final starts = <List<String>>[];
 
-      // The launch port-forwards the discovered VM service through iproxy and
-      // waits for that forward to accept connections before returning. Stand a
-      // real listener up on the port the fake announces, so the test exercises
-      // the whole launch rather than stopping at a missing iproxy.
+      // A wired launch port-forwards the advertised VM-service port through
+      // iproxy and waits for that forward to accept connections before
+      // returning. Stand a real listener up on the port the advertisement
+      // names, so the test exercises the whole launch rather than stopping at
+      // a missing iproxy.
       final forward = await ServerSocket.bind('127.0.0.1', 0);
       sockets.add(forward);
       // The probe connects to confirm the forward is live; drop each
       // connection rather than leaving it queued in the accept backlog, which
       // would stall `close()` in tearDown.
       forward.listen((socket) => socket.destroy());
-      final vmServiceLine = 'The Dart VM service is listening on '
-          'http://127.0.0.1:${forward.port}/test=/';
+
+      final mdns = MdnsVmServiceDiscovery(
+        clientFactory: FakeMDnsClientFactory(
+          records: dartVmServiceRecords(
+            instance: 'com.example.test',
+            host: 'Test-iPhone.local',
+            port: forward.port,
+            authCode: 'test=',
+            addresses: deviceAddresses,
+          ),
+        ).call,
+      );
 
       final device = IOSDevice(
         udid: 'TEST-UDID',
         bundleId: 'com.example.test',
+        mdns: mdns,
         runProcess: (exe, args) async {
-          // `devicectl device info processes` writes its answer to the file
-          // named by --json-output.
-          if (args.contains('processes')) {
-            final out = args[args.indexOf('--json-output') + 1];
+          final out = args.contains('--json-output')
+              ? args[args.indexOf('--json-output') + 1]
+              : null;
+          // Both `list devices` and `info processes` write their answer to the
+          // file named by --json-output.
+          if (args.contains('devices') && out != null) {
+            File(out).writeAsStringSync(devicesJson(transportType));
+          } else if (args.contains('processes') && out != null) {
             File(out).writeAsStringSync(json.encode({
               'result': {
                 'runningProcesses': [
@@ -1304,7 +1351,10 @@ void main() {
           }
           return ProcessResult(0, 0, '', '');
         },
-        startProcess: (exe, args) async => exe == 'lldb' ? lldb : devicectl,
+        startProcess: (exe, args) async {
+          starts.add([exe, ...args.cast<String>()]);
+          return exe == 'lldb' ? lldb : devicectl;
+        },
       );
 
       // Script the lldb side: each command the launch issues gets the reply
@@ -1322,43 +1372,97 @@ void main() {
       final pending = device.launch('/path/to/MyApp.app', onLog: null);
       await devicectl.outputAttached;
 
-      // devicectl's banner releases the launch gate, then the engine
-      // announces the VM service.
+      // devicectl's banner releases the launch gate.
       devicectl.emitStdout('Launched application with com.example.test');
-      await pumpEventQueue();
-      devicectl.emitStderr('flutter: $vmServiceLine\n');
 
-      return (await pending, devicectl, lldb);
+      return (
+        instance: await pending,
+        devicectl: devicectl,
+        lldb: lldb,
+        starts: starts,
+      );
     }
 
-    /// The common case: callers that do not need the lldb fake.
-    Future<(AppInstance, FakeProcess)> launchFaked() async {
-      final (instance, devicectl, _) = await launchFakedWithLldb();
-      return (instance, devicectl);
-    }
+    // The engine's announcement never reaches this host on a physical device,
+    // so the URI has to come from the app's mDNS advertisement — including the
+    // auth code, without which the VM service refuses the connection.
+    test('takes the VM service from the mDNS advertisement', () async {
+      final r = await launchFaked();
+      expect(r.instance.vmServiceUri, isNotNull);
+      expect(r.instance.vmServiceUri!.host, '127.0.0.1');
+      expect(r.instance.vmServiceUri!.path, '/test=/');
+    });
+
+    // Wired: the VM service binds to the device's loopback, so it is only
+    // reachable through a forward.
+    test('port-forwards the advertised port when wired', () async {
+      final r = await launchFaked(transportType: 'wired');
+      final iproxy = r.starts.where((a) => a.first == 'iproxy');
+      expect(iproxy, hasLength(1));
+      expect(iproxy.single, contains('TEST-UDID'));
+      expect(r.instance.vmServiceUri!.host, '127.0.0.1');
+    });
+
+    // devicectl lists a CoreDevice UUID as `identifier` and the hardware UDID
+    // separately. usbmuxd — which iproxy and lldb both go through — only knows
+    // the hardware one; addressing it with the CoreDevice UUID yields a
+    // forward that binds locally and then resets every connection, so the run
+    // looks like it worked right up until DDS fails.
+    test('addresses iproxy and lldb with the hardware UDID', () async {
+      final r = await launchFaked(transportType: 'wired');
+      expect(r.starts.firstWhere((a) => a.first == 'iproxy'),
+          contains('TEST-UDID'));
+      expect(r.starts.firstWhere((a) => a.first == 'iproxy'),
+          isNot(contains('TEST-COREDEVICE-ID')));
+    });
+
+    test('does not bind the VM service to all interfaces when wired',
+        () async {
+      final r = await launchFaked(transportType: 'wired');
+      final launch = r.starts.firstWhere((a) => a.contains('launch'));
+      expect(launch, isNot(contains('--vm-service-host=0.0.0.0')));
+    });
+
+    // Wireless: there is no cable to forward through, so the VM service has to
+    // listen on all interfaces and gets dialed at the device's own address.
+    // The two halves must agree or the session silently has no VM service.
+    test('binds the VM service to all interfaces when wireless', () async {
+      final r = await launchFaked(
+          transportType: 'localNetwork', deviceAddresses: ['192.168.1.244']);
+      final launch = r.starts.firstWhere((a) => a.contains('launch'));
+      expect(launch, contains('--vm-service-host=0.0.0.0'));
+    });
+
+    test('dials the device address directly when wireless', () async {
+      final r = await launchFaked(
+          transportType: 'localNetwork', deviceAddresses: ['192.168.1.244']);
+      expect(r.instance.vmServiceUri!.host, '192.168.1.244');
+      expect(r.starts.where((a) => a.first == 'iproxy'), isEmpty,
+          reason: 'there is no cable to forward through');
+    });
 
     test('keeps forwarding console output after VM-service discovery',
         () async {
-      final (instance, devicectl) = await launchFaked();
-      expect(instance.vmServiceUri, isNotNull,
+      final r = await launchFaked();
+      expect(r.instance.vmServiceUri, isNotNull,
           reason: 'discovery must still work');
 
-      devicectl.emitStderr('flutter: printed well after launch\n');
+      r.devicectl.emitStderr('flutter: printed well after launch\n');
       await pumpEventQueue();
 
-      expect(instance.logs.read(0).lines.map((l) => l.text),
+      expect(r.instance.logs.read(0).lines.map((l) => l.text),
           contains('flutter: printed well after launch'));
     });
 
     test('does not flag devicectl stderr as error output', () async {
-      final (instance, devicectl) = await launchFaked();
+      final r = await launchFaked();
 
       // devicectl routes the app's ordinary console output to stderr, so
       // flagging that channel would mark every print() as an error.
-      devicectl.emitStderr('flutter: an ordinary print\n');
+      r.devicectl.emitStderr('flutter: an ordinary print\n');
       await pumpEventQueue();
 
-      final line = instance.logs
+      final line = r.instance.logs
           .read(0)
           .lines
           .firstWhere((l) => l.text.contains('an ordinary print'));
@@ -1370,32 +1474,213 @@ void main() {
       // JIT alive. Stop reading its pipes and it blocks on write once its
       // stdout buffer fills; a blocked lldb never services the process it
       // controls, so the app hangs on device until the dev tool is killed.
-      final (_, _, lldb) = await launchFakedWithLldb();
+      final r = await launchFaked();
 
       // Far more than a pipe buffer would hold. If nothing is draining, a
       // real lldb would be blocked by now.
       for (var i = 0; i < 2000; i++) {
-        lldb.emitStdout('lldb chatter line $i with padding ${'x' * 200}');
+        r.lldb.emitStdout('lldb chatter line $i with padding ${'x' * 200}');
       }
       await pumpEventQueue();
 
       // The fake cannot block, so assert the property that matters: a live
       // reader is still attached to both channels.
-      expect(lldb.stdoutHasListener, isTrue,
+      expect(r.lldb.stdoutHasListener, isTrue,
           reason: 'lldb stdout must stay drained for the process lifetime');
-      expect(lldb.stderrHasListener, isTrue,
+      expect(r.lldb.stderrHasListener, isTrue,
           reason: 'lldb stderr carries the reason for real lldb failures');
     });
 
     test('closes the log stream when devicectl exits', () async {
-      final (instance, devicectl) = await launchFaked();
-      expect(instance.logs.isClosed, isFalse);
+      final r = await launchFaked();
+      expect(r.instance.logs.isClosed, isFalse);
 
-      devicectl.complete(0);
+      r.devicectl.complete(0);
       await pumpEventQueue();
 
-      expect(instance.logs.isClosed, isTrue,
+      expect(r.instance.logs.isClosed, isTrue,
           reason: 'a reader must learn the run is over rather than hang');
+    });
+  });
+
+  // `devicectl list devices` lists every device that has ever been paired,
+  // including ones that are not attached now.
+  group('parseDevicectlDevices', () {
+    String devicesJson(List<Map<String, Object?>> devices) =>
+        json.encode({'result': {'devices': devices}});
+
+    test('reads udid, name, transport and hostnames', () {
+      final devices = parseDevicectlDevices(devicesJson([
+        {
+          'identifier': 'CORE-1',
+          'hardwareProperties': {'udid': 'UDID-1'},
+          'deviceProperties': {'name': "Aran's iPhone 12 Pro"},
+          'connectionProperties': {
+            'transportType': 'wired',
+            'localHostnames': [
+              'Arans-iPhone-12-Pro.coredevice.local',
+              'UDID-1.coredevice.local',
+            ],
+          },
+        },
+      ]));
+
+      expect(devices, hasLength(1));
+      expect(devices.single.udid, 'UDID-1');
+      expect(devices.single.coreDeviceId, 'CORE-1');
+      expect(devices.single.name, "Aran's iPhone 12 Pro");
+      expect(devices.single.transport, IOSDeviceTransport.wired);
+      expect(devices.single.hostnames,
+          contains('Arans-iPhone-12-Pro.coredevice.local'));
+    });
+
+    test('maps localNetwork to wireless', () {
+      final devices = parseDevicectlDevices(devicesJson([
+        {
+          'identifier': 'CORE-1',
+          'hardwareProperties': {'udid': 'UDID-1'},
+          'connectionProperties': {'transportType': 'localNetwork'},
+        },
+      ]));
+      expect(devices.single.transport, IOSDeviceTransport.wireless);
+    });
+
+    // A device paired once and now sitting in a drawer still appears, with no
+    // transport and `tunnelState: unavailable`. Choosing it produces a launch
+    // that installs nothing and then waits out every timeout.
+    test('drops a paired but unattached device', () {
+      final devices = parseDevicectlDevices(devicesJson([
+        {
+          'identifier': 'CORE-GONE',
+          'hardwareProperties': {'udid': 'GONE'},
+          'connectionProperties': {
+            'pairingState': 'paired',
+            'tunnelState': 'unavailable',
+          },
+        },
+        {
+          'identifier': 'CORE-HERE',
+          'hardwareProperties': {'udid': 'HERE'},
+          'connectionProperties': {'transportType': 'wired'},
+        },
+      ]));
+      expect(devices.map((d) => d.udid), ['HERE']);
+    });
+
+    test('falls back to potentialHostnames when there are no local ones', () {
+      final devices = parseDevicectlDevices(devicesJson([
+        {
+          'identifier': 'CORE-1',
+          'hardwareProperties': {'udid': 'UDID-1'},
+          'connectionProperties': {
+            'transportType': 'wired',
+            'potentialHostnames': ['Some-iPhone.coredevice.local'],
+          },
+        },
+      ]));
+      expect(devices.single.hostnames, ['Some-iPhone.coredevice.local']);
+    });
+  });
+
+  group('IOSDevice device selection', () {
+    IOSDevice deviceListing(List<Map<String, Object?>> devices,
+            {String? udid}) =>
+        IOSDevice(
+          udid: udid,
+          bundleId: 'com.example.test',
+          runProcess: (exe, args) async {
+            if (args.contains('devices') && args.contains('--json-output')) {
+              File(args[args.indexOf('--json-output') + 1]).writeAsStringSync(
+                  json.encode({'result': {'devices': devices}}));
+              return ProcessResult(0, 0, '', '');
+            }
+            // Selection is what these tests are about, so stop the launch at
+            // the next step rather than driving the whole device dance.
+            return ProcessResult(0, 1, '', 'INSTALL_FAILED');
+          },
+          startProcess: (exe, args) async => FakeProcess(),
+        );
+
+    test('ignores a paired but unattached device when auto-detecting',
+        () async {
+      final device = deviceListing([
+        {
+          'identifier': 'CORE-GONE',
+          'hardwareProperties': {'udid': 'GONE'},
+          'connectionProperties': {'tunnelState': 'unavailable'},
+        },
+      ]);
+
+      await expectLater(
+        device.launch('/path/to/MyApp.app'),
+        throwsA(isA<StateError>().having((e) => e.message, 'message',
+            contains('No iOS device is attached'))),
+      );
+    });
+
+    // Picking one silently would look like a working run against the wrong
+    // phone.
+    test('refuses to guess between two attached devices', () async {
+      final device = deviceListing([
+        {
+          'identifier': 'CORE-ONE',
+          'hardwareProperties': {'udid': 'ONE'},
+          'connectionProperties': {'transportType': 'wired'},
+        },
+        {
+          'identifier': 'CORE-TWO',
+          'hardwareProperties': {'udid': 'TWO'},
+          'connectionProperties': {'transportType': 'localNetwork'},
+        },
+      ]);
+
+      await expectLater(
+        device.launch('/path/to/MyApp.app'),
+        throwsA(isA<StateError>()
+            .having((e) => e.message, 'message', contains('-d ios:<udid>'))
+            .having((e) => e.message, 'message', contains('ONE'))),
+      );
+    });
+
+    // `devicectl list devices` prints the CoreDevice UUID, so that is what a
+    // user copying from it will pass; Xcode shows the hardware UDID. Both name
+    // the same device.
+    test('accepts either the hardware UDID or the CoreDevice identifier',
+        () async {
+      for (final requested in ['UDID-1', 'CORE-1']) {
+        final device = deviceListing([
+          {
+            'identifier': 'CORE-1',
+            'hardwareProperties': {'udid': 'UDID-1'},
+            'connectionProperties': {'transportType': 'wired'},
+          },
+        ], udid: requested);
+
+        // Gets past selection and stops at the faked install.
+        await expectLater(
+          device.launch('/path/to/MyApp.app'),
+          throwsA(isA<StateError>().having(
+              (e) => e.message, 'message', contains('INSTALL_FAILED'))),
+        );
+      }
+    });
+
+    test('says which devices are attached when the requested one is not',
+        () async {
+      final device = deviceListing([
+        {
+          'identifier': 'CORE-OTHER',
+          'hardwareProperties': {'udid': 'OTHER'},
+          'connectionProperties': {'transportType': 'wired'},
+        },
+      ], udid: 'MISSING');
+
+      await expectLater(
+        device.launch('/path/to/MyApp.app'),
+        throwsA(isA<StateError>()
+            .having((e) => e.message, 'message', contains('MISSING'))
+            .having((e) => e.message, 'message', contains('OTHER'))),
+      );
     });
   });
 
@@ -1417,6 +1702,20 @@ void main() {
         runProcess: (exe, args) async {
           if ((args as List).contains('install')) {
             return ProcessResult(0, 1, '', 'INSTALL_FAILED');
+          }
+          if (args.contains('devices') && args.contains('--json-output')) {
+            File(args[args.indexOf('--json-output') + 1]).writeAsStringSync(
+                json.encode({
+              'result': {
+                'devices': [
+                  {
+                    'identifier': 'TEST-COREDEVICE-ID',
+                    'hardwareProperties': {'udid': 'TEST-UDID'},
+                    'connectionProperties': {'transportType': 'wired'},
+                  },
+                ],
+              },
+            }));
           }
           return ProcessResult(0, 0, '', '');
         },
@@ -1443,6 +1742,56 @@ void main() {
       expect(await fakeDevicectl.exitCode, -1);
     });
 
+  });
+
+  group('Device.applyTimeout', () {
+    // A hot restart on hardware re-JITs the app through the lldb breakpoint,
+    // which is minutes-scale work. The host default would abandon the RPC and
+    // force-close the VM-service connection mid-restart, reporting "timed out"
+    // for a restart that was going to succeed.
+    test('is far longer on a physical iOS device than on a host', () {
+      expect(IOSDevice(udid: 'X').applyTimeout,
+          greaterThan(MacOSDevice().applyTimeout));
+      expect(IOSDevice(udid: 'X').applyTimeout,
+          greaterThanOrEqualTo(const Duration(minutes: 1)));
+    });
+
+    test('reports the hardware UDID once resolved, whatever was asked for',
+        () async {
+      final device = IOSDevice(
+        udid: 'CORE-1',
+        bundleId: 'com.example.test',
+        runProcess: (exe, args) async {
+          if (args.contains('devices') && args.contains('--json-output')) {
+            File(args[args.indexOf('--json-output') + 1]).writeAsStringSync(
+                json.encode({
+              'result': {
+                'devices': [
+                  {
+                    'identifier': 'CORE-1',
+                    'hardwareProperties': {'udid': 'UDID-1'},
+                    'connectionProperties': {'transportType': 'wired'},
+                  },
+                ],
+              },
+            }));
+            return ProcessResult(0, 0, '', '');
+          }
+          return ProcessResult(0, 1, '', 'INSTALL_FAILED');
+        },
+        startProcess: (exe, args) async => FakeProcess(),
+      );
+
+      expect(device.udid, 'CORE-1', reason: 'nothing resolved yet');
+      await expectLater(device.launch('/path/to/MyApp.app'), throwsStateError);
+      expect(device.udid, 'UDID-1',
+          reason: 'usbmuxd-backed tools cannot use the CoreDevice UUID');
+    });
+
+    test('a simulator keeps the host budget', () {
+      expect(IOSSimulatorDevice(udid: 'X').applyTimeout,
+          MacOSDevice().applyTimeout);
+    });
   });
 
   group('IOSDevice.screenshot', () {

@@ -883,18 +883,77 @@ Each platform has exactly **one** log source, because a Dart `print()` reaches b
 | macOS / Linux / Windows | the app process's stdout + stderr |
 | Android | `adb logcat`, filtered host-side to `flutter*`, `DartVM`, `AndroidRuntime`, `System.err` and fatal records |
 | iOS Simulator | a dedicated `simctl spawn log stream` scoped to the app process (separate from the stream used for VM-service discovery) |
-| iOS device | `devicectl --console` |
+| iOS device | `devicectl --console`, plus lldb's own output — lldb stays attached for the whole run |
 | Chrome, DDC dev mode | the DWDS VM service's `Stdout`/`Stderr` streams |
 | Chrome, WASM / production JS | CDP `Runtime.consoleAPICalled` |
 | `attach` | the VM service's `Stdout`/`Stderr` streams — the app wasn't spawned here, so there is no process to read |
 
-**Known regression, physical iOS devices.** App output does not currently reach you on a physical device, and neither does the VM service URI — so `flutter_bazel run -d ios` gives no hot reload on real hardware. Verified on an iPhone 12 Pro under Xcode 26.6: `devicectl --console` delivers its own progress messages (`Acquired tunnel connection…`, `Launched application with…`) but not the app's stdout, so the engine's `Dart VM service is listening on …` announcement never arrives.
+**Physical iOS devices.** Output comes from `devicectl --console` — which also
+carries devicectl's own progress banners (`Acquired tunnel connection…`,
+`Launched application with…`) — together with lldb's, since lldb stays attached
+for the whole run holding the debugserver the JIT depends on. Upstream treats
+the pair the same way: on a CoreDevice with Xcode ≥ 26 `flutter_tools` selects a
+combined `devicectlAndLldb` log source, noting that `idevicesyslog` "stopped
+working with at least Xcode 26."
 
-**This used to work** — commit `30b8c3b` (2026-03-25) established discovery by reading devicectl's stderr, and it was verified at the time. What changed is the surrounding platform, not this code. Flutter's own tree documents the same era: on a CoreDevice with Xcode ≥ 26 it now selects a combined `devicectlAndLldb` log source, noting that `idevicesyslog` "stopped working with at least Xcode 26."
+Expect the first line to take a while. Starting a debug build under the JIT
+breakpoint is slow — measured ~43 s from resume to the engine's first log on an
+iPhone 12 Pro, which is why the timeouts here are minutes rather than seconds.
 
-Re-adding the `script -t 0 /dev/null` pty wrapper that `flutter_tools` uses (`ios/core_devices.dart`, to "convince devicectl it has a terminal attached in order to redirect stdout") did **not** restore output here, so buffering is not the whole story.
+### Finding the VM service
 
-The likely fix is to adopt what current `flutter_tools` does rather than extend this path: race **mDNS** (`MDnsVmServiceDiscovery`, which also covers wireless devices) against device logs, and treat lldb as a first-class log source alongside devicectl. Note mDNS discovery is gated on the device's Local Network permission prompt — flutter_tools has `throwOnMissingLocalNetworkPermissionsError` for exactly that. Simulator, desktop, Android and web are unaffected.
+On every platform except physical iOS hardware, the URI arrives in-band: the
+engine prints it, and discovery reads the same log stream that carries app
+output. Nothing extra is involved.
+
+A physical iOS device is the exception. A wirelessly attached device has no
+console channel at all, and the one a wired device has belongs to the `devicectl`
+invocation that launched the app. So the URI comes from the app's **mDNS
+advertisement** instead — the one channel both connections share. Every Flutter app built in
+debug or profile mode advertises `_dartVmService._tcp` with its port in the SRV
+record and its service auth code in the TXT record; the generated debug/profile
+`Info.plist` declares the matching `NSBonjourServices` entry
+(`flutter/private/runners/ios/DartVmServiceMdns.plist`), so this works for any
+app built through these rules with no extra configuration.
+
+This is the single mechanism for iOS hardware — nothing races it — and it is
+what makes wireless devices work at all:
+
+| Connection | VM service host | Port |
+| --- | --- | --- |
+| wired | `127.0.0.1` through an `iproxy` forward, because the service binds to the device's loopback | the advertised device-side port, forwarded |
+| wireless | the device's own address, resolved from the advertisement | the advertised port, dialed directly |
+
+The two halves are chosen together from what `devicectl list devices` reports:
+a wireless launch also passes `--vm-service-host=0.0.0.0` so the service is
+reachable off-device, and a wired launch deliberately does not.
+
+Two things are worth knowing when it fails:
+
+- **Local Network permission.** On macOS the mDNS socket needs it. Denied, the
+  failure is a specific error naming System Settings > Privacy & Security >
+  Local Network — not a silent timeout. The device also prompts once, on its
+  own, the first time an app advertises.
+- **mDNS queries get lost.** They are UDP, and RFC 6762 §5.1 requires a querier
+  to retransmit. Against a USB-attached iPhone a single query succeeded roughly
+  two times in five, so discovery retransmits with the specified backoff; in
+  practice it resolves in ~200 ms and worst-observed 3.3 s.
+
+Hot reload and hot restart get the same allowance. A restart re-runs `main()`,
+which re-JITs the app and so pays the breakpoint cost again; the per-call budget
+is three minutes on hardware against thirty seconds on a host. Too short a
+budget does not merely wait less — it abandons the RPC and force-closes the
+VM-service connection, reporting a timeout for a restart that was on its way to
+succeeding.
+
+`devicectl list devices` also lists devices that were paired once and are not
+attached now. Those are filtered out, so `-d ios` picks the device that is
+actually there; with two attached, it asks for `-d ios:<udid>` rather than
+guessing. Either identifier works there — a device has two, the hardware UDID
+Xcode shows and the CoreDevice UUID `devicectl` prints as `identifier`. Only the
+hardware one means anything to usbmuxd, so that is what `iproxy` and `lldb` are
+addressed with; getting this wrong yields a port forward that binds locally and
+then resets every connection, which surfaces much later as a DDS failure.
 
 ### Agent / external-tool control surface
 

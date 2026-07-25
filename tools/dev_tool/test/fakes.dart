@@ -5,6 +5,8 @@ import 'dart:io';
 
 import 'package:flutter_bazel_dev_tool/hot_reload/app_instance.dart';
 import 'package:flutter_bazel_dev_tool/hot_reload/compiler.dart';
+import 'package:flutter_bazel_dev_tool/mdns_vm_service_discovery.dart';
+import 'package:multicast_dns/multicast_dns.dart';
 import 'package:vm_service/vm_service.dart';
 
 /// An [IOSink] that captures output to a [StringBuffer].
@@ -604,4 +606,123 @@ class FakeAppInstance implements AppInstance {
     if (gate != null) await gate!.future;
     return nextOutcome;
   }
+}
+
+/// Hands out [FakeMDnsClient]s and counts them.
+///
+/// Discovery builds a fresh client per query attempt, so "answer on the Nth
+/// attempt" — the property that proves retransmission works — is a fact about
+/// the factory, not about any one client. Pass [call] as the
+/// `MDnsClientFactory`.
+class FakeMDnsClientFactory {
+  /// Records handed to each client, by `(ResourceRecordType, name)`.
+  final Map<(int, String), List<ResourceRecord>> records;
+
+  /// Thrown from [MDnsClient.start], for the denied-permission path.
+  final Object? startError;
+
+  /// Number of leading attempts that answer with nothing.
+  final int silentAttempts;
+
+  final clients = <FakeMDnsClient>[];
+
+  FakeMDnsClientFactory({
+    Map<(int, String), List<ResourceRecord>>? records,
+    this.startError,
+    this.silentAttempts = 0,
+  }) : records = records ?? const {};
+
+  MDnsClient call() {
+    final client = FakeMDnsClient(
+      records: clients.length < silentAttempts ? const {} : records,
+      startError: startError,
+    );
+    clients.add(client);
+    return client;
+  }
+}
+
+/// An [MDnsClient] that answers from a canned record set.
+///
+/// Records are keyed the way the real client's cache is — by the query's
+/// resource-record type and fully-qualified name — so a test describes an
+/// advertisement the same way a responder does: one PTR under the service
+/// type, and SRV/TXT/A records under the instance name.
+class FakeMDnsClient implements MDnsClient {
+  final Map<(int, String), List<ResourceRecord>> records;
+  final Object? startError;
+
+  bool started = false;
+  bool stopped = false;
+
+  FakeMDnsClient({
+    Map<(int, String), List<ResourceRecord>>? records,
+    this.startError,
+  }) : records = records ?? const {};
+
+  @override
+  Future<void> start({
+    InternetAddress? listenAddress,
+    NetworkInterfacesFactory? interfacesFactory,
+    int mDnsPort = 5353,
+    InternetAddress? mDnsAddress,
+    Function? onError,
+  }) async {
+    if (startError != null) throw startError!;
+    started = true;
+  }
+
+  @override
+  void stop() => stopped = true;
+
+  @override
+  Stream<T> lookup<T extends ResourceRecord>(
+    ResourceRecordQuery query, {
+    Duration timeout = const Duration(seconds: 5),
+  }) {
+    final matches =
+        records[(query.resourceRecordType, query.fullyQualifiedName)] ??
+            const <ResourceRecord>[];
+    return Stream.fromIterable(matches.whereType<T>());
+  }
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) {
+    throw UnimplementedError(
+        '${invocation.memberName} not implemented in FakeMDnsClient');
+  }
+}
+
+/// A `_dartVmService._tcp` advertisement, as a responder would answer it.
+///
+/// Returns the record map [FakeMDnsClient] expects.
+Map<(int, String), List<ResourceRecord>> dartVmServiceRecords({
+  required String instance,
+  required String host,
+  required int port,
+  String? authCode,
+  List<String> addresses = const [],
+}) {
+  const validUntil = 1 << 40;
+  final service = '$instance.$dartVmServiceMdnsName';
+  return {
+    (ResourceRecordType.serverPointer, dartVmServiceMdnsName): [
+      PtrResourceRecord(dartVmServiceMdnsName, validUntil,
+          domainName: service),
+    ],
+    (ResourceRecordType.service, service): [
+      SrvResourceRecord(service, validUntil,
+          target: host, port: port, priority: 0, weight: 0),
+    ],
+    if (authCode != null)
+      (ResourceRecordType.text, service): [
+        TxtResourceRecord(service, validUntil, text: 'authCode=$authCode'),
+      ],
+    if (addresses.isNotEmpty)
+      (ResourceRecordType.addressIPv4, host): [
+        for (final a in addresses)
+          IPAddressResourceRecord(host, validUntil,
+              address: InternetAddress(a)),
+      ],
+  };
 }

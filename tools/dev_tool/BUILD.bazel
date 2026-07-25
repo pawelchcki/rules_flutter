@@ -8,6 +8,7 @@ _LIB_DEPS = [
     "@dev_tool_deps//:dds",
     "@dev_tool_deps//:dwds",
     "@dev_tool_deps//:logging",
+    "@dev_tool_deps//:multicast_dns",
     "@dev_tool_deps//:package_config",
     "@dev_tool_deps//:path",
     "@dev_tool_deps//:pool",
@@ -64,6 +65,7 @@ dart_test(
     main = "test/vm_service_client_test.dart",
     deps = [
         ":lib",
+        "@dev_tool_deps//:multicast_dns",
         "@dev_tool_deps//:test",
         "@dev_tool_deps//:vm_service",
     ],
@@ -75,6 +77,7 @@ dart_test(
     main = "test/app_log_test.dart",
     deps = [
         ":lib",
+        "@dev_tool_deps//:multicast_dns",
         "@dev_tool_deps//:test",
         "@dev_tool_deps//:vm_service",
     ],
@@ -86,6 +89,7 @@ dart_test(
     main = "test/app_log_sink_test.dart",
     deps = [
         ":lib",
+        "@dev_tool_deps//:multicast_dns",
         "@dev_tool_deps//:test",
         "@dev_tool_deps//:vm_service",
     ],
@@ -106,6 +110,31 @@ dart_test(
     main = "test/vm_service_logs_test.dart",
     deps = [
         ":lib",
+        "@dev_tool_deps//:multicast_dns",
+        "@dev_tool_deps//:test",
+        "@dev_tool_deps//:vm_service",
+    ],
+)
+
+dart_test(
+    name = "device_integration_test",
+    srcs = ["test/fakes.dart"],
+    main = "test/device_integration_test.dart",
+    deps = [
+        ":lib",
+        "@dev_tool_deps//:multicast_dns",
+        "@dev_tool_deps//:test",
+        "@dev_tool_deps//:vm_service",
+    ],
+)
+
+dart_test(
+    name = "mdns_vm_service_discovery_test",
+    srcs = ["test/fakes.dart"],
+    main = "test/mdns_vm_service_discovery_test.dart",
+    deps = [
+        ":lib",
+        "@dev_tool_deps//:multicast_dns",
         "@dev_tool_deps//:test",
         "@dev_tool_deps//:vm_service",
     ],
@@ -117,6 +146,7 @@ dart_test(
     main = "test/device_test.dart",
     deps = [
         ":lib",
+        "@dev_tool_deps//:multicast_dns",
         "@dev_tool_deps//:test",
         "@dev_tool_deps//:vm_service",
     ],
@@ -147,6 +177,7 @@ dart_test(
     main = "test/compiler_test.dart",
     deps = [
         ":lib",
+        "@dev_tool_deps//:multicast_dns",
         "@dev_tool_deps//:test",
         "@dev_tool_deps//:vm_service",
     ],
@@ -158,6 +189,7 @@ dart_test(
     main = "test/app_instance_test.dart",
     deps = [
         ":lib",
+        "@dev_tool_deps//:multicast_dns",
         "@dev_tool_deps//:test",
         "@dev_tool_deps//:vm_service",
     ],
@@ -169,6 +201,7 @@ dart_test(
     main = "test/reload_orchestrator_test.dart",
     deps = [
         ":lib",
+        "@dev_tool_deps//:multicast_dns",
         "@dev_tool_deps//:path",
         "@dev_tool_deps//:test",
         "@dev_tool_deps//:vm_service",
@@ -191,6 +224,7 @@ dart_test(
     main = "test/run_command_lifecycle_test.dart",
     deps = [
         ":lib",
+        "@dev_tool_deps//:multicast_dns",
         "@dev_tool_deps//:path",
         "@dev_tool_deps//:test",
         "@dev_tool_deps//:vm_service",
