@@ -6,8 +6,8 @@
 ///
 /// The distinction is load-bearing rather than cosmetic. In `--machine` mode
 /// stdout belongs to the JSON-RPC protocol an IDE is parsing, so app output
-/// must travel as `app.log` events; writing it raw (as an earlier version did
-/// during VM-service discovery) interleaves non-JSON text into that stream.
+/// must travel as `app.log` events. Writing a line raw would interleave
+/// non-JSON text into that stream and corrupt what the client is reading.
 import 'dart:io';
 
 import 'app_log.dart';

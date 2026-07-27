@@ -107,12 +107,10 @@ class AppLogStream {
   /// Register a source that feeds this stream.
   ///
   /// The stream closes once every registered producer has called
-  /// [producerDone] — not when the first one does. A stream can have several
-  /// producers with different lifetimes: a physical iOS device is fed both by
-  /// the `devicectl --console` process, which exits when the app terminates,
-  /// and by lldb, which stays attached and is where the crash report comes
-  /// from. Closing on the first to finish silently discarded everything the
-  /// longer-lived source had left to say.
+  /// [producerDone], not when the first one does. Producers need not end
+  /// together, and nothing orders them: a physical iOS device is fed by both
+  /// `devicectl --console` and lldb, either of which can finish first. Closing
+  /// on the first would silently mute the other for the rest of the run.
   ///
   /// A no-op once the stream is closed: nothing can arrive on it any more, so
   /// registering against one cannot revive it.
@@ -277,24 +275,22 @@ class AppLogPump {
 
 /// Wire a process's stdout and stderr into [out] for the process's lifetime.
 ///
-/// This deliberately never stops on a content match. Discovery of things like
-/// the VM-service URI is a *reader* of [AppLogStream], not an owner of these
-/// subscriptions — an earlier version cancelled here once the URI was found,
-/// which silently killed all subsequent app output and left the OS pipes
-/// unread.
+/// Forwarding never stops on a content match. Discovery of things like the
+/// VM-service URI is a *reader* of [AppLogStream], never an owner of these
+/// subscriptions: cancelling them on a match would both cut off the rest of
+/// the app's output and leave the OS pipes unread, which stalls the writer.
 ///
 /// [transform] filters and rewrites lines: return null to drop a line (used by
 /// sources like `adb logcat` that carry unrelated system logging).
 ///
-/// The process is registered as a producer of [out] (see
-/// [AppLogStream.addProducer]), and reported done when both of its output
-/// streams end. With a single producer that closes [out] outright: no further
-/// output can ever arrive, and saying so promptly is what lets a caller
-/// waiting on the stream (VM-service discovery) give up the moment the app
-/// dies instead of sitting out its timeout. Where [out] has other producers —
-/// the iOS device's lldb forwarder — it stays open until they finish too. The
-/// buffered lines survive the close, so an app's final output is still
-/// readable, usually the output that explains why it exited.
+/// [process] is registered as a producer of [out]
+/// ([AppLogStream.addProducer]) and reported done when both of its output
+/// streams end. Where it is the only producer that closes [out], which is what
+/// lets a reader waiting on the stream — VM-service discovery — give up the
+/// moment the app dies rather than sit out its timeout; where [out] has others,
+/// it stays open until they finish too. Buffered lines survive the close, so an
+/// app's final output, usually the output explaining why it exited, is still
+/// readable.
 AppLogPump pumpProcessLines(
   Process process,
   AppLogStream out, {

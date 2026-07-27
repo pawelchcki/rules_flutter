@@ -1549,13 +1549,10 @@ class IOSDevice extends Device {
 
     // Step 1: Launch paused with --console to capture the app's output.
     //
-    // NOTE: flutter_tools wraps this in `script -t 0 /dev/null` "to convince
+    // flutter_tools wraps this in `script -t 0 /dev/null` "to convince
     // devicectl it has a terminal attached in order to redirect stdout"
-    // (`ios/core_devices.dart`). This repo removed that wrapper in 30b8c3b
-    // (2026-03-25) as unnecessary, and device discovery demonstrably worked
-    // then by reading devicectl's stderr. Re-adding it under Xcode 26.6 did
-    // NOT restore app output, so the pty is not the current blocker and the
-    // wrapper stays off pending a real diagnosis — see README § Dev Tool.
+    // (`ios/core_devices.dart`). That is unnecessary here: devicectl writes
+    // the app's console output to these pipes without a pty.
     _consoleLauncherProcess = await _startProcess('xcrun', [
       'devicectl',
       'device',
@@ -1768,11 +1765,11 @@ return False
   /// Xcode 26+ (`ios/devices.dart` `logSources` → `devicectlAndLldb`), because
   /// the debugger carries output the console stream may not.
   ///
-  /// That makes lldb a *second* producer of [appLogs], with a different
-  /// lifetime from the first: `devicectl --console` exits when the app
-  /// terminates, while lldb stays attached and is where the crash report then
-  /// comes from. Registering it as a producer is what keeps that report from
-  /// being dropped — the stream now closes only once both sources are done.
+  /// That makes lldb a *second* producer of [appLogs], and the two are not
+  /// ordered: either the debugger or the `devicectl --console` process can be
+  /// the one still running. It is registered via [AppLogStream.addProducer] so
+  /// the stream closes only once both are done, rather than whenever the first
+  /// of them happens to end.
   void _startLldbOutput(Process lldb, {AppLogStream? appLogs}) {
     final out = AppLogStream();
     _lldbOutput = out;
