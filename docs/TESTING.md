@@ -509,17 +509,19 @@ restart) and confirm the change appears on screen. "The tool printed
 For the wireless case, unplug the cable with the device paired for network
 debugging (Xcode > Window > Devices and Simulators > *Connect via network*) and
 confirm `xcrun devicectl list devices` reports `transportType: localNetwork`
-before running. A wireless launch must pass `--vm-service-host=0.0.0.0` and dial
-the device's own address; a wired one must do neither. If the device has never
-been used this way it will prompt for Local Network permission once — accept it,
-then re-run.
+before running — the same `-d ios` command then takes the wireless path. A
+wireless launch must pass `--vm-service-host=0.0.0.0` and dial the device's own
+address; a wired one must do neither. If the device has never been used this way
+it will prompt for Local Network permission once — accept it, then re-run.
 
-Expect a physical-device launch to take around a minute: starting a debug build
-under the JIT breakpoint is slow (~43 s from resume to the engine's first log on
-an iPhone 12 Pro), and the mDNS query only resolves once the app is up. If it
-runs out the full timeout, read the error — it names the advertisements it did
-see and which host sent each, which distinguishes "the app never started" from
-"that was the copy running in a simulator on this Mac."
+Budget the time: starting a debug build under the JIT breakpoint is slow, and
+the mDNS query only resolves once the app is up. Measured on an iPhone 12 Pro,
+resume to first log is **~45 s wired and ~6–7 minutes wireless**; a hot restart
+costs the same again, while a hot reload is quick on both. A "still waiting"
+note appears at 45 s. If a run does exhaust its budget, read the error — it
+names the advertisements it saw and which host sent each, which distinguishes
+"the app never started" from "that was the copy running in a simulator on this
+Mac."
 
 The `/logs` control endpoint is exercised by
 `tools/dev_tool/test/e2e/plugin_example_e2e_test.dart`; to check it by hand,

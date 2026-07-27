@@ -210,6 +210,62 @@ void main() {
       expect(elapsed.elapsed, greaterThanOrEqualTo(const Duration(seconds: 3)));
     }, timeout: const Timeout(Duration(seconds: 30)));
 
+    // A launch that legitimately takes minutes is indistinguishable from a
+    // hang unless something says so.
+    test('reports that it is still waiting once past slowAfter', () async {
+      final factory = FakeMDnsClientFactory();
+      final reported = <Duration>[];
+
+      await expectLater(
+        discoveryOver(factory).discover(
+          bundleId: bundleId,
+          hostnames: deviceHostnames,
+          timeout: const Duration(seconds: 4),
+          slowAfter: const Duration(seconds: 1),
+          onSlow: reported.add,
+        ),
+        throwsA(isA<MdnsDiscoveryException>()),
+      );
+
+      expect(reported, hasLength(1), reason: 'once, not once per retry');
+      expect(reported.single, greaterThanOrEqualTo(const Duration(seconds: 1)));
+    }, timeout: const Timeout(Duration(seconds: 30)));
+
+    test('stays quiet when the answer arrives before slowAfter', () async {
+      final factory = FakeMDnsClientFactory(
+        records: dartVmServiceRecords(
+            instance: bundleId, host: deviceHost, port: 1, authCode: 'a'),
+      );
+      final reported = <Duration>[];
+
+      await discoveryOver(factory).discover(
+        bundleId: bundleId,
+        hostnames: deviceHostnames,
+        slowAfter: const Duration(seconds: 1),
+        onSlow: reported.add,
+      );
+
+      expect(reported, isEmpty);
+    });
+
+    // The link-local hint is about a USB point-to-point link. A device on the
+    // network answers over that network, so telling its user to check "iPhone
+    // USB" sends them to the wrong place.
+    test('omits the USB link-local hint for a networked device', () async {
+      final factory = FakeMDnsClientFactory();
+
+      await expectLater(
+        discoveryOver(factory).discover(
+          bundleId: bundleId,
+          hostnames: deviceHostnames,
+          resolveAddress: true,
+          timeout: const Duration(seconds: 1),
+        ),
+        throwsA(isA<MdnsDiscoveryException>().having(
+            (e) => e.message, 'message', isNot(contains('link-local')))),
+      );
+    });
+
     test('resolves the device address when asked to', () async {
       final factory = FakeMDnsClientFactory(
         records: dartVmServiceRecords(

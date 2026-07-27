@@ -897,8 +897,14 @@ combined `devicectlAndLldb` log source, noting that `idevicesyslog` "stopped
 working with at least Xcode 26."
 
 Expect the first line to take a while. Starting a debug build under the JIT
-breakpoint is slow — measured ~43 s from resume to the engine's first log on an
-iPhone 12 Pro, which is why the timeouts here are minutes rather than seconds.
+breakpoint is slow: the engine traps to the debugger for every executable page
+it allocates, and the handler writes to device memory over the debugserver
+link. Measured on an iPhone 12 Pro, resume to the engine's first log takes
+**~45 s over a cable and ~6–7 minutes over the network**. That is the platform,
+not this tool — setting `--auto-continue` on the breakpoint changes nothing,
+because the cost is the memory write rather than the stop/resume handshake. Use
+a cable when you can. The tool prints a "still waiting" note at 45 s so a slow
+launch is distinguishable from a hang.
 
 ### Finding the VM service
 
@@ -939,12 +945,13 @@ Two things are worth knowing when it fails:
   two times in five, so discovery retransmits with the specified backoff; in
   practice it resolves in ~200 ms and worst-observed 3.3 s.
 
-Hot reload and hot restart get the same allowance. A restart re-runs `main()`,
-which re-JITs the app and so pays the breakpoint cost again; the per-call budget
-is three minutes on hardware against thirty seconds on a host. Too short a
-budget does not merely wait less — it abandons the RPC and force-closes the
-VM-service connection, reporting a timeout for a restart that was on its way to
-succeeding.
+Hot reload and hot restart get the same allowance. A reload is quick — only the
+changed library is compiled and no pages are re-JITed — but a restart re-runs
+`main()` and so pays the breakpoint cost again, taking about as long as the
+original launch. The per-call budget is therefore five minutes wired and fifteen
+wireless, against thirty seconds on a host. Too short a budget does not merely
+wait less: it abandons the RPC and force-closes the VM-service connection,
+reporting a timeout for a restart that was on its way to succeeding.
 
 `devicectl list devices` also lists devices that were paired once and are not
 attached now. Those are filtered out, so `-d ios` picks the device that is

@@ -158,11 +158,18 @@ class MdnsVmServiceDiscovery {
   ///
   /// Throws [MdnsDiscoveryException] rather than returning null: every failure
   /// here has a different remedy, and a null would erase which one it was.
+  ///
+  /// [onSlow] is called once if nothing has answered after [slowAfter]. A
+  /// launch that legitimately takes minutes is indistinguishable from a hang
+  /// unless something says so — see [IOSDevice.launch] for why iOS hardware
+  /// takes that long.
   Future<MdnsVmServiceRecord> discover({
     required String bundleId,
     required Iterable<String> hostnames,
     bool resolveAddress = false,
     Duration timeout = const Duration(seconds: 30),
+    Duration slowAfter = const Duration(seconds: 60),
+    void Function(Duration elapsed)? onSlow,
   }) async {
     // One-shot mDNS queries are UDP and are expected to be lost: RFC 6762 §5.1
     // requires a querier to retransmit, "the interval between the first two
@@ -178,7 +185,12 @@ class MdnsVmServiceDiscovery {
     final seen = <String, String>{};
     var window = _initialQueryWindow;
 
+    var warned = false;
     while (elapsed.elapsed < timeout) {
+      if (!warned && elapsed.elapsed >= slowAfter) {
+        warned = true;
+        onSlow?.call(elapsed.elapsed);
+      }
       final attemptStart = elapsed.elapsed;
       final remaining = timeout - attemptStart;
       final attemptWindow = window < remaining ? window : remaining;
@@ -204,7 +216,8 @@ class MdnsVmServiceDiscovery {
 
     throw MdnsDiscoveryException(
       MdnsDiscoveryFailure.notFound,
-      await _notFoundMessage(bundleId, hostnames, seen, timeout),
+      await _notFoundMessage(bundleId, hostnames, seen, timeout,
+          overPointToPointLink: !resolveAddress),
     );
   }
 
@@ -359,8 +372,9 @@ class MdnsVmServiceDiscovery {
     String bundleId,
     Iterable<String> hostnames,
     Map<String, String> seen,
-    Duration timeout,
-  ) async {
+    Duration timeout, {
+    required bool overPointToPointLink,
+  }) async {
     final buffer = StringBuffer()
       ..writeln('No Dart VM service advertised for $bundleId on '
           '${hostnames.join(', ')} within ${timeout.inSeconds}s.');
@@ -373,10 +387,15 @@ class MdnsVmServiceDiscovery {
         buffer.writeln('  $instance  on $host');
       });
     }
-    final interfaces =
-        await _listInterfaces(includeLinkLocal: true, type: InternetAddressType.IPv4);
-    final hasLinkLocal = interfaces.any(
-        (i) => i.addresses.any((a) => a.isLinkLocal));
+    // Only meaningful for an advertiser reached over a point-to-point link —
+    // the same bit as "we were not asked to resolve a routable address". A
+    // device on the network answers over that network and has no business
+    // needing a link-local interface here.
+    if (!overPointToPointLink) return buffer.toString();
+    final interfaces = await _listInterfaces(
+        includeLinkLocal: true, type: InternetAddressType.IPv4);
+    final hasLinkLocal =
+        interfaces.any((i) => i.addresses.any((a) => a.isLinkLocal));
     if (!hasLinkLocal) {
       buffer.writeln('This machine has no IPv4 link-local interface, so a '
           'USB-attached device cannot answer an mDNS query. Turn off Personal '

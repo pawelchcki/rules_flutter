@@ -1745,6 +1745,36 @@ void main() {
   });
 
   group('Device.applyTimeout', () {
+    /// An [IOSDevice] that has resolved a device of the given transport.
+    Future<IOSDevice> launchedDevice(String transportType) async {
+      final device = IOSDevice(
+        udid: 'TEST-UDID',
+        bundleId: 'com.example.test',
+        runProcess: (exe, args) async {
+          if (args.contains('devices') && args.contains('--json-output')) {
+            File(args[args.indexOf('--json-output') + 1]).writeAsStringSync(
+                json.encode({
+              'result': {
+                'devices': [
+                  {
+                    'identifier': 'TEST-COREDEVICE-ID',
+                    'hardwareProperties': {'udid': 'TEST-UDID'},
+                    'connectionProperties': {'transportType': transportType},
+                  },
+                ],
+              },
+            }));
+            return ProcessResult(0, 0, '', '');
+          }
+          return ProcessResult(0, 1, '', 'INSTALL_FAILED');
+        },
+        startProcess: (exe, args) async => FakeProcess(),
+      );
+      // Resolution happens on the way to the faked install failure.
+      await expectLater(device.launch('/path/to/MyApp.app'), throwsStateError);
+      return device;
+    }
+
     // A hot restart on hardware re-JITs the app through the lldb breakpoint,
     // which is minutes-scale work. The host default would abandon the RPC and
     // force-close the VM-service connection mid-restart, reporting "timed out"
@@ -1754,6 +1784,14 @@ void main() {
           greaterThan(MacOSDevice().applyTimeout));
       expect(IOSDevice(udid: 'X').applyTimeout,
           greaterThanOrEqualTo(const Duration(minutes: 1)));
+    });
+
+    // Re-JITing the app over Wi-Fi took ~400s against ~43s over a cable, so a
+    // budget that fits a wired restart abandons a wireless one mid-flight.
+    test('is longer again when the device is on the network', () async {
+      final wired = await launchedDevice('wired');
+      final wireless = await launchedDevice('localNetwork');
+      expect(wireless.applyTimeout, greaterThan(wired.applyTimeout));
     });
 
     test('reports the hardware UDID once resolved, whatever was asked for',

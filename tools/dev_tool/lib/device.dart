@@ -1427,12 +1427,18 @@ class IOSDevice extends Device {
 
   /// A hot restart re-runs `main()`, which re-JITs the app — and every new
   /// executable page traps into the `NOTIFY_DEBUGGER_ABOUT_RX_PAGES`
-  /// breakpoint, whose handler round-trips to lldb on the host. That is what
-  /// makes a cold start here take ~43s where a desktop app takes under one,
-  /// and a restart is the same work. The host default would abandon the RPC
-  /// and force-close the connection while the device was still working.
+  /// breakpoint, whose handler writes to device memory over the debugserver
+  /// link. That per-page round trip is what makes a cold start here take ~43s
+  /// wired and ~400s wireless, where a desktop app takes under one second; a
+  /// restart is the same work. (Measured on an iPhone 12 Pro. Setting
+  /// `--auto-continue` on the breakpoint does not help: the cost is the memory
+  /// write, not the stop/resume handshake.) The host default would abandon the
+  /// RPC and force-close the connection while the device was still working.
   @override
-  Duration get applyTimeout => const Duration(minutes: 3);
+  Duration get applyTimeout => switch (_info?.transport) {
+        IOSDeviceTransport.wireless => const Duration(minutes: 15),
+        _ => const Duration(minutes: 5),
+      };
 
   /// Ask `devicectl` which device this is, once per run.
   ///
@@ -1651,19 +1657,26 @@ class IOSDevice extends Device {
     // `_dartVmService._tcp` under NSBonjourServices
     // (`flutter/private/runners/ios/DartVmServiceMdns.plist`).
     //
-    // Generous timeout, because starting a debug app under the JIT breakpoint
-    // is slow: measured ~43s from `process continue` to the engine's first log
-    // on an iPhone 12 Pro. flutter_tools budgets the same way, 60s wired and
-    // 75s wireless, "because this includes time to install and launch the app
-    // on the device" (`ios/devices.dart`).
+    // Minutes, not seconds — see [applyTimeout] for why a debug launch here is
+    // this slow. The budget is a backstop for a run that will never succeed,
+    // not an estimate; [onSlow] is what tells the user a long wait is expected
+    // rather than a hang. flutter_tools splits the same two concerns, warning
+    // at 60s/75s while its mDNS query runs for ten minutes
+    // (`ios/devices.dart`).
     final record = await _mdns.discover(
       bundleId: bundleId,
       hostnames: info.hostnames,
       resolveAddress: info.transport == IOSDeviceTransport.wireless,
       timeout: switch (info.transport) {
-        IOSDeviceTransport.wired => const Duration(seconds: 60),
-        IOSDeviceTransport.wireless => const Duration(seconds: 75),
+        IOSDeviceTransport.wired => const Duration(minutes: 5),
+        IOSDeviceTransport.wireless => const Duration(minutes: 15),
       },
+      slowAfter: const Duration(seconds: 45),
+      onSlow: (elapsed) => logs.add(
+          'Still waiting for the Dart VM service (${elapsed.inSeconds}s). '
+          'Starting a debug build on an iOS device is slow — the JIT traps to '
+          'the debugger for every executable page it allocates, which takes '
+          'about 45s over a cable and several minutes over the network.'),
     );
 
     final Uri vmServiceUri;
