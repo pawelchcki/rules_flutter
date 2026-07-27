@@ -47,7 +47,11 @@ ios_application(
     version = "//:app_version",
     deps = [
         "//:ios_framework",
-        "//:ios_native_libs",
+        # Frameworks for the app's native assets. Omitting this builds and
+        # renders a normal-looking app that fails every native-asset call at
+        # runtime, because dyld cannot resolve the framework-relative path the
+        # manifest records.
+        "//:ios_native_frameworks",
         "//:ios_runner_lib",
     ],
 )

@@ -36,6 +36,11 @@ ios_application(
     version = "//:app_version",
     deps = [
         "//:app_framework",
+        # Native-asset frameworks, matching //:app_bazel_runner. Declared in
+        # the root BUILD but easy to leave unwired: it still builds and renders,
+        # then fails every native-asset call at runtime because dyld cannot
+        # resolve the framework-relative path the manifest records.
+        "//:app_native_frameworks",
         "//:bazel_runner_lib",
     ],
 )
