@@ -50,183 +50,69 @@ dart_binary(
     deps = _LIB_DEPS,
 )
 
-dart_test(
-    name = "bazel_test",
-    main = "test/bazel_test.dart",
-    deps = [
-        ":lib",
-        "@dev_tool_deps//:test",
-    ],
-)
+# Every unit test under test/. Adding an entry here is the whole cost of a new
+# test file, and the list is the reason a file cannot quietly go unrun: the
+# `/logs` endpoint's tests shipped without a target and so were never covered
+# by `bazel test //...`, the canonical runner.
+#
+#   fakes — the test includes test/fakes.dart, which imports multicast_dns and
+#           vm_service whatever the test itself imports.
+#   deps  — packages the test imports directly, beyond :lib and test.
+_TEST_DEPS = [
+    ":lib",
+    "@dev_tool_deps//:test",
+]
 
-dart_test(
-    name = "vm_service_client_test",
-    srcs = ["test/fakes.dart"],
-    main = "test/vm_service_client_test.dart",
-    deps = [
-        ":lib",
-        "@dev_tool_deps//:multicast_dns",
-        "@dev_tool_deps//:test",
-        "@dev_tool_deps//:vm_service",
-    ],
-)
+_FAKES_DEPS = [
+    "@dev_tool_deps//:multicast_dns",
+    "@dev_tool_deps//:vm_service",
+]
 
-dart_test(
-    name = "app_log_test",
-    srcs = ["test/fakes.dart"],
-    main = "test/app_log_test.dart",
-    deps = [
-        ":lib",
-        "@dev_tool_deps//:multicast_dns",
-        "@dev_tool_deps//:test",
-        "@dev_tool_deps//:vm_service",
-    ],
-)
+_PATH_DEP = ["@dev_tool_deps//:path"]
 
-dart_test(
-    name = "app_log_sink_test",
-    srcs = ["test/fakes.dart"],
-    main = "test/app_log_sink_test.dart",
-    deps = [
-        ":lib",
-        "@dev_tool_deps//:multicast_dns",
-        "@dev_tool_deps//:test",
-        "@dev_tool_deps//:vm_service",
-    ],
-)
+_UNIT_TESTS = {
+    "agent_command_test": {},
+    "app_instance_test": {"fakes": True},
+    "app_log_sink_test": {"fakes": True},
+    "app_log_test": {"fakes": True},
+    "applied_versions_test": {"deps": _PATH_DEP},
+    "attach_command_test": {},
+    "bazel_test": {},
+    "build_command_test": {},
+    "cdp_console_test": {},
+    "command_runner_test": {},
+    "compiler_test": {"fakes": True},
+    "device_integration_test": {"fakes": True},
+    "device_test": {"fakes": True},
+    "frontend_server_integration_test": {"fakes": True},
+    "frontend_server_test": {"fakes": True},
+    "http_control_channel_test": {},
+    "machine_protocol_test": {"fakes": True},
+    "mdns_vm_service_discovery_test": {"fakes": True},
+    "native_libs_fingerprint_test": {},
+    "package_uri_resolver_test": {"deps": _PATH_DEP},
+    "readiness_gate_test": {},
+    "reload_orchestrator_test": {
+        "fakes": True,
+        "deps": _PATH_DEP,
+    },
+    "run_command_lifecycle_test": {
+        "fakes": True,
+        "deps": _PATH_DEP,
+    },
+    "run_command_test": {},
+    "session_test": {"fakes": True},
+    "source_watcher_test": {"deps": ["@dev_tool_deps//:watcher"]},
+    "toolchain_info_test": {"deps": _PATH_DEP},
+    "vm_service_client_test": {"fakes": True},
+    "vm_service_logs_test": {"fakes": True},
+}
 
-dart_test(
-    name = "cdp_console_test",
-    main = "test/cdp_console_test.dart",
-    deps = [
-        ":lib",
-        "@dev_tool_deps//:test",
-    ],
-)
-
-dart_test(
-    name = "vm_service_logs_test",
-    srcs = ["test/fakes.dart"],
-    main = "test/vm_service_logs_test.dart",
-    deps = [
-        ":lib",
-        "@dev_tool_deps//:multicast_dns",
-        "@dev_tool_deps//:test",
-        "@dev_tool_deps//:vm_service",
-    ],
-)
-
-dart_test(
-    name = "device_integration_test",
-    srcs = ["test/fakes.dart"],
-    main = "test/device_integration_test.dart",
-    deps = [
-        ":lib",
-        "@dev_tool_deps//:multicast_dns",
-        "@dev_tool_deps//:test",
-        "@dev_tool_deps//:vm_service",
-    ],
-)
-
-dart_test(
-    name = "mdns_vm_service_discovery_test",
-    srcs = ["test/fakes.dart"],
-    main = "test/mdns_vm_service_discovery_test.dart",
-    deps = [
-        ":lib",
-        "@dev_tool_deps//:multicast_dns",
-        "@dev_tool_deps//:test",
-        "@dev_tool_deps//:vm_service",
-    ],
-)
-
-dart_test(
-    name = "device_test",
-    srcs = ["test/fakes.dart"],
-    main = "test/device_test.dart",
-    deps = [
-        ":lib",
-        "@dev_tool_deps//:multicast_dns",
-        "@dev_tool_deps//:test",
-        "@dev_tool_deps//:vm_service",
-    ],
-)
-
-dart_test(
-    name = "applied_versions_test",
-    main = "test/applied_versions_test.dart",
-    deps = [
-        ":lib",
-        "@dev_tool_deps//:path",
-        "@dev_tool_deps//:test",
-    ],
-)
-
-dart_test(
-    name = "readiness_gate_test",
-    main = "test/readiness_gate_test.dart",
-    deps = [
-        ":lib",
-        "@dev_tool_deps//:test",
-    ],
-)
-
-dart_test(
-    name = "compiler_test",
-    srcs = ["test/fakes.dart"],
-    main = "test/compiler_test.dart",
-    deps = [
-        ":lib",
-        "@dev_tool_deps//:multicast_dns",
-        "@dev_tool_deps//:test",
-        "@dev_tool_deps//:vm_service",
-    ],
-)
-
-dart_test(
-    name = "app_instance_test",
-    srcs = ["test/fakes.dart"],
-    main = "test/app_instance_test.dart",
-    deps = [
-        ":lib",
-        "@dev_tool_deps//:multicast_dns",
-        "@dev_tool_deps//:test",
-        "@dev_tool_deps//:vm_service",
-    ],
-)
-
-dart_test(
-    name = "reload_orchestrator_test",
-    srcs = ["test/fakes.dart"],
-    main = "test/reload_orchestrator_test.dart",
-    deps = [
-        ":lib",
-        "@dev_tool_deps//:multicast_dns",
-        "@dev_tool_deps//:path",
-        "@dev_tool_deps//:test",
-        "@dev_tool_deps//:vm_service",
-    ],
-)
-
-dart_test(
-    name = "source_watcher_test",
-    main = "test/source_watcher_test.dart",
-    deps = [
-        ":lib",
-        "@dev_tool_deps//:test",
-        "@dev_tool_deps//:watcher",
-    ],
-)
-
-dart_test(
-    name = "run_command_lifecycle_test",
-    srcs = ["test/fakes.dart"],
-    main = "test/run_command_lifecycle_test.dart",
-    deps = [
-        ":lib",
-        "@dev_tool_deps//:multicast_dns",
-        "@dev_tool_deps//:path",
-        "@dev_tool_deps//:test",
-        "@dev_tool_deps//:vm_service",
-    ],
-)
+[dart_test(
+    name = name,
+    srcs = ["test/fakes.dart"] if cfg.get("fakes") else [],
+    main = "test/%s.dart" % name,
+    deps = _TEST_DEPS +
+           (_FAKES_DEPS if cfg.get("fakes") else []) +
+           cfg.get("deps", []),
+) for name, cfg in _UNIT_TESTS.items()]
