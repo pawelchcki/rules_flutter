@@ -509,5 +509,72 @@ void main() {
 
       expect(s.read(0).lines.map((l) => l.text), ['before']);
     });
+
+    test('two pumped processes both have to end before the stream closes',
+        () async {
+      // The iOS device feeds one stream from `devicectl --console` and from
+      // lldb, and they do not end together: devicectl exits when the app
+      // terminates, which is exactly when lldb starts reporting why.
+      final first = FakeProcess();
+      final second = FakeProcess();
+      final s = AppLogStream();
+      pumpProcessLines(first, s);
+      pumpProcessLines(second, s);
+
+      first.complete(0);
+      await pumpEventQueue();
+      expect(s.isClosed, isFalse,
+          reason: 'the other source is still producing');
+
+      second.emitStdout('still talking');
+      await pumpEventQueue();
+      expect(s.read(0).lines.map((l) => l.text), contains('still talking'));
+
+      second.complete(0);
+      await pumpEventQueue();
+      expect(s.isClosed, isTrue, reason: 'every source has now ended');
+    });
+  });
+
+  group('AppLogStream producers', () {
+    test('the stream closes only once every producer has finished', () {
+      final s = AppLogStream()
+        ..addProducer()
+        ..addProducer();
+
+      s.producerDone();
+      expect(s.isClosed, isFalse);
+
+      s.producerDone();
+      expect(s.isClosed, isTrue);
+    });
+
+    test('a producer registered after close is ignored', () {
+      final s = AppLogStream()..addProducer();
+      s.producerDone();
+      expect(s.isClosed, isTrue);
+
+      // Nothing can arrive on a closed stream, so registering against one is a
+      // no-op rather than a resurrection.
+      s.addProducer();
+      s.add('too late');
+
+      expect(s.isClosed, isTrue);
+      expect(s.read(0).lines, isEmpty);
+    });
+
+    test('close() still closes a stream with live producers', () async {
+      final s = AppLogStream()..addProducer();
+      await s.close();
+      expect(s.isClosed, isTrue,
+          reason: 'stop() closes the stream regardless of what is feeding it');
+    });
+
+    test('producerDone past zero does not throw', () {
+      final s = AppLogStream()..addProducer();
+      s.producerDone();
+      s.producerDone();
+      expect(s.isClosed, isTrue);
+    });
   });
 }

@@ -1491,13 +1491,48 @@ void main() {
           reason: 'lldb stderr carries the reason for real lldb failures');
     });
 
-    test('closes the log stream when devicectl exits', () async {
+    test('lldb output reaches the app log stream', () async {
+      // Upstream treats devicectl and lldb as one combined log source on a
+      // CoreDevice under Xcode 26+, because the debugger carries output the
+      // console stream may not.
+      final r = await launchFaked();
+
+      r.lldb.emitStdout('flutter: hello from the app');
+      await pumpEventQueue();
+
+      expect(r.instance.logs.read(0).lines.map((l) => l.text),
+          contains('flutter: hello from the app'));
+    });
+
+    test('lldb output survives devicectl exiting', () async {
+      // devicectl --console exits when the app terminates, which is precisely
+      // when lldb produces the output that explains why. Closing the shared
+      // stream on the first source to finish threw that away.
+      final r = await launchFaked();
+
+      r.devicectl.complete(0);
+      await pumpEventQueue();
+
+      r.lldb.emitStdout('flutter: Fatal error: index out of range');
+      await pumpEventQueue();
+
+      expect(r.instance.logs.read(0).lines.map((l) => l.text),
+          contains('flutter: Fatal error: index out of range'),
+          reason: 'the crash report arrives after the console channel is gone');
+    });
+
+    test('the log stream closes once devicectl and lldb have both ended',
+        () async {
       final r = await launchFaked();
       expect(r.instance.logs.isClosed, isFalse);
 
       r.devicectl.complete(0);
       await pumpEventQueue();
+      expect(r.instance.logs.isClosed, isFalse,
+          reason: 'lldb is still attached and still reporting');
 
+      r.lldb.complete(0);
+      await pumpEventQueue();
       expect(r.instance.logs.isClosed, isTrue,
           reason: 'a reader must learn the run is over rather than hang');
     });

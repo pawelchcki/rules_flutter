@@ -1767,16 +1767,26 @@ return False
   /// `devicectl` **and lldb** as one combined log source on CoreDevices under
   /// Xcode 26+ (`ios/devices.dart` `logSources` → `devicectlAndLldb`), because
   /// the debugger carries output the console stream may not.
+  ///
+  /// That makes lldb a *second* producer of [appLogs], with a different
+  /// lifetime from the first: `devicectl --console` exits when the app
+  /// terminates, while lldb stays attached and is where the crash report then
+  /// comes from. Registering it as a producer is what keeps that report from
+  /// being dropped — the stream now closes only once both sources are done.
   void _startLldbOutput(Process lldb, {AppLogStream? appLogs}) {
     final out = AppLogStream();
     _lldbOutput = out;
     pumpProcessLines(lldb, out, stderrIsError: true);
 
     if (appLogs != null) {
-      out.lines.listen((line) {
-        if (_isLldbCommandEcho(line.text)) return;
-        appLogs.add(_stripDeviceLogPrefix(line.text), isError: line.isError);
-      });
+      appLogs.addProducer();
+      out.lines.listen(
+        (line) {
+          if (_isLldbCommandEcho(line.text)) return;
+          appLogs.add(_stripDeviceLogPrefix(line.text), isError: line.isError);
+        },
+        onDone: appLogs.producerDone,
+      );
     }
   }
 
