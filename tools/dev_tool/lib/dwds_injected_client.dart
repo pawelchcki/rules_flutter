@@ -48,12 +48,21 @@ class DwdsInjectedClient {
 
   const DwdsInjectedClient(this.path);
 
-  /// Locate the client, or throw explaining what is wrong.
+  /// Locate the client, or return null when there is no runfiles tree.
   ///
-  /// Called once when the web server starts rather than per request, so a
-  /// missing runfile fails the launch with a reason instead of surfacing later
-  /// as a blank page and a MIME-type complaint in the browser console.
-  factory DwdsInjectedClient.fromRunfiles() {
+  /// Null means "this workaround is not needed here": under `dart run` from a
+  /// source checkout there are no runfiles, and DWDS's own
+  /// `Isolate.resolvePackageUri` lookup succeeds because a `.dart_tool/` sits
+  /// above the script. Serving it ourselves is only required for the
+  /// Bazel-built binary. Treating the two cases alike broke `dart run`'s DDC
+  /// dev mode, which fell back to static serving with no hot restart.
+  ///
+  /// Runfiles present but the entry missing is a different thing — a build
+  /// defect — and still throws. Called once when the web server starts rather
+  /// than per request, so that failure surfaces at launch instead of later as a
+  /// blank page and a MIME-type complaint in the browser console.
+  static DwdsInjectedClient? tryFromRunfiles() {
+    if (!hasRunfilesContext) return null;
     final path = resolveRunfile(dwdsInjectedClientRunfile);
     if (path == null) {
       throw StateError(

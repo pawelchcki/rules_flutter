@@ -55,20 +55,38 @@ void main() {
     });
   });
 
-  group('DwdsInjectedClient.fromRunfiles', () {
-    // Outside Bazel there are no runfiles, so this exercises the failure path.
-    // It must name the missing file and say how to fix it: the alternative is a
-    // silently undebuggable page whose only symptom is a browser console error.
-    test('fails with an actionable message when the runfile is absent', () {
+  group('DwdsInjectedClient.tryFromRunfiles', () {
+    final inRunfiles = Platform.environment.containsKey('RUNFILES_DIR') ||
+        Platform.environment.containsKey('RUNFILES_MANIFEST_FILE');
+
+    // The regression guard. Under `dart run` from a source checkout there are
+    // no runfiles and DWDS's own package-URI lookup works, so the workaround is
+    // unnecessary and its absence must not be an error. Throwing here is what
+    // broke `dart run`'s DDC dev mode: the throw tripped run_command's catch
+    // and silently degraded the run to static file serving with no hot restart.
+    test('returns null when there is no runfiles tree at all', () {
+      expect(DwdsInjectedClient.tryFromRunfiles(), isNull);
+    },
+        skip: inRunfiles
+            ? 'runfiles are present; the no-runfiles path cannot be exercised'
+            : null);
+
+    // The other half of the distinction: runfiles exist but the entry is not
+    // there. That is a build defect, and it must name the missing file and say
+    // how to fix it — the alternative is a silently undebuggable page whose
+    // only symptom is a browser console error. This test target deliberately
+    // does not declare the client as `data`, so under Bazel this is the live
+    // case.
+    test('throws with an actionable message when runfiles lack the entry', () {
       expect(
-        DwdsInjectedClient.fromRunfiles,
+        DwdsInjectedClient.tryFromRunfiles,
         throwsA(isA<StateError>().having((e) => e.message, 'message',
             allOf(contains(dwdsInjectedClientRunfile), contains('bazel')))),
       );
-    }, skip: Platform.environment.containsKey('RUNFILES_DIR') ||
-            Platform.environment.containsKey('RUNFILES_MANIFEST_FILE')
-        ? 'runfiles are present; the absent-runfile path cannot be exercised'
-        : null);
+    },
+        skip: inRunfiles
+            ? null
+            : 'no runfiles tree; the missing-entry path cannot be exercised');
   });
 
   test('the runfiles key and the request path name the same asset', () {

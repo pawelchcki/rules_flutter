@@ -371,8 +371,10 @@ class WebModuleServer implements AssetReader {
 
     // DWDS cannot serve its own injected client from a Bazel-built binary; we
     // serve it instead. See `dwds_injected_client.dart` for why. Located now
-    // rather than per request, so a missing runfile fails the launch.
-    final injectedClient = DwdsInjectedClient.fromRunfiles();
+    // rather than per request, so a missing runfile fails the launch. Null
+    // under `dart run`, where DWDS's own lookup works and the workaround is
+    // unnecessary.
+    final injectedClient = DwdsInjectedClient.tryFromRunfiles();
 
     // Swap the active handler to include DWDS middleware.
     // Match Flutter's web_asset_server.dart:387-393 composition:
@@ -381,11 +383,12 @@ class WebModuleServer implements AssetReader {
     final wrappedAssetHandler = const shelf.Pipeline()
         .addMiddleware(_dwds!.middleware)
         .addHandler(_shelfHandler);
-    _activeHandler = shelf.Cascade()
-        .add(injectedClient.handler)
-        .add(_dwds!.handler)
-        .add(wrappedAssetHandler)
-        .handler;
+    // When we serve the injected client it must come first: DWDS's own
+    // middleware claims that path and is what fails on it from a Bazel binary.
+    var cascade = shelf.Cascade();
+    if (injectedClient != null) cascade = cascade.add(injectedClient.handler);
+    _activeHandler =
+        cascade.add(_dwds!.handler).add(wrappedAssetHandler).handler;
   }
 
   // ---- HTTP server ----
