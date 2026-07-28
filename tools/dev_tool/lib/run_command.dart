@@ -702,6 +702,10 @@ class RunCommand {
             'message': 'frontend_server_ready',
             'text':
                 'DDC frontend server ready. Module server at ${webModuleServer.uri}',
+            // Structured as well as prose: this is the base URL every web
+            // asset is served from, so a client driving the tool (or a test)
+            // can address the server without parsing the sentence above.
+            'uri': webModuleServer.uri.toString(),
           });
         } else {
           throw DevToolException(
