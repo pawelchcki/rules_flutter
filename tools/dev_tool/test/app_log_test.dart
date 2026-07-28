@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter_bazel_dev_tool/app_log.dart';
 import 'package:test/test.dart';
 
@@ -452,19 +454,21 @@ void main() {
       expect(s.read(0).lines.map((l) => l.text), [' kept']);
     });
 
-    test('closes the stream once the process output ends', () async {
+    test('reports done once the process output ends', () async {
       final p = FakeProcess();
       final s = AppLogStream();
-      pumpProcessLines(p, s);
+      final pump = pumpProcessLines(p, s);
+      var done = false;
+      unawaited(pump.done.then((_) => done = true));
 
       p.emitStdout('last words');
       await pumpEventQueue();
-      expect(s.isClosed, isFalse);
+      expect(done, isFalse);
 
       p.complete(0);
       await pumpEventQueue();
 
-      expect(s.isClosed, isTrue,
+      expect(done, isTrue,
           reason: 'a caller awaiting the stream must learn the app is gone '
               'immediately, not after a discovery timeout');
     });
@@ -472,28 +476,43 @@ void main() {
     test('a closed stream still yields the exited app final output', () async {
       final p = FakeProcess();
       final s = AppLogStream();
-      pumpProcessLines(p, s);
+      s.closeWhen([pumpProcessLines(p, s).done]);
 
       p.emitStdout('Unhandled exception: it broke');
       await pumpEventQueue();
       p.complete(1);
       await pumpEventQueue();
 
+      expect(s.isClosed, isTrue);
       expect(s.read(0).lines.map((l) => l.text),
           contains('Unhandled exception: it broke'));
     });
 
-    test('does not close while only one of the two streams has ended',
-        () async {
+    test('is not done while only one of the two channels has ended', () async {
       final p = FakeProcess();
       final s = AppLogStream();
-      pumpProcessLines(p, s);
+      final pump = pumpProcessLines(p, s);
+      var done = false;
+      unawaited(pump.done.then((_) => done = true));
 
       await p.closeStdout();
       await pumpEventQueue();
 
-      expect(s.isClosed, isFalse,
+      expect(done, isFalse,
           reason: 'stderr may still carry the reason the app is failing');
+    });
+
+    test('dispose completes done, so a disposed pump cannot wedge a stream',
+        () async {
+      final p = FakeProcess();
+      final s = AppLogStream();
+      final pump = pumpProcessLines(p, s);
+      s.closeWhen([pump.done]);
+
+      await pump.dispose();
+      await pumpEventQueue();
+
+      expect(s.isClosed, isTrue);
     });
 
     test('dispose stops forwarding', () async {
@@ -518,8 +537,10 @@ void main() {
       final first = FakeProcess();
       final second = FakeProcess();
       final s = AppLogStream();
-      pumpProcessLines(first, s);
-      pumpProcessLines(second, s);
+      s.closeWhen([
+        pumpProcessLines(first, s).done,
+        pumpProcessLines(second, s).done,
+      ]);
 
       first.complete(0);
       await pumpEventQueue();
@@ -536,45 +557,55 @@ void main() {
     });
   });
 
-  group('AppLogStream producers', () {
-    test('the stream closes only once every producer has finished', () {
-      final s = AppLogStream()
-        ..addProducer()
-        ..addProducer();
+  group('AppLogStream.closeWhen', () {
+    test('closes only once every source has finished', () async {
+      final a = Completer<void>();
+      final b = Completer<void>();
+      final s = AppLogStream()..closeWhen([a.future, b.future]);
 
-      s.producerDone();
+      a.complete();
+      await pumpEventQueue();
       expect(s.isClosed, isFalse);
 
-      s.producerDone();
+      b.complete();
+      await pumpEventQueue();
       expect(s.isClosed, isTrue);
     });
 
-    test('a producer registered after close is ignored', () {
-      final s = AppLogStream()..addProducer();
-      s.producerDone();
-      expect(s.isClosed, isTrue);
+    // The whole set is named in one call precisely so the count cannot pass
+    // through zero mid-launch: an iOS device registers its console channel
+    // before lldb exists, and a stream that closed on the first source to
+    // finish would then discard everything the debugger says for the rest of
+    // the run — silently, since nothing else reads that stream.
+    test('a source that finishes before its siblings are named is harmless',
+        () async {
+      final early = Completer<void>()..complete();
+      await pumpEventQueue();
 
-      // Nothing can arrive on a closed stream, so registering against one is a
-      // no-op rather than a resurrection.
-      s.addProducer();
-      s.add('too late');
+      final late_ = Completer<void>();
+      final s = AppLogStream()..closeWhen([early.future, late_.future]);
+      await pumpEventQueue();
 
+      expect(s.isClosed, isFalse);
+      s.add('said after the first source was already gone');
+      expect(s.read(0).lines, hasLength(1));
+
+      late_.complete();
+      await pumpEventQueue();
       expect(s.isClosed, isTrue);
-      expect(s.read(0).lines, isEmpty);
     });
 
-    test('close() still closes a stream with live producers', () async {
-      final s = AppLogStream()..addProducer();
+    test('close() still closes a stream with live sources', () async {
+      final s = AppLogStream()..closeWhen([Completer<void>().future]);
       await s.close();
       expect(s.isClosed, isTrue,
           reason: 'stop() closes the stream regardless of what is feeding it');
     });
 
-    test('producerDone past zero does not throw', () {
-      final s = AppLogStream()..addProducer();
-      s.producerDone();
-      s.producerDone();
-      expect(s.isClosed, isTrue);
+    test('a stream with no declared sources stays open until closed', () async {
+      final s = AppLogStream();
+      await pumpEventQueue();
+      expect(s.isClosed, isFalse);
     });
   });
 }

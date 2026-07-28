@@ -98,37 +98,26 @@ class AppLogStream {
 
   int _nextCursor = 0;
   int _dropped = 0;
-  int _producers = 0;
   bool _closed = false;
 
   AppLogStream({this.capacity = _defaultCapacity})
       : assert(capacity > 0, 'capacity must be positive');
 
-  /// Register a source that feeds this stream.
+  /// Close this stream once every future in [sources] has completed.
   ///
-  /// The stream closes once every registered producer has called
-  /// [producerDone], not when the first one does. Producers need not end
-  /// together, and nothing orders them: a physical iOS device is fed by both
-  /// `devicectl --console` and lldb, either of which can finish first. Closing
-  /// on the first would silently mute the other for the rest of the run.
+  /// A reader waiting on the stream — VM-service discovery, a `/logs` poller —
+  /// then learns immediately that no more output is coming, rather than
+  /// sitting out a timeout.
   ///
-  /// A no-op once the stream is closed: nothing can arrive on it any more, so
-  /// registering against one cannot revive it.
-  void addProducer() {
-    if (_closed) return;
-    _producers++;
-  }
-
-  /// Report that a producer registered with [addProducer] has ended.
-  ///
-  /// Closes the stream when the last one does, so a reader waiting on it
-  /// learns immediately that no more output is coming rather than sitting out
-  /// a timeout. Calling this more often than [addProducer] is harmless.
-  void producerDone() {
-    if (_closed) return;
-    if (_producers > 0) _producers--;
-    if (_producers == 0) unawaited(close());
-  }
+  /// The whole set is named in one call, by the one object that knows how many
+  /// sources it started, because a stream fed by several sources cannot close
+  /// on the first of them to finish: a physical iOS device is fed by both
+  /// `devicectl --console` and lldb, either of which can end first, and
+  /// closing on the first would mute the other for the rest of the run.
+  /// Registering sources one at a time instead would mean the count can pass
+  /// through zero before the last source has even been started.
+  void closeWhen(Iterable<Future<void>> sources) =>
+      unawaited(Future.wait(sources).then((_) => close()));
 
   /// Append a line. Never blocks, and is a no-op once [close] has been called.
   void add(String text, {bool isError = false}) {
@@ -263,13 +252,20 @@ class AppLogStream {
 /// A running forwarder from some source into an [AppLogStream].
 class AppLogPump {
   final List<StreamSubscription<String>> _subscriptions;
+  final Completer<void> _done;
 
-  AppLogPump(this._subscriptions);
+  AppLogPump._(this._subscriptions, this._done);
+
+  /// Completes when this pump will forward nothing further — its source has
+  /// ended, or [dispose] was called. Hand it to [AppLogStream.closeWhen] to
+  /// make the stream's lifetime follow its sources'.
+  Future<void> get done => _done.future;
 
   /// Stop forwarding. The [AppLogStream] itself is unaffected.
   Future<void> dispose() async {
     await Future.wait(_subscriptions.map((s) => s.cancel()));
     _subscriptions.clear();
+    if (!_done.isCompleted) _done.complete();
   }
 }
 
@@ -283,14 +279,9 @@ class AppLogPump {
 /// [transform] filters and rewrites lines: return null to drop a line (used by
 /// sources like `adb logcat` that carry unrelated system logging).
 ///
-/// [process] is registered as a producer of [out]
-/// ([AppLogStream.addProducer]) and reported done when both of its output
-/// streams end. Where it is the only producer that closes [out], which is what
-/// lets a reader waiting on the stream — VM-service discovery — give up the
-/// moment the app dies rather than sit out its timeout; where [out] has others,
-/// it stays open until they finish too. Buffered lines survive the close, so an
-/// app's final output, usually the output explaining why it exited, is still
-/// readable.
+/// Pumping does not close [out] — [AppLogPump.done] reports when this source
+/// has ended, and the caller that started every source decides what that means
+/// for the stream (see [AppLogStream.closeWhen]).
 AppLogPump pumpProcessLines(
   Process process,
   AppLogStream out, {
@@ -309,16 +300,18 @@ AppLogPump pumpProcessLines(
       .transform(const Utf8Decoder(allowMalformed: true))
       .transform(const LineSplitter());
 
-  out.addProducer();
+  // Both channels have to end, not just one: stderr may still carry the reason
+  // the app is failing after stdout has gone quiet.
+  final done = Completer<void>();
   var remaining = 2;
   void onStreamDone() {
-    if (--remaining == 0) out.producerDone();
+    if (--remaining == 0 && !done.isCompleted) done.complete();
   }
 
-  return AppLogPump([
+  return AppLogPump._([
     linesOf(process.stdout)
         .listen((l) => handle(l, isError: false), onDone: onStreamDone),
     linesOf(process.stderr)
         .listen((l) => handle(l, isError: stderrIsError), onDone: onStreamDone),
-  ]);
+  ], done);
 }

@@ -1296,6 +1296,7 @@ void main() {
         })> launchFaked({
       String transportType = 'wired',
       List<String> deviceAddresses = const [],
+      bool consoleExitsAtLaunch = false,
     }) async {
       final devicectl = FakeProcess();
       final lldb = FakeProcess();
@@ -1372,8 +1373,14 @@ void main() {
       final pending = device.launch('/path/to/MyApp.app', onLog: null);
       await devicectl.outputAttached;
 
-      // devicectl's banner releases the launch gate.
-      devicectl.emitStdout('Launched application with com.example.test');
+      if (consoleExitsAtLaunch) {
+        // The console channel ends without ever printing a banner. The launch
+        // gate is released by `onDone` instead.
+        devicectl.complete(0);
+      } else {
+        // devicectl's banner releases the launch gate.
+        devicectl.emitStdout('Launched application with com.example.test');
+      }
 
       return (
         instance: await pending,
@@ -1519,6 +1526,28 @@ void main() {
       expect(r.instance.logs.read(0).lines.map((l) => l.text),
           contains('flutter: Fatal error: index out of range'),
           reason: 'the crash report arrives after the console channel is gone');
+    });
+
+    test('lldb output survives a console channel that ends before the attach',
+        () async {
+      // `devicectl --console` normally runs for the app's lifetime, but it can
+      // end during the launch — the app was already running, or devicectl
+      // detached — while the app itself stays up and `_findAppProcessId` still
+      // answers. lldb attaches after that point, so if the console channel
+      // being the only registered producer is enough to close the shared log
+      // stream, every line for the rest of the run goes nowhere: mDNS
+      // discovery does not read this stream, so nothing else fails and the run
+      // proceeds in silence.
+      final r = await launchFaked(consoleExitsAtLaunch: true);
+
+      expect(r.instance.logs.isClosed, isFalse,
+          reason: 'lldb is attached and is still a live source of output');
+
+      r.lldb.emitStdout('flutter: hello from the app');
+      await pumpEventQueue();
+
+      expect(r.instance.logs.read(0).lines.map((l) => l.text),
+          contains('flutter: hello from the app'));
     });
 
     test('the log stream closes once devicectl and lldb have both ended',

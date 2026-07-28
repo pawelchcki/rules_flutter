@@ -972,19 +972,34 @@ Future<Uri?> discoverVmServiceUri(
 }
 
 /// Create the log stream for a launch, attach [onLog], and start draining
-/// [process] into it.
+/// [process] into it as its only source.
 ///
 /// [onLog] is wired before the pump starts so no line can slip past it.
+///
+/// For every platform but a physical iOS device the app has exactly one log
+/// source, so the stream's life is that source's life — see
+/// [IOSDevice.launch] for the one place that owns two.
 AppLogStream _startProcessLogs(
   Process process,
   AppLogListener? onLog, {
   bool stderrIsError = true,
   String? Function(String line)? transform,
 }) {
+  final logs = _newAppLogs(onLog);
+  final pump = pumpProcessLines(process, logs,
+      stderrIsError: stderrIsError, transform: transform);
+  logs.closeWhen([pump.done]);
+  return logs;
+}
+
+/// An empty log stream with [onLog] already attached.
+///
+/// Wiring the sink before any pump starts is what guarantees no line can slip
+/// past it — including output printed during startup, before `launch()` has
+/// returned.
+AppLogStream _newAppLogs(AppLogListener? onLog) {
   final logs = AppLogStream();
   if (onLog != null) logs.lines.listen(onLog);
-  pumpProcessLines(process, logs,
-      stderrIsError: stderrIsError, transform: transform);
   return logs;
 }
 
@@ -1547,6 +1562,8 @@ class IOSDevice extends Device {
     //   5. Resume
     //   6. Discover the VM service by its mDNS advertisement
 
+    final logs = _newAppLogs(onLog);
+
     // Step 1: Launch paused with --console to capture the app's output.
     //
     // flutter_tools wraps this in `script -t 0 /dev/null` "to convince
@@ -1581,7 +1598,7 @@ class IOSDevice extends Device {
     // stderr is deliberately *not* flagged as an error channel: devicectl
     // routes the app's ordinary console output there, so treating that channel
     // as errors would mark every `print()` as one.
-    final logs = _startProcessLogs(_consoleLauncherProcess!, onLog,
+    final consolePump = pumpProcessLines(_consoleLauncherProcess!, logs,
         stderrIsError: false);
 
     final launchCompleter = Completer<void>();
@@ -1597,19 +1614,18 @@ class IOSDevice extends Device {
         line.contains('Waiting for the application to terminate') ||
         line.contains('Launched application with');
 
-    // Another reader of the same stream, like discovery below. `onDone` fires
-    // when devicectl's output ends, so a launch that dies before ever printing
-    // a banner stops waiting immediately rather than sitting out the timeout.
-    final bannerSub = logs.lines.listen(
-      (line) {
-        if (!launchCompleter.isCompleted && isDevicectlBanner(line.text)) {
-          launchCompleter.complete();
-        }
-      },
-      onDone: () {
-        if (!launchCompleter.isCompleted) launchCompleter.complete();
-      },
-    );
+    // Another reader of the same stream, like discovery below.
+    final bannerSub = logs.lines.listen((line) {
+      if (!launchCompleter.isCompleted && isDevicectlBanner(line.text)) {
+        launchCompleter.complete();
+      }
+    });
+    // A launch that dies before ever printing a banner stops the wait
+    // immediately rather than sitting out the timeout. This watches devicectl
+    // itself rather than the shared log stream, which outlives it.
+    unawaited(consolePump.done.then((_) {
+      if (!launchCompleter.isCompleted) launchCompleter.complete();
+    }));
 
     await launchCompleter.future;
     launchTimeout.cancel();
@@ -1627,7 +1643,13 @@ class IOSDevice extends Device {
     final lldb = await _startProcess('lldb', []);
     _lldbProcess = lldb;
     // lldb is a log source, not just a control channel — see [_startLldbOutput].
-    _startLldbOutput(lldb, appLogs: logs);
+    final lldbDone = _startLldbOutput(lldb, appLogs: logs);
+
+    // Both sources are now known, so the stream's life can be settled in one
+    // place. They are not ordered — devicectl exits when the app terminates,
+    // which is exactly when lldb starts reporting why — so the stream outlives
+    // whichever ends first.
+    logs.closeWhen([consolePump.done, lldbDone]);
     await _lldbCommand(lldb, 'device select ${info.udid}');
     final bpOutput = await _lldbCommand(
         lldb, r"breakpoint set --func-regex '^NOTIFY_DEBUGGER_ABOUT_RX_PAGES$'",
@@ -1688,7 +1710,7 @@ class IOSDevice extends Device {
         // both channels, so both have to be drained — an unread pipe blocks
         // the writer, and here the writer is the only route to the device.
         final iproxyOutput = AppLogStream();
-        pumpProcessLines(iproxy, iproxyOutput);
+        iproxyOutput.closeWhen([pumpProcessLines(iproxy, iproxyOutput).done]);
 
         // Process.start returns at spawn time, before iproxy has bound its
         // local listener. DDS dials this forward immediately after launch()
@@ -1765,26 +1787,27 @@ return False
   /// Xcode 26+ (`ios/devices.dart` `logSources` → `devicectlAndLldb`), because
   /// the debugger carries output the console stream may not.
   ///
-  /// That makes lldb a *second* producer of [appLogs], and the two are not
-  /// ordered: either the debugger or the `devicectl --console` process can be
-  /// the one still running. It is registered via [AppLogStream.addProducer] so
-  /// the stream closes only once both are done, rather than whenever the first
-  /// of them happens to end.
-  void _startLldbOutput(Process lldb, {AppLogStream? appLogs}) {
+  /// Returns when lldb has finished feeding [appLogs] — the caller pairs it
+  /// with the console channel's to settle when the shared stream closes.
+  Future<void> _startLldbOutput(Process lldb, {AppLogStream? appLogs}) {
     final out = AppLogStream();
     _lldbOutput = out;
-    pumpProcessLines(lldb, out, stderrIsError: true);
+    final pump = pumpProcessLines(lldb, out, stderrIsError: true);
+    out.closeWhen([pump.done]);
 
-    if (appLogs != null) {
-      appLogs.addProducer();
-      out.lines.listen(
-        (line) {
-          if (_isLldbCommandEcho(line.text)) return;
-          appLogs.add(_stripDeviceLogPrefix(line.text), isError: line.isError);
-        },
-        onDone: appLogs.producerDone,
-      );
-    }
+    if (appLogs == null) return pump.done;
+
+    // Completed from the bridge's own `onDone`, not from [pump], so the last
+    // lines lldb wrote are in [appLogs] before it is reported finished.
+    final forwarded = Completer<void>();
+    out.lines.listen(
+      (line) {
+        if (_isLldbCommandEcho(line.text)) return;
+        appLogs.add(_stripDeviceLogPrefix(line.text), isError: line.isError);
+      },
+      onDone: forwarded.complete,
+    );
+    return forwarded.future;
   }
 
   /// lldb's own prompt/echo and disassembly, as opposed to app output.
@@ -2097,6 +2120,10 @@ Future<Uri?> discoverVmServiceUriFromProcess(
 }) async {
   final logs = AppLogStream();
   final pump = pumpProcessLines(log, logs);
+  // The helper is this stream's only source, so a helper that dies takes the
+  // stream with it and discovery gives up at once instead of waiting out its
+  // timeout on a process that will never say anything again.
+  logs.closeWhen([pump.done]);
   try {
     return await discoverVmServiceUri(logs, timeout: timeout);
   } finally {
@@ -2283,11 +2310,14 @@ class WebDevice extends Device {
   /// Create the app log stream and start draining Chrome's own pipes.
   AppLogStream _startChromeLogs(Process chrome, AppLogListener? onLog) {
     _browserDiagnostics = AppLogStream(capacity: 200);
-    pumpProcessLines(chrome, _browserDiagnostics!);
+    // Chrome is this stream's only source; closing with it is what lets CDP
+    // port discovery give up the moment the browser dies.
+    _browserDiagnostics!
+        .closeWhen([pumpProcessLines(chrome, _browserDiagnostics!).done]);
 
-    final logs = AppLogStream();
-    if (onLog != null) logs.lines.listen(onLog);
-    return logs;
+    // The app's own output is a separate stream with its own source — DWDS or
+    // CDP, wired by the caller — so it does not close with the browser process.
+    return _newAppLogs(onLog);
   }
 
   @override
