@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter_bazel_dev_tool/app_log.dart';
@@ -6,6 +7,20 @@ import 'package:test/test.dart';
 import 'package:vm_service/vm_service.dart';
 
 import 'fakes.dart';
+
+/// A [FakeVmService] whose `Stdout` stream a test feeds whole [Event]s.
+///
+/// [FakeVmService.emitStdoutEvent] always attaches a payload, so the
+/// bytes-less event — a write the VM reports with nothing in it — can only be
+/// delivered by handing over the event itself.
+class _RawEventVmService extends FakeVmService {
+  final _stdout = StreamController<Event>.broadcast();
+
+  @override
+  Stream<Event> get onStdoutEvent => _stdout.stream;
+
+  void emitRawStdoutEvent(Event event) => _stdout.add(event);
+}
 
 Event logEvent(String text) =>
     Event(kind: EventKind.kWriteEvent, timestamp: 0)
@@ -17,18 +32,18 @@ void main() {
       expect(decodeVmServiceLogEvent(logEvent('hello')), 'hello');
     });
 
-    test('strips the single trailing newline the VM appends', () {
-      expect(decodeVmServiceLogEvent(logEvent('hello\n')), 'hello');
+    test('keeps the write terminator for the splitter to consume', () {
+      expect(decodeVmServiceLogEvent(logEvent('hello\n')), 'hello\n');
     });
 
     test('keeps interior newlines', () {
-      expect(decodeVmServiceLogEvent(logEvent('a\nb\n')), 'a\nb');
+      expect(decodeVmServiceLogEvent(logEvent('a\nb\n')), 'a\nb\n');
     });
 
-    test('returns empty for an event with no bytes', () {
+    test('returns null for an event with no bytes', () {
       expect(
         decodeVmServiceLogEvent(Event(kind: EventKind.kWriteEvent, timestamp: 0)),
-        '',
+        isNull,
       );
     });
   });
@@ -77,12 +92,26 @@ void main() {
       expect(logs.read(0).lines.map((l) => l.text), ['one', 'two', 'three']);
     });
 
-    test('drops empty payloads instead of emitting blank lines', () async {
+    test('forwards a blank print as a blank line', () async {
       final service = FakeVmService();
       final logs = AppLogStream();
       await forwardVmServiceLogs(service, logs);
 
+      // What `print('')` puts on the wire: the write terminator and nothing
+      // else.
       service.emitStdoutEvent('\n');
+      await pumpEventQueue();
+
+      expect(logs.read(0).lines.single.text, '');
+    });
+
+    test('emits nothing for an event carrying no bytes', () async {
+      final service = _RawEventVmService();
+      final logs = AppLogStream();
+      await forwardVmServiceLogs(service, logs);
+
+      service.emitRawStdoutEvent(
+          Event(kind: EventKind.kWriteEvent, timestamp: 0));
       await pumpEventQueue();
 
       expect(logs.read(0).lines, isEmpty);

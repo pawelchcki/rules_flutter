@@ -19,18 +19,21 @@ import 'package:vm_service/vm_service.dart';
 
 import 'app_log.dart';
 
-/// Decode a `Stdout`/`Stderr` event's payload.
+/// Decode a `Stdout`/`Stderr` event's payload, or null when the event carries
+/// none at all.
 ///
-/// The VM base64-encodes the bytes and appends a newline that would otherwise
-/// show up as a blank line after every print. Mirrors flutter_tools'
-/// `processVmServiceMessage`.
-String decodeVmServiceLogEvent(Event event) {
+/// The VM base64-encodes the bytes and terminates each write with a newline.
+/// The terminator is kept rather than stripped, because stripping loses the
+/// one payload that consists of nothing else: an app's `print('')` arrives as
+/// exactly `"\n"`, and that is a blank line, not an absence of output. Callers
+/// split on line terminators, which consumes the trailing newline without
+/// inventing a blank line after every print — the same end result flutter_tools
+/// gets by stripping in `processVmServiceMessage` and re-printing the message
+/// whole.
+String? decodeVmServiceLogEvent(Event event) {
   final bytes = event.bytes;
-  if (bytes == null) return '';
-  final message = utf8.decode(base64.decode(bytes), allowMalformed: true);
-  return message.endsWith('\n')
-      ? message.substring(0, message.length - 1)
-      : message;
+  if (bytes == null) return null;
+  return utf8.decode(base64.decode(bytes), allowMalformed: true);
 }
 
 /// A running forwarder from a VM service's output streams into an
@@ -57,7 +60,7 @@ Future<VmServiceLogForwarder> forwardVmServiceLogs(
 ) async {
   void emit(Event event, {required bool isError}) {
     final text = decodeVmServiceLogEvent(event);
-    if (text.isEmpty) return;
+    if (text == null) return;
     for (final line in const LineSplitter().convert(text)) {
       logs.add(line, isError: isError);
     }
