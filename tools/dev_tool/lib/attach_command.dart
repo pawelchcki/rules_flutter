@@ -74,6 +74,7 @@ class AttachCommand {
     final workspace = await findWorkspaceRoot();
 
     final sessions = <DeviceSession>[];
+    final logForwarders = <VmServiceLogForwarder>[];
     FrontendServer? frontendServer;
     HttpControlChannel? httpChannel;
 
@@ -168,7 +169,8 @@ class AttachCommand {
       final service = vmClient.service;
       if (service != null) {
         try {
-          await forwardVmServiceLogs(service, appInstance.logs);
+          logForwarders
+              .add(await forwardVmServiceLogs(service, appInstance.logs));
         } catch (e) {
           stderr.writeln(
               'Warning: could not forward app output from $uri ($e). '
@@ -298,6 +300,13 @@ class AttachCommand {
             'Cannot start interactive session without frontend server.');
       }
     } finally {
+      // The VM services outlive this command — the apps were started
+      // externally and keep running — so their stream subscriptions are ours
+      // to cancel. Done here rather than in performCleanup because an
+      // exception out of the session loop skips that path entirely.
+      for (final forwarder in logForwarders) {
+        await forwarder.dispose();
+      }
       await httpChannel?.stop();
       await protocol.stopListening();
     }
