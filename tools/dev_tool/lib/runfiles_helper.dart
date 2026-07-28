@@ -41,6 +41,25 @@ class ResolvedRunfile {
 /// or the entry is missing.
 String? resolveRunfile(String path) => resolveRunfileWithManifest(path)?.path;
 
+/// Whether this process is running inside a Bazel runfiles tree at all.
+///
+/// [resolveRunfile] returns null for two different situations, and a caller
+/// that must fail loudly on one of them needs to tell them apart:
+///
+///  * **No runfiles tree.** The tool was launched by `dart run` from a source
+///    checkout — a supported contributor workflow. Bundled data simply is not
+///    part of that world, and its absence is not an error.
+///  * **Runfiles present, entry missing.** A declared `data` dependency did
+///    not make it into the tree. That is a build defect and should be fatal.
+bool get hasRunfilesContext {
+  try {
+    Runfiles.create(sourceRepository: _runfilesSourceRepository);
+    return true;
+  } on StateError {
+    return false;
+  }
+}
+
 /// Resolve a runfile path and return both the resolved path and the
 /// manifest path (when one is in use). The manifest path is needed when
 /// spawning a `py_binary` subprocess so it can find its own runfiles via
