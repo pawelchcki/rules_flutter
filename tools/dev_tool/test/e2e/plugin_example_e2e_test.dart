@@ -16,6 +16,7 @@
 /// produced a working app for that platform.
 library;
 
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:test/test.dart';
@@ -286,6 +287,77 @@ void main() {
   // is missing the app still launches and renders — it just answers every
   // plugin call with `MissingPluginException` — which is why the assertion
   // here is on the app's own diagnostic line, not on a screenshot.
+  // DWDS injects `<script src=".../dwds/src/injected/client.js">` into the page
+  // and normally serves it by reading its own package source off disk, via
+  // `Isolate.resolvePackageUri`. That cannot work from a Bazel-built binary —
+  // the VM resolves `package:` URIs by searching upward from
+  // `Platform.executable` for `.dart_tool/package_config.json`, and a binary
+  // under `bazel-out/` has none — so DWDS threw and the browser got a
+  // `text/plain` 500 and refused to execute the script. The tool serves the
+  // file from runfiles instead (`lib/dwds_injected_client.dart`).
+  //
+  // **This test must use the Bazel-built binary.** Under `dart run` the tool
+  // sits in a source checkout whose `.dart_tool/` rescues DWDS's own lookup, so
+  // the broken path passes. Every Chrome test here ran that way, which is why
+  // users got an app with no debugging connection while this suite stayed
+  // green. A launch-style-agnostic version of this test proves nothing.
+  group(
+    'Web DWDS injected client',
+    () {
+      test('is served as executable JavaScript by the binary users run',
+          () async {
+        final dt = await startDevTool(
+          workspace: workspace,
+          target: ':plugin_web',
+          device: 'chrome',
+          useBazelBuiltBinary: true,
+        );
+        try {
+          await dt.waitForEvent('app.started',
+              timeout: const Duration(minutes: 4));
+
+          // Base URL from the structured log rather than parsed out of prose.
+          Uri? serverUri;
+          for (final line in dt.stderrLines) {
+            try {
+              final obj = json.decode(line) as Map<String, dynamic>;
+              if (obj['message'] == 'frontend_server_ready') {
+                serverUri = Uri.parse(obj['uri'] as String);
+              }
+            } catch (_) {
+              // Not JSON — skip.
+            }
+          }
+          expect(serverUri, isNotNull,
+              reason: 'the DDC module server never reported its URL; '
+                  'stderr: ${dt.stderrLines.take(20).join(" | ")}');
+
+          final client = HttpClient();
+          try {
+            final request = await client.getUrl(
+                serverUri!.replace(path: '/dwds/src/injected/client.js'));
+            final response = await request.close();
+            await response.drain<void>();
+
+            expect(response.statusCode, 200,
+                reason: 'DWDS injected client must be served');
+            expect(
+              response.headers.contentType?.mimeType,
+              anyOf('application/javascript', 'text/javascript'),
+              reason: 'Chrome refuses non-JavaScript MIME types for <script>, '
+                  'silently leaving the app with no debugger attached',
+            );
+          } finally {
+            client.close();
+          }
+        } finally {
+          await dt.dispose();
+        }
+      }, timeout: const Timeout(Duration(minutes: 6)));
+    },
+    skip: !Platform.isMacOS ? 'needs Chrome' : null,
+  );
+
   group(
     'Web e2e',
     () {

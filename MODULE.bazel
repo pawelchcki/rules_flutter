@@ -149,7 +149,11 @@ flutter.pub(
     name = "dev_tool_deps",
     lock = "//tools/dev_tool:pubspec.lock",
 )
-use_repo(flutter, "dev_tool_deps")
+
+# The dwds spoke is imported by name, not just through the hub: the dev tool
+# needs `lib/src/injected/client.js` as a `data` dep, and the hub only aliases
+# each package's `dart_library`, not the files beside it.
+use_repo(flutter, "dev_tool_deps", "dev_tool_deps__dwds")
 
 # Python toolchain + pymobiledevice3 for iOS device screenshots.
 python = use_extension(
