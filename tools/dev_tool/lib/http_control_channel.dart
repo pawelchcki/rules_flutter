@@ -22,6 +22,10 @@ class HttpControlChannel {
   int _inFlight = 0;
   Completer<void>? _drained;
 
+  /// Distinguishes screenshot temp files taken within the same millisecond,
+  /// which concurrent requests otherwise name identically.
+  int _screenshotSeq = 0;
+
   HttpControlChannel({
     required CommandRunner commandRunner,
     required DeviceSession? Function(String appId) findSession,
@@ -228,8 +232,9 @@ class HttpControlChannel {
     // by default.
     final window = request.uri.queryParameters['window'];
 
-    final tmpFile = File(
-        '${Directory.systemTemp.path}/flutter_bazel_screenshot_${DateTime.now().millisecondsSinceEpoch}.png');
+    final tmpFile = File('${Directory.systemTemp.path}/'
+        'flutter_bazel_screenshot_${DateTime.now().millisecondsSinceEpoch}'
+        '_${_screenshotSeq++}.png');
     try {
       // Pass vmClient: null to force the platform-native capture path
       // (bundled macOS helper, adb screencap, etc.) instead of
