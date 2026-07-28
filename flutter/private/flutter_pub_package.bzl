@@ -1122,6 +1122,33 @@ kt_android_library(
         synthesized_manifest = synthesized_manifest,
     )
 
+# A pub package's non-Dart files — JS, wasm, templates — are not
+# `dart_library` srcs, so without this nothing outside the spoke can name
+# them and they cannot be a `data` dep of anything. `package:dwds` is the
+# case that forced this: it serves `lib/src/injected/client.js` to the
+# browser by reading it off disk through `Isolate.resolvePackageUri`, which
+# resolves to null in an AOT binary, so the file has to be a declared
+# runtime input instead of something found at runtime.
+#
+# Appended to every spoke, overlay or not: which files a package needs at
+# runtime is the consumer's business, and an export costs nothing until
+# something depends on it. Assets stay individually addressable
+# (`@<spoke>//:lib/src/injected/client.js`) rather than being lumped into
+# one filegroup, so a `data` dep names the exact file it needs and pulls in
+# nothing else.
+_ASSET_EXPORTS = """
+exports_files(glob(
+    ["**"],
+    exclude = [
+        "BUILD.bazel",
+        "WORKSPACE",
+        "WORKSPACE.bazel",
+        "MODULE.bazel",
+    ],
+    allow_empty = True,
+))
+"""
+
 def _resolve_overlay_template(ctx, overlay_root_label, package_name, version, relpath):
     """Look up an overlay template at `<root>/<package>/<version-ladder>/<relpath>`.
 
@@ -1283,7 +1310,7 @@ def _flutter_pub_package_impl(ctx):
             break
 
     if overlay_content:
-        ctx.file("BUILD.bazel", overlay_content)
+        ctx.file("BUILD.bazel", overlay_content + _ASSET_EXPORTS)
 
         # When the overlay ships an `android/BUILD.bazel.tpl`, use it
         # verbatim. Otherwise emit an empty stub so the hub's
@@ -1450,7 +1477,7 @@ def _flutter_pub_package_impl(ctx):
         android_has_resources = False
         android_native_build = False
 
-    ctx.file("BUILD.bazel", build_content)
+    ctx.file("BUILD.bazel", build_content + _ASSET_EXPORTS)
 
     # Always emit `android/BUILD.bazel`. Bazel only loads it when something
     # queries `@<spoke>//android:lib`, so non-Android workspaces don't pay
