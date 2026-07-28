@@ -125,30 +125,70 @@ void handleCdpConsoleMessage(Map<String, dynamic> message, AppLogStream logs) {
   }
 }
 
+/// Open the socket for the app page's CDP endpoint.
+Future<WebSocket> _openPageSocket(int cdpPort, String? appUrl) async =>
+    WebSocket.connect(await resolveCdpPageTarget(cdpPort, appUrl: appUrl));
+
 /// Streams a page's console output into an [AppLogStream] over CDP.
 ///
 /// Reconnects when the page goes away: a web hot restart is a CDP page reload,
 /// which drops the target and would otherwise silently end console forwarding
-/// for the rest of the session.
+/// for the rest of the session. The other reason a target disappears is that
+/// the browser is gone for good, which no amount of retrying fixes, so the
+/// reconnect backs off and eventually gives up out loud.
 class CdpConsoleClient {
   final int cdpPort;
   final String? appUrl;
   final AppLogStream logs;
 
   /// How long to wait before re-resolving a target after the socket drops.
+  /// Each further attempt in the same outage waits twice as long.
   final Duration reconnectDelay;
+
+  /// Ceiling on the backoff: everything the page prints before the client is
+  /// back is output nobody sees, so a reload must not end up behind a long
+  /// wait.
+  final Duration maxReconnectDelay;
+
+  /// How much waiting one outage gets before the client stops trying.
+  final Duration reconnectBudget;
+
+  /// Opens the CDP socket. Injectable so tests can drive the reconnect loop
+  /// without a browser.
+  final Future<WebSocket> Function(int cdpPort, String? appUrl) _open;
+
+  /// Starts the timer for the next attempt. Injectable so tests can read the
+  /// backoff off the schedule instead of waiting through it.
+  final Timer Function(Duration delay, void Function() callback) _schedule;
+
+  /// Where the give-up warning goes.
+  final void Function(String message) _warn;
 
   WebSocket? _socket;
   Timer? _reconnect;
   bool _closed = false;
   int _nextId = 1;
 
+  /// Backoff state for the current outage, reset once a socket is live again
+  /// so that a session's tenth hot restart gets the same budget as its first.
+  Duration _nextDelay;
+  Duration _waited = Duration.zero;
+  Object? _lastError;
+
   CdpConsoleClient({
     required this.cdpPort,
     required this.logs,
     this.appUrl,
     this.reconnectDelay = const Duration(milliseconds: 500),
-  });
+    this.maxReconnectDelay = const Duration(seconds: 2),
+    this.reconnectBudget = const Duration(seconds: 15),
+    Future<WebSocket> Function(int cdpPort, String? appUrl)? openSocket,
+    Timer Function(Duration delay, void Function() callback)? scheduleTimer,
+    void Function(String message)? warn,
+  })  : _nextDelay = reconnectDelay,
+        _open = openSocket ?? _openPageSocket,
+        _schedule = scheduleTimer ?? Timer.new,
+        _warn = warn ?? ((String message) => stderr.writeln(message));
 
   /// Connect and begin forwarding. Returns once the first connection is
   /// established; later reconnections happen in the background.
@@ -158,13 +198,15 @@ class CdpConsoleClient {
 
   Future<void> _connect() async {
     if (_closed) return;
-    final wsUrl = await resolveCdpPageTarget(cdpPort, appUrl: appUrl);
-    final socket = await WebSocket.connect(wsUrl);
+    final socket = await _open(cdpPort, appUrl);
     if (_closed) {
       await socket.close();
       return;
     }
     _socket = socket;
+    _nextDelay = reconnectDelay;
+    _waited = Duration.zero;
+    _lastError = null;
 
     socket.listen(
       (data) {
@@ -188,19 +230,38 @@ class CdpConsoleClient {
   void _scheduleReconnect() {
     if (_closed) return;
     _socket = null;
+    if (_waited >= reconnectBudget) {
+      _giveUp();
+      return;
+    }
+    final delay = _nextDelay;
+    _waited += delay;
+    final doubled = delay * 2;
+    _nextDelay = doubled > maxReconnectDelay ? maxReconnectDelay : doubled;
     // Held so [close] can cancel it: a pending timer keeps the isolate alive
     // until it fires, and a reconnect racing teardown would reopen a socket
     // nobody is going to close.
-    _reconnect = Timer(reconnectDelay, () async {
+    _reconnect = _schedule(delay, () async {
       if (_closed) return;
       try {
         await _connect();
-      } catch (_) {
-        // The page may still be reloading; try again on the next tick rather
-        // than giving up on console output for the rest of the run.
+      } catch (e) {
+        // The page may still be reloading; try again, further out each time.
+        _lastError = e;
         _scheduleReconnect();
       }
     });
+  }
+
+  /// Stop reconnecting, and say so: a console that quietly stops forwarding is
+  /// indistinguishable from an app that stopped printing.
+  void _giveUp() {
+    _reconnect = null;
+    _warn('Warning: browser console forwarding stopped — no CDP page target '
+        'came back on port $cdpPort within ${reconnectBudget.inSeconds}s'
+        '${_lastError == null ? '' : ' ($_lastError)'}. The browser has '
+        'probably exited; app output will not appear for the rest of this '
+        'run.');
   }
 
   /// Stop forwarding and close the socket. Idempotent.
