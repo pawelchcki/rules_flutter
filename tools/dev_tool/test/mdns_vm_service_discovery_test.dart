@@ -15,10 +15,10 @@ Future<List<NetworkInterface>> noInterfaces({
 
 void main() {
   const bundleId = 'com.example.app';
-  const deviceHost = 'Arans-iPhone.local';
+  const deviceHost = 'Test-iPhone.local';
   const deviceHostnames = [
-    'Arans-iPhone.coredevice.local',
-    '5F38D0B3-CDD3-5DA9-BBB5-3038EFD35695.coredevice.local',
+    'Test-iPhone.coredevice.local',
+    'TEST-COREDEVICE-UUID.coredevice.local',
   ];
 
   MdnsVmServiceDiscovery discoveryOver(FakeMDnsClientFactory factory) =>
@@ -68,14 +68,14 @@ void main() {
     // `<name>.local.`. Only the first label is common to both.
     test('matches on the first label across differing parent domains', () {
       expect(
-        mdnsTargetMatchesHostname('Arans-iPhone.local.', deviceHostnames),
+        mdnsTargetMatchesHostname('Test-iPhone.local.', deviceHostnames),
         isTrue,
       );
     });
 
     test('is case insensitive', () {
       expect(
-        mdnsTargetMatchesHostname('ARANS-IPHONE.local', deviceHostnames),
+        mdnsTargetMatchesHostname('TEST-IPHONE.local', deviceHostnames),
         isTrue,
       );
     });

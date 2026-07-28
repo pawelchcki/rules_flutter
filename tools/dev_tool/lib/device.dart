@@ -1293,7 +1293,7 @@ enum IOSDeviceTransport {
 
 /// What `devicectl list devices` reports about one paired physical device.
 class IOSDeviceInfo {
-  /// The hardware UDID, e.g. `00008101-001C512E14D2001E`.
+  /// The hardware UDID.
   ///
   /// This is the identifier every tool here is addressed with. `devicectl`
   /// also answers to its own CoreDevice UUID ([coreDeviceId]) and reports that
@@ -1310,7 +1310,8 @@ class IOSDeviceInfo {
   final String name;
   final IOSDeviceTransport transport;
 
-  /// The device's own mDNS hostnames, e.g. `Arans-iPhone.coredevice.local`.
+  /// The device's own mDNS hostnames, of the form
+  /// `<device-name>.coredevice.local`.
   ///
   /// These are what tell this device's `_dartVmService._tcp` advertisement
   /// apart from every other advertiser on the network — including this Mac
@@ -1444,11 +1445,11 @@ class IOSDevice extends Device {
   /// executable page traps into the `NOTIFY_DEBUGGER_ABOUT_RX_PAGES`
   /// breakpoint, whose handler writes to device memory over the debugserver
   /// link. That per-page round trip is what makes a cold start here take ~43s
-  /// wired and ~400s wireless, where a desktop app takes under one second; a
-  /// restart is the same work. (Measured on an iPhone 12 Pro. Setting
-  /// `--auto-continue` on the breakpoint does not help: the cost is the memory
-  /// write, not the stop/resume handshake.) The host default would abandon the
-  /// RPC and force-close the connection while the device was still working.
+  /// wired and ~400s wireless on a recent iPhone, where a desktop app takes
+  /// under one second; a restart is the same work. (Setting `--auto-continue`
+  /// on the breakpoint does not help: the cost is the memory write, not the
+  /// stop/resume handshake.) The host default would abandon the RPC and
+  /// force-close the connection while the device was still working.
   @override
   Duration get applyTimeout => switch (_info?.transport) {
         IOSDeviceTransport.wireless => const Duration(minutes: 15),

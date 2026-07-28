@@ -1578,11 +1578,11 @@ void main() {
         {
           'identifier': 'CORE-1',
           'hardwareProperties': {'udid': 'UDID-1'},
-          'deviceProperties': {'name': "Aran's iPhone 12 Pro"},
+          'deviceProperties': {'name': 'Test iPhone'},
           'connectionProperties': {
             'transportType': 'wired',
             'localHostnames': [
-              'Arans-iPhone-12-Pro.coredevice.local',
+              'Test-iPhone.coredevice.local',
               'UDID-1.coredevice.local',
             ],
           },
@@ -1592,10 +1592,10 @@ void main() {
       expect(devices, hasLength(1));
       expect(devices.single.udid, 'UDID-1');
       expect(devices.single.coreDeviceId, 'CORE-1');
-      expect(devices.single.name, "Aran's iPhone 12 Pro");
+      expect(devices.single.name, 'Test iPhone');
       expect(devices.single.transport, IOSDeviceTransport.wired);
       expect(devices.single.hostnames,
-          contains('Arans-iPhone-12-Pro.coredevice.local'));
+          contains('Test-iPhone.coredevice.local'));
     });
 
     test('maps localNetwork to wireless', () {
@@ -1750,8 +1750,8 @@ void main() {
 
   group('IOSDevice', () {
     test('has correct name with udid', () {
-      final device = IOSDevice(udid: '00008101-001C512E14D2001E');
-      expect(device.name, 'iOS (00008101-001C512E14D2001E)');
+      final device = IOSDevice(udid: 'TEST-UDID');
+      expect(device.name, 'iOS (TEST-UDID)');
     });
 
     test('buildArgs is arm64 for physical device', () {

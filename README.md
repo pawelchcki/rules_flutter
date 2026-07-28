@@ -899,7 +899,7 @@ working with at least Xcode 26."
 Expect the first line to take a while. Starting a debug build under the JIT
 breakpoint is slow: the engine traps to the debugger for every executable page
 it allocates, and the handler writes to device memory over the debugserver
-link. Measured on an iPhone 12 Pro, resume to the engine's first log takes
+link. On a recent iPhone, resume to the engine's first log takes
 **~45 s over a cable and ~6–7 minutes over the network**. That is the platform,
 not this tool — setting `--auto-continue` on the breakpoint changes nothing,
 because the cost is the memory write rather than the stop/resume handshake. Use
