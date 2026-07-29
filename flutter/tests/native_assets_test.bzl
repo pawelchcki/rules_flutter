@@ -50,9 +50,46 @@ def _framework_name_impl(ctx):
     asserts.equals(env, "libfoo", native_asset_framework_name("libfoo"))
     return unittest.end(env)
 
+def _identical_assets_dedup_impl(ctx):
+    """Pin how identical asset declarations behave in the propagation depset.
+
+    `FlutterInfo.native_assets` is a depset of these providers, so two
+    targets declaring byte-identical assets collapse to one element before
+    the manifest writer ever sees them. That is why the duplicate-id
+    `fail()` catches *conflicting* declarations rather than repeated ones.
+    """
+    env = unittest.begin(ctx)
+
+    def executable_asset():
+        return FlutterNativeAssetInfo(
+            asset_id = "package:foo/foo.dart",
+            link_mode = "dynamic_loading_executable",
+            file = None,
+            bundle_filename = "",
+            system_uri = "",
+        )
+
+    asserts.equals(env, 1, len(depset([executable_asset(), executable_asset()]).to_list()))
+
+    # Conflicting declarations stay distinct, so they still reach the
+    # writer as two entries and trip its duplicate-id check.
+    conflicting = [
+        FlutterNativeAssetInfo(
+            asset_id = "package:foo/foo.dart",
+            link_mode = "dynamic_loading_system",
+            file = None,
+            bundle_filename = "",
+            system_uri = uri,
+        )
+        for uri in ["libfoo.so.1", "libfoo.so.2"]
+    ]
+    asserts.equals(env, 2, len(depset(conflicting).to_list()))
+    return unittest.end(env)
+
 _target_string_t0_test = unittest.make(_target_string_macos_arm64_impl)
 _target_string_t1_test = unittest.make(_target_string_unknown_impl)
 _framework_name_test = unittest.make(_framework_name_impl)
+_identical_assets_dedup_test = unittest.make(_identical_assets_dedup_impl)
 
 # -- Manifest probe ----------------------------------------------------
 
@@ -208,6 +245,7 @@ def native_assets_test_suite(name):
         _target_string_t0_test,
         _target_string_t1_test,
         _framework_name_test,
+        _identical_assets_dedup_test,
     )
 
     native.test_suite(

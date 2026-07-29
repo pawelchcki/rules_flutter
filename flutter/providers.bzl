@@ -58,7 +58,7 @@ FlutterNativeAssetInfo = provider(
     fields = {
         "asset_id": "str: The Dart asset id (e.g. `package:objective_c/objective_c.dylib`).",
         "link_mode": "str: One of `dynamic_loading_bundle`, `dynamic_loading_system`, `dynamic_loading_executable`, `dynamic_loading_process`.",
-        "files": "depset[File]: Files to bundle into the application. Empty for non-bundled link modes.",
+        "file": "File or None: The shared library to bundle into the application. None for non-bundled link modes.",
         "bundle_filename": "str: Filename inside the platform bundle slot (e.g. `objective_c.dylib`). Empty for non-bundled link modes.",
         "system_uri": "str: System library URI for `dynamic_loading_system`. Empty otherwise.",
     },

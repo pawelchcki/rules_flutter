@@ -78,7 +78,7 @@ def _flutter_native_asset_impl(ctx):
             ),
         )
 
-    files_depset = depset()
+    asset_file = None
     bundle_filename = ""
     system_uri = ""
 
@@ -107,7 +107,7 @@ def _flutter_native_asset_impl(ctx):
         # signal to rename.
         dylib = ctx.actions.declare_file(ctx.attr.bundle_filename)
         ctx.actions.symlink(output = dylib, target_file = cc_dylib)
-        files_depset = depset([dylib])
+        asset_file = dylib
         bundle_filename = ctx.attr.bundle_filename
     elif link_mode == "dynamic_loading_system":
         if not ctx.attr.system_uri:
@@ -128,7 +128,7 @@ def _flutter_native_asset_impl(ctx):
     asset_info = FlutterNativeAssetInfo(
         asset_id = ctx.attr.asset_id,
         link_mode = link_mode,
-        files = files_depset,
+        file = asset_file,
         bundle_filename = bundle_filename,
         system_uri = system_uri,
     )
@@ -154,7 +154,7 @@ def _flutter_native_asset_impl(ctx):
     )
 
     return [
-        DefaultInfo(files = files_depset),
+        DefaultInfo(files = depset([asset_file] if asset_file else [])),
         asset_info,
         flutter_info,
     ]

@@ -133,8 +133,11 @@ def write_native_assets_manifest(
     Dart Target string for the platform being built and serializes the
     result to `output_file`.
 
-    Asset ids are unique within a manifest: an id claimed twice fails
-    the build rather than letting one declaration shadow the other.
+    Asset ids are unique within a manifest: an id claimed by two
+    *differing* declarations fails the build rather than letting one
+    shadow the other. Byte-identical declarations never reach here —
+    they collapse earlier, in the `FlutterInfo.native_assets` depset —
+    so a repeated asset reached through a diamond is not an error.
 
     When the input list is empty, the manifest is still written but with
     an empty `native-assets` map — keeping the frontend_server
@@ -204,12 +207,11 @@ def collect_bundled_code_asset_files(native_assets):
       A `depset[File]` carrying every shared library that needs to be
       placed into the platform application's bundle slot.
     """
-    depsets = []
-    for asset in native_assets:
-        if asset.link_mode != "dynamic_loading_bundle":
-            continue
-        depsets.append(asset.files)
-    return depset(transitive = depsets)
+    return depset(direct = [
+        asset.file
+        for asset in native_assets
+        if asset.link_mode == "dynamic_loading_bundle" and asset.file != None
+    ])
 
 # -- Tier 2 standalone rule ----------------------------------------------------
 
