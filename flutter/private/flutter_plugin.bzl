@@ -238,7 +238,7 @@ flutter_plugin = rule(
             doc = "Android plugin libraries (`flutter_android_plugin_library` or any `kt_android_library`/`android_library`). Propagated through `FlutterInfo.android_plugin_libraries` so flutter_android_application adds them to the android_binary's deps.",
         ),
         "native_assets": attr.label_list(
-            doc = "Native Assets `CodeAsset` declarations (each a `flutter_native_asset` target). Propagated through `FlutterInfo.native_assets` and aggregated by `flutter_application` into the `--native-assets` manifest. Use `select()` to declare per-platform asset sets.",
+            doc = "Native Assets `CodeAsset` declarations (each a `flutter_native_asset` target). Propagated through `FlutterInfo.native_assets` and aggregated by `flutter_application` into the `--native-assets` manifest. Declare per-platform asset sets with `select()`: this is what routes each asset to the applications built for its platform, and listing two targets with the same `asset_id` in one configuration fails analysis.",
             providers = [FlutterNativeAssetInfo],
         ),
         "data_assets": attr.label_list(
