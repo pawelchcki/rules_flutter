@@ -19,12 +19,11 @@ Typical usage in an overlay or hand-written BUILD:
         user_link_flags = ["-Wl,-install_name,@rpath/pkg.dylib"],
     )
     flutter_native_asset(
-        name = "pkg_native_asset_macos",
+        name = "pkg_native_asset",
         asset_id = "package:pkg/pkg.dylib",
         link_mode = "dynamic_loading_bundle",
         library = ":_pkg_dylib",
         bundle_filename = "pkg.dylib",
-        target_os = "macos",
     )
 
     flutter_data_asset(

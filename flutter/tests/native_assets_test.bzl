@@ -110,7 +110,6 @@ def _setup_failure_targets():
         name = "_static_link_mode",
         asset_id = "package:foo/foo.dylib",
         link_mode = "static",
-        target_os = "macos",
         tags = ["manual"],
     )
 
@@ -118,7 +117,6 @@ def _setup_failure_targets():
         name = "_bundle_missing_library",
         asset_id = "package:foo/foo.dylib",
         link_mode = "dynamic_loading_bundle",
-        target_os = "macos",
         bundle_filename = "foo.dylib",
         tags = ["manual"],
     )
@@ -127,7 +125,6 @@ def _setup_failure_targets():
         name = "_system_missing_uri",
         asset_id = "package:foo/foo.dylib",
         link_mode = "dynamic_loading_system",
-        target_os = "linux",
         tags = ["manual"],
     )
 
@@ -146,7 +143,6 @@ def _setup_failure_targets():
         asset_id = "package:foo/foo.dylib",
         link_mode = "dynamic_loading_system",
         system_uri = "libfoo.so.1",
-        target_os = "macos",
         tags = ["manual"],
     )
 
@@ -155,7 +151,6 @@ def _setup_failure_targets():
         asset_id = "package:foo/foo.dylib",
         link_mode = "dynamic_loading_system",
         system_uri = "libfoo.so.2",
-        target_os = "macos",
         tags = ["manual"],
     )
 

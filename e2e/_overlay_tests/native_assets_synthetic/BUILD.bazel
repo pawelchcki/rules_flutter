@@ -26,9 +26,9 @@ cc_shared_library(
     deps = [":_synthetic_cc"],
 )
 
-# 2. Flutter Native Assets markers — one per target OS. Apple builds are
-#    single-arch here; multi-arch is handled separately via
-#    `apple_universal_binary`.
+# 2. Flutter Native Assets markers — one per target OS, routed by the
+#    `select()` on the plugin below. Apple builds are single-arch here;
+#    multi-arch is handled separately via `apple_universal_binary`.
 flutter_native_asset(
     name = "synthetic_native_asset_macos",
     asset_id = "package:native_assets_synthetic/synthetic.dylib",
@@ -36,7 +36,6 @@ flutter_native_asset(
     library = ":_synthetic_dylib",
     link_mode = "dynamic_loading_bundle",
     target_compatible_with = ["@platforms//os:macos"],
-    target_os = "macos",
 )
 
 flutter_data_asset(

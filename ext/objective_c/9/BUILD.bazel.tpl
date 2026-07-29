@@ -34,8 +34,8 @@ flutter_plugin(
     ),
     language_version = "3.10",
     native_assets = select({
-        "@platforms//os:macos": [":{PKG}_native_asset_macos"],
-        "@platforms//os:ios": [":{PKG}_native_asset_ios"],
+        "@platforms//os:macos": [":{PKG}_native_asset"],
+        "@platforms//os:ios": [":{PKG}_native_asset"],
         "//conditions:default": [],
     }),
     package_name = "{PKG}",
@@ -123,23 +123,15 @@ cc_shared_library(
 )
 
 flutter_native_asset(
-    name = "{PKG}_native_asset_macos",
+    name = "{PKG}_native_asset",
     asset_id = "package:{PKG}/objective_c.dylib",
     bundle_filename = "objective_c.dylib",
     library = ":_{PKG}_dylib",
     link_mode = "dynamic_loading_bundle",
-    target_compatible_with = ["@platforms//os:macos"],
-    target_os = "macos",
-    visibility = ["//visibility:public"],
-)
-
-flutter_native_asset(
-    name = "{PKG}_native_asset_ios",
-    asset_id = "package:{PKG}/objective_c.dylib",
-    bundle_filename = "objective_c.dylib",
-    library = ":_{PKG}_dylib",
-    link_mode = "dynamic_loading_bundle",
-    target_compatible_with = ["@platforms//os:ios"],
-    target_os = "ios",
+    target_compatible_with = select({
+        "@platforms//os:macos": [],
+        "@platforms//os:ios": [],
+        "//conditions:default": ["@platforms//:incompatible"],
+    }),
     visibility = ["//visibility:public"],
 )

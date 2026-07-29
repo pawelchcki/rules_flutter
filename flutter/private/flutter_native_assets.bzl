@@ -129,17 +129,16 @@ def write_native_assets_manifest(
         target_arch):
     """Write the canonical `--native-assets` JSON manifest.
 
-    Filters `native_assets` (a list of `FlutterNativeAssetInfo`) down
-    to those declared for `target_os`, groups them under the matching
-    Dart Target string, and serializes the result to `output_file`.
+    Groups `native_assets` (a list of `FlutterNativeAssetInfo`) under the
+    Dart Target string for the platform being built and serializes the
+    result to `output_file`.
 
     Asset ids are unique within a manifest: an id claimed twice fails
     the build rather than letting one declaration shadow the other.
 
-    When the input list is empty (or no asset matches the current
-    target), the manifest is still written but with an empty
-    `native-assets` map — keeping the frontend_server invocation
-    uniform.
+    When the input list is empty, the manifest is still written but with
+    an empty `native-assets` map — keeping the frontend_server
+    invocation uniform.
 
     Args:
       ctx: Rule context. Used only for `ctx.actions.write`.
@@ -156,8 +155,6 @@ def write_native_assets_manifest(
 
     section = {}
     for asset in native_assets:
-        if asset.target_os != target_os:
-            continue
         if asset.asset_id in section:
             fail(
                 "flutter_native_assets_manifest: duplicate native asset id %r. " % asset.asset_id +
@@ -171,13 +168,13 @@ def write_native_assets_manifest(
             )
         section[asset.asset_id] = _path_list_for(asset, target_os)
 
-    # Assets declared for this OS but no resolvable `<os>_<arch>` key means
-    # the manifest would silently omit them and every `@Native` binding
+    # Assets in the graph with no resolvable `<os>_<arch>` key means the
+    # manifest would silently omit them and every `@Native` binding
     # would fail at runtime, far from the cause. Break loudly instead.
     if section and not target_string:
         fail(
-            "flutter_native_assets_manifest: %d native asset(s) are declared " % len(section) +
-            "for target_os %r but the target architecture could not be " % target_os +
+            "flutter_native_assets_manifest: %d native asset(s) reached this " % len(section) +
+            "application on %r but the target architecture could not be " % target_os +
             "determined (got %r). " % target_arch +
             "The --native-assets manifest would silently omit them and " +
             "@Native bindings would fail at runtime. This is a rules_flutter " +
@@ -194,17 +191,14 @@ def write_native_assets_manifest(
 
     ctx.actions.write(output_file, json.encode_indent(manifest, indent = "  "))
 
-def collect_bundled_code_asset_files(native_assets, target_os):
-    """Return a single depset of files that should be embedded for `target_os`.
+def collect_bundled_code_asset_files(native_assets):
+    """Return a single depset of files that should be embedded in the bundle.
 
-    Filters by `target_os` and `link_mode = dynamic_loading_bundle`. The
-    remaining link modes contribute manifest entries only — no files to
-    bundle.
+    Keeps the `link_mode = dynamic_loading_bundle` assets; the remaining
+    link modes contribute manifest entries only — no files to bundle.
 
     Args:
       native_assets: Iterable of `FlutterNativeAssetInfo` providers.
-      target_os: Target OS string (`macos`, `ios`, `linux`, `windows`,
-        `android`). Only assets matching this OS contribute.
 
     Returns:
       A `depset[File]` carrying every shared library that needs to be
@@ -213,8 +207,6 @@ def collect_bundled_code_asset_files(native_assets, target_os):
     depsets = []
     for asset in native_assets:
         if asset.link_mode != "dynamic_loading_bundle":
-            continue
-        if asset.target_os != target_os:
             continue
         depsets.append(asset.files)
     return depset(transitive = depsets)

@@ -81,10 +81,7 @@ def _flutter_application_impl(ctx):
         target_arch = target_arch,
     )
 
-    bundled_code_assets = collect_bundled_code_asset_files(
-        native_assets_list,
-        target_platform,
-    )
+    bundled_code_assets = collect_bundled_code_asset_files(native_assets_list)
 
     # Step 1: Kernel compilation (mode-aware: debug uses debug dill, no AOT).
     compilation = flutter_compile_kernel(

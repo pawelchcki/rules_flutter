@@ -35,8 +35,6 @@ _VALID_LINK_MODES = (
     "dynamic_loading_process",
 )
 
-_VALID_TARGET_OSES = ("macos", "ios", "linux", "windows", "android")
-
 def _extract_dynamic_library(library_target):
     """Pull the dynamic-library File out of a `cc_shared_library` target.
 
@@ -77,14 +75,6 @@ def _flutter_native_asset_impl(ctx):
             "flutter_native_asset: invalid link_mode %r. Expected one of: %s." % (
                 link_mode,
                 ", ".join(_VALID_LINK_MODES),
-            ),
-        )
-
-    if ctx.attr.target_os not in _VALID_TARGET_OSES:
-        fail(
-            "flutter_native_asset: target_os %r is not one of %s." % (
-                ctx.attr.target_os,
-                ", ".join(_VALID_TARGET_OSES),
             ),
         )
 
@@ -139,7 +129,6 @@ def _flutter_native_asset_impl(ctx):
         asset_id = ctx.attr.asset_id,
         link_mode = link_mode,
         files = files_depset,
-        target_os = ctx.attr.target_os,
         bundle_filename = bundle_filename,
         system_uri = system_uri,
     )
@@ -203,11 +192,6 @@ flutter_native_asset = rule(
         "system_uri": attr.string(
             doc = "System library URI, e.g. `libsqlite3.so.0`. Required for " +
                   "`dynamic_loading_system`.",
-        ),
-        "target_os": attr.string(
-            doc = "Target OS this asset applies to.",
-            mandatory = True,
-            values = list(_VALID_TARGET_OSES),
         ),
     },
     doc = "Captures a Native Assets `CodeAsset` declaration. Composes existing rules — does not produce or rebuild any binary itself.",
