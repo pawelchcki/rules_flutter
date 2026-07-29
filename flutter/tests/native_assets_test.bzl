@@ -13,7 +13,8 @@ fix.
 
 load("@bazel_skylib//lib:unittest.bzl", "analysistest", "asserts", "unittest")
 load("//flutter:native_assets.bzl", "flutter_data_asset", "flutter_native_asset")
-load("//flutter/private:flutter_native_assets.bzl", "native_asset_framework_name", "native_assets_target_string")
+load("//flutter:providers.bzl", "FlutterNativeAssetInfo")
+load("//flutter/private:flutter_native_assets.bzl", "native_asset_framework_name", "native_assets_target_string", "write_native_assets_manifest")
 
 # -- Pure-function tests for the manifest helpers ----------------------
 
@@ -52,6 +53,35 @@ def _framework_name_impl(ctx):
 _target_string_t0_test = unittest.make(_target_string_macos_arm64_impl)
 _target_string_t1_test = unittest.make(_target_string_unknown_impl)
 _framework_name_test = unittest.make(_framework_name_impl)
+
+# -- Manifest probe ----------------------------------------------------
+
+def _manifest_probe_impl(ctx):
+    """Run the manifest writer over `assets` for a fixed (os, arch) pair.
+
+    `write_native_assets_manifest` needs a rule context, so exercising
+    its analysis-time contract needs a rule to host it. This one stands
+    in for `flutter_application`'s aggregation step without dragging the
+    whole compile pipeline (and a Flutter toolchain) into a unit test.
+    """
+    output = ctx.actions.declare_file(ctx.label.name + ".native_assets.json")
+    write_native_assets_manifest(
+        ctx = ctx,
+        output_file = output,
+        native_assets = [dep[FlutterNativeAssetInfo] for dep in ctx.attr.assets],
+        target_os = ctx.attr.target_os,
+        target_arch = ctx.attr.target_arch,
+    )
+    return [DefaultInfo(files = depset([output]))]
+
+_manifest_probe = rule(
+    implementation = _manifest_probe_impl,
+    attrs = {
+        "assets": attr.label_list(providers = [FlutterNativeAssetInfo]),
+        "target_arch": attr.string(mandatory = True),
+        "target_os": attr.string(mandatory = True),
+    },
+)
 
 # -- Analysis-time failure tests ---------------------------------------
 
@@ -108,6 +138,38 @@ def _setup_failure_targets():
         tags = ["manual"],
     )
 
+    # Two declarations of one asset id reaching a single application:
+    # the manifest can only carry one entry per id, so this must break
+    # loudly instead of letting one silently shadow the other.
+    flutter_native_asset(
+        name = "_duplicate_id_a",
+        asset_id = "package:foo/foo.dylib",
+        link_mode = "dynamic_loading_system",
+        system_uri = "libfoo.so.1",
+        target_os = "macos",
+        tags = ["manual"],
+    )
+
+    flutter_native_asset(
+        name = "_duplicate_id_b",
+        asset_id = "package:foo/foo.dylib",
+        link_mode = "dynamic_loading_system",
+        system_uri = "libfoo.so.2",
+        target_os = "macos",
+        tags = ["manual"],
+    )
+
+    _manifest_probe(
+        name = "_duplicate_asset_ids",
+        assets = [
+            ":_duplicate_id_a",
+            ":_duplicate_id_b",
+        ],
+        target_arch = "arm64",
+        target_os = "macos",
+        tags = ["manual"],
+    )
+
 def native_assets_test_suite(name):
     """Defines the analysis tests + pure-function tests for Native Assets.
 
@@ -140,6 +202,12 @@ def native_assets_test_suite(name):
         expected_substring = "must start with `package:`",
     )
 
+    _expect_failure_test(
+        name = name + "_duplicate_asset_ids",
+        target_under_test = ":_duplicate_asset_ids",
+        expected_substring = "duplicate native asset id \"package:foo/foo.dylib\"",
+    )
+
     unittest.suite(
         name + "_pure",
         _target_string_t0_test,
@@ -154,6 +222,7 @@ def native_assets_test_suite(name):
             ":" + name + "_bundle_requires_library",
             ":" + name + "_system_requires_uri",
             ":" + name + "_data_asset_id_format",
+            ":" + name + "_duplicate_asset_ids",
             ":" + name + "_pure",
         ],
     )

@@ -133,6 +133,9 @@ def write_native_assets_manifest(
     to those declared for `target_os`, groups them under the matching
     Dart Target string, and serializes the result to `output_file`.
 
+    Asset ids are unique within a manifest: an id claimed twice fails
+    the build rather than letting one declaration shadow the other.
+
     When the input list is empty (or no asset matches the current
     target), the manifest is still written but with an empty
     `native-assets` map — keeping the frontend_server invocation
@@ -155,6 +158,17 @@ def write_native_assets_manifest(
     for asset in native_assets:
         if asset.target_os != target_os:
             continue
+        if asset.asset_id in section:
+            fail(
+                "flutter_native_assets_manifest: duplicate native asset id %r. " % asset.asset_id +
+                "Two `flutter_native_asset` targets in this application's " +
+                "dependency graph claim the same id, so both the manifest " +
+                "entry and the bundled library would be whichever one the " +
+                "aggregator happened to visit last. Declare the per-platform " +
+                "variants under a `select()` on " +
+                "`flutter_plugin(native_assets = ...)` so exactly one of them " +
+                "reaches the application in any given configuration.",
+            )
         section[asset.asset_id] = _path_list_for(asset, target_os)
 
     # Assets declared for this OS but no resolvable `<os>_<arch>` key means
