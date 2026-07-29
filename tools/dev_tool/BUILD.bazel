@@ -93,6 +93,7 @@ _UNIT_TESTS = {
     "device_test": {"fakes": True},
     "frontend_server_integration_test": {"fakes": True},
     "frontend_server_test": {"fakes": True},
+    "host_tools_test": {"deps": _PATH_DEP},
     "http_control_channel_test": {},
     "machine_protocol_test": {"fakes": True},
     "mdns_vm_service_discovery_test": {"fakes": True},
