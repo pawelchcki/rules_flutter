@@ -49,6 +49,7 @@ import 'package:path/path.dart' as p;
 import 'app_log.dart';
 import 'cdp_console.dart';
 import 'compiler_config.dart';
+import 'host_tools.dart';
 import 'mdns_vm_service_discovery.dart';
 import 'reload_strategy.dart';
 import 'runfiles_helper.dart';
@@ -57,6 +58,7 @@ import 'vm_service_client.dart';
 import 'web_module_server.dart';
 
 export 'app_log.dart' show AppLogLine, AppLogStream, LogPage;
+export 'host_tools.dart' show HostTool, MissingHostToolException;
 
 /// Called for each line of a running app's console output.
 typedef AppLogListener = void Function(AppLogLine line);
@@ -113,6 +115,28 @@ abstract class Device {
 
   /// Stop the running app.
   Future<void> stop(AppInstance instance);
+
+  /// The external programs a launch on this device will drive.
+  ///
+  /// Declared rather than discovered at each call site so [preflight] can check
+  /// them all before a run does any work, and declared *per device* so an iOS,
+  /// macOS or Chrome run is never made to install the Android SDK. Async
+  /// because the answer can depend on the device itself: a cabled iOS device is
+  /// reached through an `iproxy` forward and a wireless one is not.
+  Future<List<HostTool>> requiredHostTools() async => const [];
+
+  /// Fail now, by name, if the host is missing anything this device needs.
+  ///
+  /// Called before the build, so a missing `aapt2` or an unattached phone is
+  /// reported in seconds. Without it the shortfall surfaces mid-launch as a
+  /// symptom instead of a cause — the case this replaces installed an APK it
+  /// could not name, started no activity, and then reported that no VM service
+  /// was discovered.
+  Future<void> preflight() async {
+    for (final tool in await requiredHostTools()) {
+      tool.require();
+    }
+  }
 
   /// Capture a screenshot of the running app.
   ///
@@ -452,60 +476,23 @@ typedef ProcessRunSync = Future<ProcessResult> Function(
 typedef ProcessStarter = Future<Process> Function(
     String executable, List<String> arguments);
 
-/// Resolve `adb` path — checks ANDROID_HOME, macOS default, then PATH.
-String resolveAdb({ProcessRunSync? runProcess}) {
-  // 1. $ANDROID_HOME/platform-tools/adb
-  final androidHome = Platform.environment['ANDROID_HOME'];
-  if (androidHome != null) {
-    final adb = p.join(androidHome, 'platform-tools', 'adb');
-    if (File(adb).existsSync()) return adb;
-  }
-  // 2. macOS default location
-  if (Platform.isMacOS) {
-    final home = Platform.environment['HOME'];
-    if (home != null) {
-      final adb =
-          p.join(home, 'Library', 'Android', 'sdk', 'platform-tools', 'adb');
-      if (File(adb).existsSync()) return adb;
-    }
-  }
-  // 3. On PATH
-  return 'adb';
-}
-
-/// Resolve `aapt2` path — checks ANDROID_HOME build-tools, then PATH.
-String resolveAapt2() {
-  final androidHome = Platform.environment['ANDROID_HOME'];
-  if (androidHome != null) {
-    final buildToolsDir = Directory(p.join(androidHome, 'build-tools'));
-    if (buildToolsDir.existsSync()) {
-      // Pick the latest version directory.
-      final versions = buildToolsDir
-          .listSync()
-          .whereType<Directory>()
-          .map((d) => p.basename(d.path))
-          .toList()
-        ..sort();
-      if (versions.isNotEmpty) {
-        final aapt2 =
-            p.join(androidHome, 'build-tools', versions.last, 'aapt2');
-        if (File(aapt2).existsSync()) return aapt2;
-      }
-    }
-  }
-  return 'aapt2';
-}
-
 /// Extract package name and launchable activity from an APK via aapt2.
+///
+/// [aapt2Path] names the binary to run; when omitted it is resolved through
+/// [aapt2Tool], which throws a [MissingHostToolException] rather than handing
+/// `Process.run` a bare `'aapt2'` and letting a misconfigured SDK surface as a
+/// failure to launch.
 Future<({String packageName, String? activityName})> extractPackageInfo(
   String apkPath, {
   ProcessRunSync? runProcess,
+  String? aapt2Path,
 }) async {
   final run = runProcess ?? Process.run;
-  final aapt2 = resolveAapt2();
+  final aapt2 = aapt2Path ?? aapt2Tool().require();
   final result = await run(aapt2, ['dump', 'badging', apkPath]);
   if (result.exitCode != 0) {
-    throw StateError('aapt2 dump badging failed: ${result.stderr}');
+    throw StateError('`$aapt2 dump badging $apkPath` failed '
+        '(exit ${result.exitCode}): ${result.stderr}');
   }
   final output = result.stdout as String;
   final pkgMatch = RegExp(r"package: name='([^']+)'").firstMatch(output);
@@ -526,7 +513,8 @@ class AndroidDevice extends Device {
   String? _packageName;
   String? _activityName;
   final String abi;
-  final String adbPath;
+  final String? _explicitAdbPath;
+  final String? _explicitAapt2Path;
   final ProcessRunSync _runProcess;
   final ProcessStarter _startProcess;
 
@@ -541,13 +529,34 @@ class AndroidDevice extends Device {
     String? activityName,
     this.abi = 'arm64',
     String? adbPath,
+    String? aapt2Path,
     ProcessRunSync? runProcess,
     ProcessStarter? startProcess,
   })  : _packageName = packageName,
         _activityName = activityName,
-        adbPath = adbPath ?? resolveAdb(),
+        _explicitAdbPath = adbPath,
+        _explicitAapt2Path = aapt2Path,
         _runProcess = runProcess ?? Process.run,
         _startProcess = startProcess ?? Process.start;
+
+  /// The `adb` to run, resolved on first use.
+  ///
+  /// Lazy so that merely naming an Android serial on a machine with no SDK is
+  /// not itself an error — [preflight] is where that gets reported, with the
+  /// context that a run is about to need it.
+  late final String adbPath = _explicitAdbPath ?? adbTool().require();
+
+  /// The `aapt2` to run, resolved on first use. Only a launch that has to read
+  /// the APK's manifest touches it.
+  late final String aapt2Path = _explicitAapt2Path ?? aapt2Tool().require();
+
+  @override
+  Future<List<HostTool>> requiredHostTools() async => [
+        if (_explicitAdbPath == null) adbTool(),
+        // Needed only to read the package name and launchable activity out of
+        // the APK, which a caller that already named them skips.
+        if (_packageName == null && _explicitAapt2Path == null) aapt2Tool(),
+      ];
 
   @override
   String get name => 'Android${deviceId != null ? ' ($deviceId)' : ''}';
@@ -576,16 +585,7 @@ class AndroidDevice extends Device {
 
   @override
   Future<AppInstance> launch(String appPath, {AppLogListener? onLog}) async {
-    // Auto-detect package info from APK if not provided.
-    if (_packageName == null && appPath.endsWith('.apk')) {
-      try {
-        final info = await extractPackageInfo(appPath, runProcess: _runProcess);
-        _packageName = info.packageName;
-        _activityName ??= info.activityName;
-      } catch (e) {
-        stderr.writeln('Warning: Could not extract package info from APK: $e');
-      }
-    }
+    final packageName = _packageName ?? await _readPackageName(appPath);
 
     // Step 1: Install the APK.
     final installResult = await _runProcess(
@@ -598,8 +598,8 @@ class AndroidDevice extends Device {
 
     // Step 1a: Debug launches await the VM service, which can never come up
     // without android.permission.INTERNET — fail fast instead.
-    if (expectsVmService && _packageName != null) {
-      await _verifyInternetPermission(_packageName!, appPath);
+    if (expectsVmService) {
+      await _verifyInternetPermission(packageName, appPath);
     }
 
     // Step 2: Start adb logcat — the app's log source as well as where the
@@ -623,54 +623,69 @@ class AndroidDevice extends Device {
         stderrIsError: false, transform: androidLogFilter);
 
     // Step 3: Launch the activity.
-    if (_packageName != null) {
-      final activity = _activityName ?? '.MainActivity';
-      final component = '$_packageName/$activity';
-      final startResult = await _runProcess(
-        adbPath,
-        _adbArgs(['shell', 'am', 'start', '-n', component]),
-      );
-      if (startResult.exitCode != 0) {
-        throw StateError('adb am start failed: ${startResult.stderr}');
-      }
+    final activity = _activityName ?? '.MainActivity';
+    final startResult = await _runProcess(
+      adbPath,
+      _adbArgs(['shell', 'am', 'start', '-n', '$packageName/$activity']),
+    );
+    if (startResult.exitCode != 0) {
+      throw StateError('adb am start failed: ${startResult.stderr}');
     }
 
     // Step 4: Discover VM service URI from logcat.
     Uri? vmServiceUri;
-    if (_packageName != null) {
-      final deviceUri = await discoverVmServiceUri(logs);
+    final deviceUri = await discoverVmServiceUri(logs);
 
-      // Port forwarding — the VM service URI from logcat is device-local.
-      if (deviceUri != null) {
-        final devicePort = deviceUri.port;
-        try {
-          final forwardResult = await _runProcess(
-            adbPath,
-            _adbArgs(['forward', 'tcp:0', 'tcp:$devicePort']),
+    // Port forwarding — the VM service URI from logcat is device-local.
+    if (deviceUri != null) {
+      final devicePort = deviceUri.port;
+      try {
+        final forwardResult = await _runProcess(
+          adbPath,
+          _adbArgs(['forward', 'tcp:0', 'tcp:$devicePort']),
+        );
+        if (forwardResult.exitCode == 0) {
+          final hostPort = int.tryParse(
+            (forwardResult.stdout as String).trim(),
           );
-          if (forwardResult.exitCode == 0) {
-            final hostPort = int.tryParse(
-              (forwardResult.stdout as String).trim(),
+          if (hostPort != null) {
+            vmServiceUri = deviceUri.replace(
+              host: '127.0.0.1',
+              port: hostPort,
             );
-            if (hostPort != null) {
-              vmServiceUri = deviceUri.replace(
-                host: '127.0.0.1',
-                port: hostPort,
-              );
-            } else {
-              vmServiceUri = deviceUri;
-            }
           } else {
             vmServiceUri = deviceUri;
           }
-        } catch (_) {
+        } else {
           vmServiceUri = deviceUri;
         }
+      } catch (_) {
+        vmServiceUri = deviceUri;
       }
     }
 
     return AppInstance(
         process: logcat, vmServiceUri: vmServiceUri, logs: logs);
+  }
+
+  /// Read the package name (and launchable activity) out of the APK.
+  ///
+  /// Fatal when it fails, because the package name is what starts the activity
+  /// and what [stop] force-stops: a launch without one installs an APK, runs
+  /// nothing, and then waits out VM-service discovery on an app that was never
+  /// started. That is what the previous warn-and-continue produced, and the
+  /// discovery timeout it ended in named the wrong culprit.
+  Future<String> _readPackageName(String appPath) async {
+    if (!appPath.endsWith('.apk')) {
+      throw StateError(
+          'Cannot launch $appPath on $name: it is not an APK, so there is no '
+          'manifest to read the package name from.');
+    }
+    final info = await extractPackageInfo(appPath,
+        runProcess: _runProcess, aapt2Path: aapt2Path);
+    _packageName = info.packageName;
+    _activityName ??= info.activityName;
+    return info.packageName;
   }
 
   /// Fails the launch when the installed [packageName] does not request
@@ -1441,6 +1456,23 @@ class IOSDevice extends Device {
   @override
   List<String> get buildArgs => const ['--ios_multi_cpus=arm64'];
 
+  /// Resolves the device as a side effect, which is the point: an unattached
+  /// or ambiguous phone is a launch-blocking condition too, and finding out
+  /// here costs one `devicectl list` instead of a whole build.
+  @override
+  Future<List<HostTool>> requiredHostTools() async {
+    final info = await _resolveInfo();
+    return [
+      lldbTool(),
+      // Only a cabled device is reached through a port forward; a wireless one
+      // is dialed at its own address, so demanding iproxy there would refuse a
+      // run that works. `xcrun` is not listed: it is part of macOS, and a
+      // missing or misconfigured Xcode is already reported by [_resolveInfo],
+      // with devicectl's own explanation attached.
+      if (info.transport == IOSDeviceTransport.wired) iproxyTool(),
+    ];
+  }
+
   /// A hot restart re-runs `main()`, which re-JITs the app — and every new
   /// executable page traps into the `NOTIFY_DEBUGGER_ABOUT_RX_PAGES`
   /// breakpoint, whose handler writes to device memory over the debugserver
@@ -2184,6 +2216,9 @@ class WebDevice extends Device {
   @override
   String get name => 'Chrome';
 
+  @override
+  Future<List<HostTool>> requiredHostTools() async => [chromeTool()];
+
   /// Set the DDC module server for dev mode (hot restart support).
   void setModuleServer(WebModuleServer server) => _moduleServer = server;
 
@@ -2463,25 +2498,7 @@ Future<void> _cdpScreenshot(int cdpPort, String outputPath,
 }
 
 /// Find the Chrome executable path, or null if not found.
-String? findChrome() {
-  if (Platform.isMacOS) {
-    const p = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
-    if (File(p).existsSync()) return p;
-  }
-  if (Platform.isLinux) {
-    final r = Process.runSync('which', ['google-chrome']);
-    if (r.exitCode == 0) return (r.stdout as String).trim();
-    final r2 = Process.runSync('which', ['chromium-browser']);
-    if (r2.exitCode == 0) return (r2.stdout as String).trim();
-  }
-  if (Platform.isWindows) {
-    const paths = [
-      r'C:\Program Files\Google\Chrome\Application\chrome.exe',
-      r'C:\Program Files (x86)\Google\Chrome\Application\chrome.exe',
-    ];
-    for (final p in paths) {
-      if (File(p).existsSync()) return p;
-    }
-  }
-  return null;
-}
+///
+/// One definition of where Chrome lives, shared with the preflight that reports
+/// its absence — see [chromeTool].
+String? findChrome() => chromeTool().find();

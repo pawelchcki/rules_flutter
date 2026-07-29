@@ -13,6 +13,24 @@ import 'fakes.dart';
 const _vmServiceLine =
     'The Dart VM service is listening on http://127.0.0.1:12345/test=/';
 
+/// What `devicectl list devices` reports for one paired device.
+String devicesJson(String transportType) => json.encode({
+      'result': {
+        'devices': [
+          {
+            'identifier': 'TEST-COREDEVICE-ID',
+            'hardwareProperties': {'udid': 'TEST-UDID'},
+            'deviceProperties': {'name': 'Test iPhone'},
+            'connectionProperties': {
+              'transportType': transportType,
+              'pairingState': 'paired',
+              'localHostnames': ['Test-iPhone.coredevice.local'],
+            },
+          },
+        ],
+      },
+    });
+
 void main() {
   group('vmServiceUriPattern', () {
     test('matches "Dart VM service is listening on http://..."', () {
@@ -481,6 +499,197 @@ void main() {
       expect(stopCall.$2, contains('com.example.app'));
     });
 
+  });
+
+  // The dev tool drives programs it does not own. Each device declares which
+  // ones its launch needs, so a misconfigured host is reported by name before
+  // any work happens — and so no device is made to install another platform's
+  // toolchain.
+  group('requiredHostTools', () {
+    Future<List<String>> namesFor(Device device) async =>
+        [for (final tool in await device.requiredHostTools()) tool.name];
+
+    test('a desktop run needs nothing installed', () async {
+      expect(await namesFor(MacOSDevice()), isEmpty);
+      expect(await namesFor(LinuxDevice()), isEmpty);
+      expect(await namesFor(WindowsDevice()), isEmpty);
+    });
+
+    test('an Android run needs adb, plus aapt2 to read the APK', () async {
+      expect(await namesFor(AndroidDevice()), ['adb', 'aapt2']);
+    });
+
+    test('aapt2 is not needed when the package is already known', () async {
+      expect(await namesFor(AndroidDevice(packageName: 'com.example.app')),
+          ['adb']);
+    });
+
+    test('an explicitly located tool is not searched for', () async {
+      expect(
+        await namesFor(
+            AndroidDevice(adbPath: '/sdk/adb', aapt2Path: '/sdk/aapt2')),
+        isEmpty,
+      );
+    });
+
+    // The whole point of asking per device: a web run must not be refused for
+    // want of an Android SDK.
+    test('a Chrome run needs Chrome and nothing else', () async {
+      expect(await namesFor(WebDevice()), ['Chrome']);
+    });
+
+    test('preflight names a tool that is not installed', () async {
+      final device = _ToolsDevice([
+        HostTool(
+          name: 'nonexistent-tool',
+          purpose: 'prove the point',
+          remedy: 'Install nonexistent-tool.',
+          environment: const {'PATH': ''},
+        ),
+      ]);
+
+      await expectLater(
+        device.preflight(),
+        throwsA(isA<MissingHostToolException>().having(
+          (e) => e.message,
+          'message',
+          allOf(contains('nonexistent-tool'),
+              contains('Install nonexistent-tool.')),
+        )),
+      );
+    });
+
+    test('preflight passes when every tool is present', () async {
+      final device = _ToolsDevice([
+        HostTool(
+          name: 'dart',
+          purpose: 'prove the point',
+          remedy: 'unreachable',
+          candidates: [Platform.resolvedExecutable],
+        ),
+      ]);
+      await device.preflight();
+    });
+  });
+
+  // A cabled device's VM service is reached through an iproxy forward; a
+  // wireless one is dialed at its own address. Requiring iproxy for the latter
+  // would refuse a run that works.
+  group('IOSDevice.requiredHostTools', () {
+    IOSDevice deviceOn(String transportType) => IOSDevice(
+          udid: 'TEST-UDID',
+          runProcess: (exe, args) async {
+            final out = args[args.indexOf('--json-output') + 1];
+            File(out).writeAsStringSync(devicesJson(transportType));
+            return ProcessResult(0, 0, '', '');
+          },
+          startProcess: (exe, args) async => FakeProcess(),
+        );
+
+    Future<List<String>> namesFor(Device device) async =>
+        [for (final tool in await device.requiredHostTools()) tool.name];
+
+    test('a cabled device needs lldb and a port forwarder', () async {
+      expect(await namesFor(deviceOn('wired')), ['lldb', 'iproxy']);
+    });
+
+    test('a wireless device needs no port forwarder', () async {
+      expect(await namesFor(deviceOn('localNetwork')), ['lldb']);
+    });
+
+    // Resolving the device is part of the preflight, so "no phone attached" is
+    // also reported before a build rather than after one.
+    test('reports an unattached device', () async {
+      final device = IOSDevice(
+        udid: 'OTHER-UDID',
+        runProcess: (exe, args) async {
+          final out = args[args.indexOf('--json-output') + 1];
+          File(out).writeAsStringSync(devicesJson('wired'));
+          return ProcessResult(0, 0, '', '');
+        },
+        startProcess: (exe, args) async => FakeProcess(),
+      );
+
+      await expectLater(
+        device.preflight(),
+        throwsA(isA<StateError>().having((e) => e.message, 'message',
+            contains('No attached iOS device with UDID OTHER-UDID'))),
+      );
+    });
+  });
+
+  group('AndroidDevice launch preconditions', () {
+    test('fails loudly when aapt2 cannot read the APK, and installs nothing',
+        () async {
+      final calls = <String>[];
+      final device = AndroidDevice(
+        adbPath: 'adb',
+        aapt2Path: 'aapt2',
+        runProcess: (exe, args) async {
+          calls.add(exe);
+          return ProcessResult(0, 1, '', 'ERROR: dump failed');
+        },
+        startProcess: (exe, args) async {
+          calls.add(exe);
+          return FakeProcess();
+        },
+      );
+
+      await expectLater(
+        device.launch('/path/to/app.apk'),
+        throwsA(isA<StateError>().having((e) => e.message, 'message',
+            allOf(contains('aapt2'), contains('ERROR: dump failed')))),
+      );
+      // An app that cannot be named cannot be started: the warn-and-continue
+      // this replaces installed it anyway, started no activity, and then
+      // reported that no VM service was discovered.
+      expect(calls, ['aapt2']);
+    });
+
+    test('fails when the artifact is not an APK and no package was given',
+        () async {
+      final device = AndroidDevice(
+        adbPath: 'adb',
+        aapt2Path: 'aapt2',
+        runProcess: (exe, args) async => ProcessResult(0, 0, '', ''),
+        startProcess: (exe, args) async => FakeProcess(),
+      );
+
+      await expectLater(
+        device.launch('/path/to/app_deploy.jar'),
+        throwsA(isA<StateError>().having((e) => e.message, 'message',
+            allOf(contains('app_deploy.jar'), contains('not an APK')))),
+      );
+    });
+
+    test('reads the package and activity out of the APK when not given',
+        () async {
+      final calls = <(String, List<String>)>[];
+      final fakeLogcat = FakeProcess();
+      final device = AndroidDevice(
+        adbPath: 'adb',
+        aapt2Path: 'aapt2',
+        runProcess: (exe, args) async {
+          calls.add((exe, args));
+          if (exe == 'aapt2') {
+            return ProcessResult(0, 0,
+                "package: name='com.example.myapp' versionCode='1'\n"
+                "launchable-activity: name='com.example.myapp.Main'\n",
+                '');
+          }
+          return ProcessResult(0, 0, '', '');
+        },
+        startProcess: (exe, args) async => fakeLogcat,
+      );
+
+      Future.delayed(const Duration(milliseconds: 10), () {
+        fakeLogcat.complete(0);
+      });
+      await device.launch('/path/to/app.apk');
+
+      final start = calls.firstWhere((c) => c.$2.contains('am'));
+      expect(start.$2, contains('com.example.myapp/com.example.myapp.Main'));
+    });
   });
 
   group('AndroidDevice INTERNET preflight', () {
@@ -1265,24 +1474,6 @@ void main() {
       sockets.clear();
     });
 
-    /// What `devicectl list devices` reports for one paired device.
-    String devicesJson(String transportType) => json.encode({
-          'result': {
-            'devices': [
-              {
-                'identifier': 'TEST-COREDEVICE-ID',
-                'hardwareProperties': {'udid': 'TEST-UDID'},
-                'deviceProperties': {'name': "Test iPhone"},
-                'connectionProperties': {
-                  'transportType': transportType,
-                  'pairingState': 'paired',
-                  'localHostnames': ['Test-iPhone.coredevice.local'],
-                },
-              },
-            ],
-          },
-        });
-
     /// Everything one faked launch hands back to the test.
     ///
     /// [args] records every argument list passed to [Process.start], so a test
@@ -1936,18 +2127,11 @@ void main() {
     });
   });
 
-  group('resolveAdb', () {
-    test('returns a string', () {
-      final result = resolveAdb();
-      expect(result, isA<String>());
-      expect(result, isNotEmpty);
-    });
-  });
-
   group('extractPackageInfo', () {
     test('parses aapt2 dump badging output', () async {
       final info = await extractPackageInfo(
         '/fake/app.apk',
+        aapt2Path: '/fake/aapt2',
         runProcess: (exe, args) async {
           return ProcessResult(0, 0,
               "package: name='com.example.myapp' versionCode='1'\n"
@@ -1959,14 +2143,20 @@ void main() {
       expect(info.activityName, 'com.example.myapp.MainActivity');
     });
 
-    test('throws on aapt2 failure', () {
+    test('throws naming the command that failed', () {
       expect(
         () => extractPackageInfo(
           '/fake/app.apk',
+          aapt2Path: '/fake/aapt2',
           runProcess: (exe, args) async =>
-              ProcessResult(0, 1, '', 'not found'),
+              ProcessResult(0, 1, '', 'not a valid APK'),
         ),
-        throwsStateError,
+        throwsA(isA<StateError>().having(
+          (e) => e.message,
+          'message',
+          allOf(contains('/fake/aapt2 dump badging /fake/app.apk'),
+              contains('not a valid APK')),
+        )),
       );
     });
   });
@@ -2013,6 +2203,26 @@ void main() {
       );
     });
   });
+}
+
+/// A device whose only interesting property is what it demands of the host.
+class _ToolsDevice extends Device {
+  final List<HostTool> _tools;
+
+  _ToolsDevice(this._tools);
+
+  @override
+  Future<List<HostTool>> requiredHostTools() async => _tools;
+
+  @override
+  String get name => 'Tools';
+
+  @override
+  Future<AppInstance> launch(String appPath, {AppLogListener? onLog}) =>
+      throw UnimplementedError();
+
+  @override
+  Future<void> stop(AppInstance instance) => throw UnimplementedError();
 }
 
 class _MinimalDevice extends Device {

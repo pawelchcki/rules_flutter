@@ -459,6 +459,19 @@ class RunCommand {
           'Cannot build for multiple platforms in one invocation.\n$details');
     }
 
+    // Step 1a: Fail on a misconfigured host before spending a build on it.
+    // Each device names the external programs its launch drives, so a missing
+    // `aapt2` or an unattached phone is reported here, by name, instead of
+    // surfacing later as an app that never started and a VM service that never
+    // appeared.
+    for (final device in devices) {
+      try {
+        await device.preflight();
+      } on StateError catch (e) {
+        throw DevToolException('Cannot run on ${device.name}: ${e.message}');
+      }
+    }
+
     // Step 2: Build with device platform flags.
     String? compilationMode;
     if (profileMode) {
