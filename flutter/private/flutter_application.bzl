@@ -16,7 +16,7 @@ load("//flutter:providers.bzl", "FlutterApplicationInfo", "FlutterInfo")
 load("//flutter/private:common.bzl", "FLUTTER_APPLICATION_ATTRS", "PLATFORM_CONSTRAINT_ATTRS", "collect_native_libs", "detect_target_platform", "flutter_build_assets", "flutter_compile_kernel", "flutter_compile_shaders", "host_target_arch")
 load("//flutter/private:flutter_aot_compile.bzl", "flutter_aot_elf_action", "flutter_aot_macho_action")
 load("//flutter/private:flutter_library.bzl", "dedup_plugins")
-load("//flutter/private:flutter_native_assets.bzl", "collect_bundled_code_asset_files", "write_native_assets_manifest")
+load("//flutter/private:flutter_native_assets.bzl", "bridge_dart_code_assets", "collect_bundled_code_asset_files", "write_native_assets_manifest")
 
 def _flutter_application_impl(ctx):
     flutter_toolchain = ctx.toolchains["@rules_flutter//flutter:toolchain_type"]
@@ -69,7 +69,18 @@ def _flutter_application_impl(ctx):
             transitive_data_asset_depsets.append(info.data_assets)
     transitive_native_assets = depset(transitive = transitive_native_asset_depsets)
     transitive_data_assets = depset(transitive = transitive_data_asset_depsets)
+
+    # Plus any code assets rules_dart propagated through the Dart package
+    # graph — a pub package that owns a native library contributes it just by
+    # being depended on. Declarations made here with `flutter_native_asset`
+    # win, since they are the deliberate ones.
     native_assets_list = transitive_native_assets.to_list()
+    declared_ids = {asset.asset_id: True for asset in native_assets_list}
+    native_assets_list = native_assets_list + [
+        asset
+        for asset in bridge_dart_code_assets(ctx, ctx.attr.deps)
+        if asset.asset_id not in declared_ids
+    ]
 
     target_arch = host_target_arch(ctx, flutter_sdk_info)
     native_assets_manifest_file = ctx.actions.declare_file(ctx.label.name + ".native_assets.json")

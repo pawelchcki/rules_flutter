@@ -39,7 +39,8 @@ arch per `bazel build` invocation. Universal binaries flow through
 discretion.
 """
 
-load("//flutter:providers.bzl", "FlutterApplicationInfo")
+load("@rules_dart//dart:providers.bzl", "DartInfo")
+load("//flutter:providers.bzl", "FlutterApplicationInfo", "FlutterNativeAssetInfo")
 
 # Map (target_os, arch) → the Target string Dart's
 # `Target.fromArchitectureAndOS` would produce. Keep this mirrored
@@ -212,6 +213,63 @@ def collect_bundled_code_asset_files(native_assets):
         for asset in native_assets
         if asset.link_mode == "dynamic_loading_bundle" and asset.file != None
     ])
+
+def bridge_dart_code_assets(ctx, deps):
+    """Lifts rules_dart code assets off the Dart package graph.
+
+    rules_dart propagates a pub package's native libraries on
+    `DartPackageInfo.code_assets`, so an app that depends on a package owning
+    one gets it without naming anything — the same semantics pub itself has.
+    `DartCodeAssetInfo` carries exactly what upstream's `CodeAsset` does
+    (id, link mode, library, system uri); everything here on top is
+    Flutter-specific bundling.
+
+    Called from the application rule rather than from `build_flutter_providers`
+    on purpose. A bundled library must be re-declared in the consuming rule's
+    own output namespace — a raw `cc_shared_library` output lives under
+    `_solib_<arch>/…`, which trips rules_apple's
+    `bundle_paths.owner_relative_path`. Doing that in every `flutter_library`
+    would make two targets in one package declare the same output file; there
+    is exactly one application per bundle, so doing it here cannot collide.
+
+    Tolerates rules_dart versions predating `DartPackageInfo.code_assets`:
+    those simply contribute nothing.
+
+    Args:
+      ctx: The application rule's context.
+      deps: Targets that may provide `DartInfo`.
+
+    Returns:
+      List of `FlutterNativeAssetInfo`.
+    """
+    lifted = []
+    seen = {}
+    for dep in deps:
+        if DartInfo not in dep:
+            continue
+        for pkg in dep[DartInfo].transitive_packages.to_list():
+            for asset in (pkg.code_assets if hasattr(pkg, "code_assets") else ()):
+                if asset.asset_id in seen:
+                    continue
+                seen[asset.asset_id] = True
+
+                asset_file = None
+                bundle_filename = ""
+                if asset.dynamic_library != None:
+                    bundle_filename = asset.dynamic_library.basename
+                    asset_file = ctx.actions.declare_file(bundle_filename)
+                    ctx.actions.symlink(
+                        output = asset_file,
+                        target_file = asset.dynamic_library,
+                    )
+                lifted.append(FlutterNativeAssetInfo(
+                    asset_id = asset.asset_id,
+                    link_mode = asset.link_mode,
+                    file = asset_file,
+                    bundle_filename = bundle_filename,
+                    system_uri = asset.system_uri,
+                ))
+    return lifted
 
 # -- Tier 2 standalone rule ----------------------------------------------------
 
