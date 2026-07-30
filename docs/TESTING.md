@@ -168,9 +168,15 @@ for arbitrary Gradle native builds; instead:
    Non-Android platforms are unaffected (the check lives in the spoke's
    `android/` sub-package, loaded only via the hub's Android aggregator).
 
+### Curated code assets (no authoring needed)
+
+A pub package shipping a build hook is first checked against rules_dart's curated registry (`@rules_dart//dart/ext:registry.bzl`). Where rules_dart provides a Bazel replacement — `sqlite3` today — `flutter.pub()` attaches it to that package automatically, so an app depending on `drift` gets `libsqlite3` without naming it and without an overlay. `e2e/ffi_example` covers this end to end; its `verify_*_runtime_test` targets assert the library actually loaded.
+
+A package with a hook that *nothing* replaces is recorded, and `flutter_application` fails when it reaches one — the alternative is a clean build whose `*.native_assets.json` is one entry short and which dies at runtime on an unresolved `@Native` symbol. Two ways out: write an overlay (below), or declare the hook irrelevant with `flutter.pub(ignore_hooks = ["<pkg>"])` when the package's native code is genuinely unused in this build.
+
 ### Native Assets overlay authoring
 
-Pub packages that ship a `hooks/build.dart` Dart-Native-Assets build hook (e.g. `package:objective_c`) get translated to Bazel-native equivalents under `ext/<pkg>/<major>/BUILD.bazel.tpl`. The template is loaded by `flutter_pub_package` for any spoke whose package name + major version matches.
+Pub packages that ship a `hooks/build.dart` Dart-Native-Assets build hook (e.g. `package:objective_c`) and have no curated entry get translated to Bazel-native equivalents under `ext/<pkg>/<major>/BUILD.bazel.tpl`. The template is loaded by `flutter_pub_package` for any spoke whose package name + major version matches.
 
 Template substitutions: `{HUB_NAME}` (the user's `flutter.pub(name = ...)`), `{PKG}` (the package name), `{VERSION}` (the resolved version).
 
