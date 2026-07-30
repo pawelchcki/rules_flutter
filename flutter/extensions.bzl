@@ -12,6 +12,7 @@ names (the latest version will be picked for each name) and can register them as
 effectively overriding the default named toolchain due to toolchain resolution precedence.
 """
 
+load("@rules_dart//dart/ext:registry.bzl", "curated_code_assets")
 load("@rules_dart//dart/pub:yaml_parser.bzl", "parse_pubspec_lock")
 load("//flutter/private:flutter_pub_lock_hub.bzl", "flutter_pub_lock_hub")
 load("//flutter/private:flutter_pub_package.bzl", "flutter_pub_package")
@@ -55,6 +56,13 @@ _flutter_pub = tag_class(attrs = {
         doc = "The pubspec.lock file to parse.",
         mandatory = True,
         allow_single_file = True,
+    ),
+    "ignore_hooks": attr.string_list(
+        doc = "Pub package names whose `hook/build.dart` is knowingly " +
+              "irrelevant to this build (its native code is never reached). " +
+              "Suppresses the unreplaced-hook error for them. This is a " +
+              "declaration you make deliberately; it is never a default.",
+        default = [],
     ),
 })
 
@@ -119,6 +127,7 @@ def _toolchain_extension(module_ctx):
             hub_name = pub_tag.name
             lock_content = module_ctx.read(pub_tag.lock)
             lock_pkgs = parse_pubspec_lock(lock_content)
+            ignore_hooks = {pkg_name: True for pkg_name in pub_tag.ignore_hooks}
 
             # Determine the Flutter version to use for SDK packages.
             # Use the default toolchain version; fail if no toolchain is registered.
@@ -153,15 +162,25 @@ def _toolchain_extension(module_ctx):
             # `pub_lock_package` directly.
             for name, info in hosted.items():
                 desc = info.get("description", {})
+                version = info.get("version", "")
                 flutter_pub_package(
                     name = hub_name + "__" + name,
                     package_name = name,
-                    version = info.get("version", ""),
+                    version = version,
                     sha256 = desc.get("sha256", "") if type(desc) == "dict" else "",
                     base_url = desc.get("url", "https://pub.dev") if type(desc) == "dict" else "https://pub.dev",
                     hub_name = hub_name,
                     lock_packages = all_package_names,
                     overlay_roots = user_overlay_roots + ["@rules_flutter//ext:BUILD.bazel"],
+                    # rules_dart's curated registry is the single source of
+                    # truth for which pub package a Bazel-built native library
+                    # stands in for, and at which versions. Consulting it here
+                    # is what makes a Flutter app depending on, say, `drift`
+                    # get `sqlite3`'s library without naming it: the asset
+                    # lands on the package that owns it, so it propagates
+                    # through the Dart graph exactly as pub's own would.
+                    code_assets = curated_code_assets(name, version),
+                    ignore_hook = name in ignore_hooks,
                 )
 
             # Create spoke repos for Flutter SDK packages.
