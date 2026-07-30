@@ -642,10 +642,27 @@ def _format_pub_asset_attrs(fonts_json_str, font_files, pkg_assets, pkg_shaders)
         parts.append("    pkg_shaders = {},".format(_format_label_dict_literal(pkg_shaders)))
     return ("\n".join(parts) + "\n") if parts else ""
 
+def _format_code_asset_attrs(code_assets, has_unreplaced_hook):
+    """Render the `code_assets` / `has_unreplaced_hook` attrs for a spoke.
+
+    Shared by the `flutter_library` and `flutter_plugin` generators so the two
+    emit an identical shape; the `dart_library` branch gets the equivalent from
+    rules_dart's own `make_dart_library_build_content`.
+    """
+    block = ""
+    if code_assets:
+        lines = ['        "{}",'.format(a) for a in code_assets]
+        block += "    code_assets = [\n{}\n    ],\n".format("\n".join(lines))
+    if has_unreplaced_hook:
+        block += '    has_unreplaced_hook = "{}",\n'.format(has_unreplaced_hook)
+    return block
+
 def _make_flutter_library_build_content(
         name,
         deps,
         language_version,
+        code_assets,
+        has_unreplaced_hook,
         fonts_json_str,
         font_files,
         pkg_assets,
@@ -672,12 +689,13 @@ flutter_library(
     srcs = glob(["lib/**/*.dart"], allow_empty = True),
 {deps}    package_name = "{name}",
     language_version = "{language_version}",
-{pub_attrs}    visibility = ["//visibility:public"],
+{asset_attrs}{pub_attrs}    visibility = ["//visibility:public"],
 )
 """.format(
         name = name,
         deps = deps_block,
         language_version = language_version,
+        asset_attrs = _format_code_asset_attrs(code_assets, has_unreplaced_hook),
         pub_attrs = pub_attrs,
     )
 
@@ -685,6 +703,8 @@ def _make_flutter_plugin_build_content(
         name,
         deps,
         language_version,
+        code_assets,
+        has_unreplaced_hook,
         plugin_platforms_json,
         apple_macos_srcs_dirs,
         apple_ios_srcs_dirs,
@@ -868,11 +888,12 @@ flutter_plugin(
 {deps}    package_name = "{name}",
     plugin_platforms_json = {plugin_platforms_json_literal},
     language_version = "{language_version}",
-{apple_libs_arg}{linux_libs_arg}{windows_libs_arg}{apple_privacy_files_arg}{pub_attrs}    visibility = ["//visibility:public"],
+{apple_libs_arg}{linux_libs_arg}{windows_libs_arg}{apple_privacy_files_arg}{asset_attrs}{pub_attrs}    visibility = ["//visibility:public"],
 )
 {extra_targets}
 """.format(
         name = name,
+        asset_attrs = _format_code_asset_attrs(code_assets, has_unreplaced_hook),
         deps = deps_block,
         language_version = language_version,
         plugin_platforms_json_literal = repr(plugin_platforms_json),
@@ -1149,6 +1170,26 @@ exports_files(glob(
 ))
 """
 
+# The hook entrypoints upstream Dart defines (`package:hooks` — `build` and
+# `link`). A package shipping one produces native libraries by running Dart at
+# build time, which Bazel cannot do hermetically; something must stand in for it.
+_DART_BUILD_HOOKS = ["hook/build.dart", "hook/link.dart"]
+
+def _detect_unreplaced_hook(ctx):
+    """Return the path of a build hook nothing replaces, or "".
+
+    Recording rather than failing here is deliberate, and matches rules_dart:
+    the whole lock is materialised, including packages nothing depends on, so
+    failing at repo generation would break builds over packages never reached.
+    The application that actually depends on one fails instead.
+    """
+    if ctx.attr.code_assets or ctx.attr.ignore_hook:
+        return ""
+    for candidate in _DART_BUILD_HOOKS:
+        if ctx.path(candidate).exists:
+            return candidate
+    return ""
+
 def _resolve_overlay_template(ctx, overlay_root_label, package_name, version, relpath):
     """Look up an overlay template at `<root>/<package>/<version-ladder>/<relpath>`.
 
@@ -1281,6 +1322,10 @@ def _flutter_pub_package_impl(ctx):
     has_asset_contributions = (
         bool(asset_block.fonts) or bool(asset_block.assets) or bool(asset_block.shaders)
     )
+
+    # Computed once, before the branch: which generator runs depends on the
+    # pubspec, but a build hook is a property of the package either way.
+    unreplaced_hook = _detect_unreplaced_hook(ctx)
 
     # Try overlays first (user-supplied roots win over the bundled
     # `@rules_flutter//ext/` tree). On match, the overlay replaces
@@ -1428,6 +1473,8 @@ def _flutter_pub_package_impl(ctx):
             name = ctx.attr.package_name,
             deps = dep_labels,
             language_version = language_version,
+            code_assets = ctx.attr.code_assets,
+            has_unreplaced_hook = unreplaced_hook,
             plugin_platforms_json = plugin_platforms_json,
             apple_macos_srcs_dirs = apple_macos_srcs_dirs,
             apple_ios_srcs_dirs = apple_ios_srcs_dirs,
@@ -1451,6 +1498,8 @@ def _flutter_pub_package_impl(ctx):
             name = ctx.attr.package_name,
             deps = dep_labels,
             language_version = language_version,
+            code_assets = ctx.attr.code_assets,
+            has_unreplaced_hook = unreplaced_hook,
             fonts_json_str = fonts_json_str,
             font_files = font_files,
             pkg_assets = pkg_assets_dict,
@@ -1468,6 +1517,8 @@ def _flutter_pub_package_impl(ctx):
             name = ctx.attr.package_name,
             deps = dep_labels,
             language_version = language_version,
+            code_assets = ctx.attr.code_assets,
+            has_unreplaced_hook = unreplaced_hook,
         )
         android_src_dir = ""
         android_java_package = ""
@@ -1527,6 +1578,22 @@ flutter_pub_package = repository_rule(
         "lock_packages": attr.string_list(
             doc = "All hosted package names in the lock file (for dep filtering).",
             default = [],
+        ),
+        "code_assets": attr.string_list(
+            doc = "Labels of `dart_code_asset` targets standing in for this " +
+                  "package's build hook. Resolved by the extension from " +
+                  "rules_dart's curated registry, so a user depending on, say, " +
+                  "`drift` never names `sqlite3`. Attached to the generated " +
+                  "package target rather than to the application, which is what " +
+                  "makes them propagate the way pub's own assets do.",
+            default = [],
+        ),
+        "ignore_hook": attr.bool(
+            doc = "Treat this package's build hook as irrelevant. Without it, a " +
+                  "package shipping a hook that nothing replaces is recorded and " +
+                  "the application that reaches it fails, rather than building " +
+                  "cleanly and dying at runtime on an unresolved native symbol.",
+            default = False,
         ),
         "overlay_roots": attr.label_list(
             doc = "BUILD.bazel anchors for overlay trees. Each label points at " +

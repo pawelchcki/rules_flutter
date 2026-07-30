@@ -1,6 +1,6 @@
 """Implementation of the flutter_library rule."""
 
-load("@rules_dart//dart:providers.bzl", "DartInfo", "DartPackageInfo")
+load("@rules_dart//dart:providers.bzl", "DartCodeAssetInfo", "DartInfo", "DartPackageInfo")
 load("@rules_dart//dart:utils.bzl", "derive_lib_root", "derive_package_name")
 load("//flutter:providers.bzl", "FlutterInfo")
 
@@ -232,14 +232,33 @@ def build_flutter_providers(ctx, package_name, lib_root, extra_plugins = [], ext
         transitive = [dep[DartInfo].transitive_srcs for dep in ctx.attr.deps],
     )
 
+    # Code assets ride on the package record, which is what makes them
+    # propagate the way pub does: depending on a package that owns one is
+    # enough, and no consumer has to name it. rules_dart owns the declaration
+    # (`DartCodeAssetInfo`); everything Flutter adds — bundle filename, the
+    # per-platform bundle slot — is applied later by the application rule.
+    own_code_assets = [dep[DartCodeAssetInfo] for dep in ctx.attr.code_assets]
     this_pkg = DartPackageInfo(
         package_name = package_name,
         lib_root = lib_root,
         language_version = language_version,
+        code_assets = tuple(own_code_assets),
+        has_unreplaced_hook = ctx.attr.has_unreplaced_hook,
     )
     transitive_packages = depset(
         direct = [this_pkg],
         transitive = [dep[DartInfo].transitive_packages for dep in ctx.attr.deps],
+    )
+    transitive_code_asset_files = depset(
+        direct = [
+            a.dynamic_library
+            for a in own_code_assets
+            if a.dynamic_library != None
+        ],
+        transitive = [
+            dep[DartInfo].transitive_code_asset_files
+            for dep in ctx.attr.deps
+        ],
     )
 
     transitive_asset_dirs = depset(
@@ -381,6 +400,7 @@ def build_flutter_providers(ctx, package_name, lib_root, extra_plugins = [], ext
         lib_root = lib_root,
         transitive_srcs = transitive_srcs,
         transitive_packages = transitive_packages,
+        transitive_code_asset_files = transitive_code_asset_files,
     )
     flutter_info = FlutterInfo(
         asset_dirs = transitive_asset_dirs,
@@ -463,6 +483,18 @@ flutter_library = rule(
         ),
         "package_name": attr.string(
             doc = "The Dart package name. If omitted, defaults to the last component of the Bazel package path.",
+        ),
+        "code_assets": attr.label_list(
+            doc = "`dart_code_asset` targets standing in for this package's " +
+                  "`hook/build.dart` output. Declared on the owning package " +
+                  "rather than on the consuming application so they propagate " +
+                  "the way pub's own do — depending on the package is enough.",
+            providers = [DartCodeAssetInfo],
+        ),
+        "has_unreplaced_hook": attr.string(
+            doc = "Path of a build hook this package ships that nothing " +
+                  "replaces, or empty. Recorded at repo generation; the " +
+                  "application that depends on the package fails on it.",
         ),
         "language_version": attr.string(
             doc = "Dart language version (`<major>.<minor>`) for this package's `package_config.json` entry. Mirrors `dart_library`'s attribute. Empty string means defer to the toolchain default.",

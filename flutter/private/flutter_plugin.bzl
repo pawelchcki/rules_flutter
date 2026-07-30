@@ -18,7 +18,7 @@ Platform-specific native dependencies use select() in BUILD files:
 """
 
 load("@rules_cc//cc/common:cc_info.bzl", "CcInfo")
-load("@rules_dart//dart:providers.bzl", "DartInfo")
+load("@rules_dart//dart:providers.bzl", "DartCodeAssetInfo", "DartInfo")
 load("@rules_dart//dart:utils.bzl", "derive_lib_root", "derive_package_name")
 load("@rules_swift//swift:swift.bzl", "SwiftInfo")
 load("//flutter:providers.bzl", "FlutterDataAssetInfo", "FlutterNativeAssetInfo")
@@ -218,6 +218,18 @@ flutter_plugin = rule(
         ),
         "native_deps": attr.label_list(
             doc = "Native dependencies. Use select() for platform-conditional deps.",
+        ),
+        "code_assets": attr.label_list(
+            doc = "`dart_code_asset` targets standing in for this package's " +
+                  "`hook/build.dart` output. Declared on the owning package " +
+                  "rather than on the consuming application so they propagate " +
+                  "the way pub's own do — depending on the package is enough.",
+            providers = [DartCodeAssetInfo],
+        ),
+        "has_unreplaced_hook": attr.string(
+            doc = "Path of a build hook this package ships that nothing " +
+                  "replaces, or empty. Recorded at repo generation; the " +
+                  "application that depends on the package fails on it.",
         ),
         "language_version": attr.string(
             doc = "Dart language version (`<major>.<minor>`) for this package's `package_config.json` entry. Mirrors `dart_library`'s attribute. Empty string means defer to the toolchain default.",
