@@ -5,3 +5,9 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
+  # Third mechanism: a native library nothing here names. drift reaches
+  # package:sqlite3, whose own native code comes from a `hook/build.dart`
+  # Bazel cannot run; rules_dart's curated registry binds its Bazel-built
+  # replacement to the sqlite3 package, and flutter.pub() attaches it. The
+  # app depends only on drift.
+  drift: ^2.32.0

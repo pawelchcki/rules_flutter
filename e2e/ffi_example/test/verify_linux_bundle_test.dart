@@ -43,6 +43,8 @@ void main() {
   check('icudtl.dat', '$bundlePath/data/icudtl.dat', nonEmpty: true);
   check('Native-asset lib libadd.so', '$bundlePath/lib/libadd.so', nonEmpty: true);
   check('native_deps lib libmul.so', '$bundlePath/lib/libmul.so', nonEmpty: true);
+  check('curated code-asset lib libsqlite3.so', '$bundlePath/lib/libsqlite3.so',
+      nonEmpty: true);
 
   // Check for either AOT or debug artifact.
   final hasAot = File('$bundlePath/lib/libapp.so').existsSync();

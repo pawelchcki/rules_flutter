@@ -1,5 +1,5 @@
 /// Runtime verification on macOS: launches the bundled .app's binary and
-/// asserts both native-library mechanisms actually worked at runtime.
+/// asserts all three native-library mechanisms actually worked at runtime.
 /// This is a *behavioral* check covering:
 ///
 ///  * Native Assets: `add()` binds via `@Native` — the pass depends on the
@@ -7,6 +7,10 @@
 ///    bundled loose `libadd.dylib` in Contents/Frameworks.
 ///  * native_deps: `mul()` raw-opens `libmul.dylib` by filename, proving the
 ///    loose-library pipeline bundles where the loader expects.
+///  * curated code asset: sqlite3's `@Native` bindings resolve against
+///    the bundled libsqlite3.dylib, which nothing in this workspace names —
+///    the app depends on drift, and the registry attaches the library to
+///    package:sqlite3.
 ///
 /// The binary is launched directly (not via `open`) with TMPDIR pointed at a
 /// directory this test controls, so the marker the app writes in main() lands
@@ -17,10 +21,10 @@
 ///     --strategy=TestRunner=standalone
 ///
 /// Pass criteria: the app writes
-/// `ffi_example_result add(3,4)=7 mul(3,4)=12` to `$TMPDIR/ffi_result.txt`.
+/// `ffi_example_result add(3,4)=7 mul(3,4)=12 sqlite=HELLO` to `$TMPDIR/ffi_result.txt`.
 import 'dart:io';
 
-const _marker = 'ffi_example_result add(3,4)=7 mul(3,4)=12';
+const _marker = 'ffi_example_result add(3,4)=7 mul(3,4)=12 sqlite=HELLO';
 const _timeout = Duration(seconds: 30);
 
 Future<void> main() async {
@@ -78,8 +82,8 @@ Future<void> main() async {
       stderr.writeln('FAIL: expected "$_marker" but got "$contents".');
       exit(1);
     }
-    print('PASS: @Native asset bind (add) and raw filename open (mul) '
-        'both worked at runtime.');
+    print('PASS: @Native asset bind (add), raw filename open (mul) and '
+        'the curated sqlite3 code asset all worked at runtime.');
   } finally {
     app?.kill();
     tmpDir.deleteSync(recursive: true);

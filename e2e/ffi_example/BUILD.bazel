@@ -65,6 +65,11 @@ flutter_application(
     deps = [
         "//add_plugin",
         "//mul_plugin",
+        # No code asset is named anywhere in this workspace. drift pulls
+        # package:sqlite3, and the curated registry attaches sqlite3's
+        # Bazel-built library to that package, so it arrives here the way pub's
+        # own hook output would.
+        "@deps//:drift",
         "@deps//:flutter",
         "@rules_flutter//flutter:material_icons",
     ],

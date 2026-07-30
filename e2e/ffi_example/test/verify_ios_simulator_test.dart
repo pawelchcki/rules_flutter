@@ -1,5 +1,5 @@
 /// Runtime verification on an iOS simulator: installs the app, launches it,
-/// and asserts both native-library mechanisms actually worked at runtime.
+/// and asserts all three native-library mechanisms actually worked at runtime.
 /// This is a *behavioral* check covering:
 ///
 ///  * Native Assets: `add()` binds via `@Native` — the pass depends on the
@@ -8,22 +8,26 @@
 ///  * native_deps: `mul()` raw-opens the conventional framework partial path
 ///    `mul.framework/mul`, proving the loose-library pipeline bundles where
 ///    the loader expects.
+///  * curated code asset: sqlite3's `@Native` bindings resolve against the
+///    embedded, signed `sqlite3.framework`, which nothing in this workspace
+///    names — the app depends on drift, and the registry attaches the
+///    library to package:sqlite3.
 ///
 /// Tagged "manual" (like the Android runtime test) because it needs a usable
 /// iOS simulator. Run explicitly:
 ///   bazel test :verify_ios_simulator_test --test_tag_filters=
 ///
 /// Pass criteria: after launch the app writes
-/// `ffi_example_result add(3,4)=7 mul(3,4)=12` to `tmp/ffi_result.txt` in its
-/// sandbox — written in main() only if both calls succeeded via the bundled
-/// native libraries. The test reads the file back through
-/// `simctl get_app_container` (a deterministic signal that doesn't depend on
-/// scraping iOS log output).
+/// `ffi_example_result add(3,4)=7 mul(3,4)=12 sqlite=HELLO` to
+/// `tmp/ffi_result.txt` in its sandbox — written in main() only if all three
+/// calls succeeded via the bundled native libraries. The test reads the file
+/// back through `simctl get_app_container` (a deterministic signal that
+/// doesn't depend on scraping iOS log output).
 import 'dart:convert';
 import 'dart:io';
 
 const _bundleId = 'com.example.ffi';
-const _marker = 'ffi_example_result add(3,4)=7 mul(3,4)=12';
+const _marker = 'ffi_example_result add(3,4)=7 mul(3,4)=12 sqlite=HELLO';
 const _resultFile = 'tmp/ffi_result.txt';
 const _timeout = Duration(seconds: 60);
 
@@ -114,8 +118,8 @@ void main() {
     stderr.writeln('FAIL: expected "$_marker" but got "$contents".');
     exit(1);
   }
-  print('PASS: @Native asset bind (add) and raw framework open (mul) '
-      'both worked at runtime.');
+  print('PASS: @Native asset bind (add), raw framework open (mul) and '
+      'the curated sqlite3 code asset all worked at runtime.');
 }
 
 /// Returns the UDID of a booted simulator, booting an available iPhone if none

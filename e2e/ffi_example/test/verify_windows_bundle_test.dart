@@ -38,6 +38,8 @@ void main() {
       nonEmpty: true);
   check('Native-asset lib add.dll', '$bundlePath/add.dll', nonEmpty: true);
   check('native_deps lib mul.dll', '$bundlePath/mul.dll', nonEmpty: true);
+  check('curated code-asset lib sqlite3.dll', '$bundlePath/sqlite3.dll',
+      nonEmpty: true);
   check('flutter_assets', '$bundlePath/data/flutter_assets');
   check('icudtl.dat', '$bundlePath/data/icudtl.dat', nonEmpty: true);
 
