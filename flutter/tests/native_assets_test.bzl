@@ -240,6 +240,16 @@ def native_assets_test_suite(name):
         expected_substring = "duplicate native asset id \"package:foo/foo.dylib\"",
     )
 
+    # The counterpart to the bridge probe below: an asset that never arrives
+    # because the package's hook has no Bazel replacement. Silence here means
+    # a manifest one entry short and an unresolved symbol at runtime, so the
+    # application must refuse to build and name the package.
+    _expect_failure_test(
+        name = name + "_unreplaced_hook",
+        target_under_test = "//flutter/tests/dart_asset_fixture:hook_app",
+        expected_substring = "hook_fixture (hook/build.dart)",
+    )
+
     unittest.suite(
         name + "_pure",
         _target_string_t0_test,
@@ -256,6 +266,7 @@ def native_assets_test_suite(name):
             ":" + name + "_system_requires_uri",
             ":" + name + "_data_asset_id_format",
             ":" + name + "_duplicate_asset_ids",
+            ":" + name + "_unreplaced_hook",
             ":" + name + "_pure",
         ],
     )

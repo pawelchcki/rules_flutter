@@ -1,6 +1,7 @@
 load("@rules_cc//cc:cc_library.bzl", "cc_library")
 load("@rules_cc//cc:cc_shared_library.bzl", "cc_shared_library")
 load("@rules_dart//dart:defs.bzl", "dart_code_asset", "dart_library")
+load("//flutter:defs.bzl", "flutter_application", "flutter_library")
 
 # A pub-package-shaped `dart_library` that owns a native code asset, exactly as
 # `pub.from_lock()` generates for a package with a curated `//dart/ext` entry.
@@ -35,4 +36,28 @@ dart_library(
     srcs = ["lib/fixture.dart"],
     code_assets = [":code_asset"],
     visibility = ["//flutter/tests:__pkg__"],
+)
+
+# The other half of the contract: a package that ships a build hook nothing
+# replaces, as `flutter.pub()` records when it finds `hook/build.dart` and the
+# curated registry has no entry for that package at that version. Using
+# `flutter_library` rather than `dart_library` is deliberate — what is under
+# test is that rules_flutter's own package rule carries the flag onto
+# `DartPackageInfo` and up through `transitive_packages`.
+flutter_library(
+    name = "hook_fixture",
+    package_name = "hook_fixture",
+    srcs = ["lib/hook_fixture.dart"],
+    has_unreplaced_hook = "hook/build.dart",
+)
+
+# Reaching that package from an application must fail at analysis. Left
+# `manual` so only the analysistest that wraps it builds it.
+flutter_application(
+    name = "hook_app",
+    package_name = "hook_app",
+    main = "hook_app_main.dart",
+    tags = ["manual"],
+    visibility = ["//flutter/tests:__pkg__"],
+    deps = [":hook_fixture"],
 )
