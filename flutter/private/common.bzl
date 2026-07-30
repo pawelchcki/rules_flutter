@@ -72,6 +72,57 @@ def make_web_wrapper_main_content(original_import, registrant_import = None):
     ])
     return "\n".join(lines)
 
+def check_unreplaced_hooks(label, deps):
+    """Returns an error naming pub packages whose build hook nothing replaces.
+
+    A pub package shipping `hook/build.dart` builds its native library at
+    `pub get` time. Bazel cannot run that hook, so without a replacement the
+    package's `@Native` bindings resolve to nothing: the manifest is simply
+    missing an entry, and the failure surfaces at runtime as "couldn't resolve
+    native function" with nothing pointing at the cause.
+
+    Checked at the application rather than when the spoke repo is generated.
+    `flutter.pub()` materialises the whole lock file, so failing at generation
+    would fail over packages nothing depends on, and on platforms where the
+    hook is irrelevant. Only a package an application actually reaches is a
+    problem, and only here is the depending target known.
+
+    rules_dart applies the same rule at `dart_binary` with its own copy. The
+    two differ only in the remediation they suggest — a Flutter user fixes this
+    through `flutter.pub()`, not `pub.from_lock()` — so this collapses into one
+    shared helper once rules_dart exports one that takes the hint as an
+    argument.
+
+    Args:
+      label: The consuming target's label, for the message.
+      deps: The application's `deps`, each providing `DartInfo`.
+
+    Returns:
+      An error message string, or `None`.
+    """
+    packages = depset(
+        transitive = [dep[DartInfo].transitive_packages for dep in deps],
+    ).to_list()
+    offenders = [pkg for pkg in packages if pkg.has_unreplaced_hook]
+    if not offenders:
+        return None
+    return (
+        "%s depends on pub package(s) that build native code with a hook " +
+        "Bazel cannot run:\n%s\n\n" +
+        "Their `@Native` bindings will not resolve at runtime. Either:\n" +
+        "  - add a `dart_code_asset` to the owning package's `code_assets` " +
+        "(for a pub package, that means a `flutter.plugin_overlays` entry, " +
+        "or a curated entry upstream in rules_dart), or\n" +
+        "  - list the package in `flutter.pub(ignore_hooks = [...])` if its " +
+        "native code is genuinely unused here."
+    ) % (
+        label,
+        "\n".join([
+            "  - %s (%s)" % (pkg.package_name, pkg.has_unreplaced_hook)
+            for pkg in offenders
+        ]),
+    )
+
 def collect_native_libs(native_deps):
     """Collect shared libraries from native_deps for dart:ffi.
 
