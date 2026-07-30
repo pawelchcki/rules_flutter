@@ -13,7 +13,6 @@ import 'dart:io';
 import 'package:args/args.dart';
 import 'package:dds/dds.dart';
 import 'package:path/path.dart' as p;
-import 'package:vm_service/vm_service_io.dart' as vm;
 import 'package:webkit_inspection_protocol/webkit_inspection_protocol.dart'
     show ChromeConnection;
 
@@ -932,12 +931,29 @@ class RunCommand {
           try {
             final debugConnection =
                 await webModuleServer!.debugConnection(appConnection);
-            final dwdsUri = Uri.parse(debugConnection.uri);
-            final wsUri = dwdsUri.replace(
-              scheme: dwdsUri.scheme == 'https' ? 'wss' : 'ws',
-              path: '${dwdsUri.path}ws',
+            final session = sessions.firstWhere((s) => s.device is WebDevice);
+
+            // Own the DDS here just as the native path does above. DWDS
+            // advertises its debug service as a `ws:` URI with no trailing
+            // slash; DDS wants `http:`, and rejects anything else outright.
+            //
+            // A web hot restart reloads the page, so this callback fires again
+            // with a fresh debug service — the previous DDS is bound to a dead
+            // one and has to go.
+            await session.dds?.shutdown();
+            final dds = await DartDevelopmentService.startDartDevelopmentService(
+              Uri.parse(debugConnection.uri).replace(scheme: 'http'),
             );
-            final webVmService = await vm.vmServiceConnectUri(wsUri.toString());
+            session.dds = dds;
+
+            // Everything downstream talks to DDS rather than to DWDS directly.
+            // DDS multiplexes clients, so our own client and DevTools coexist
+            // instead of evicting each other.
+            final webClient = VmServiceClient();
+            await webClient.connect(dds.uri!, createDevFS: false);
+            session.vmClient = webClient;
+            session.markDebugReady();
+            final webVmService = webClient.service!;
             dwdsReload.attachVmService(webVmService);
 
             // A browser page has no process pipes, so the VM service is the
@@ -945,7 +961,6 @@ class RunCommand {
             // web hot restart is a page reload, which replaces the isolate and
             // its VM service; without this, output stops after the first
             // restart.
-            final session = sessions.firstWhere((s) => s.device is WebDevice);
             await webLogForwarder?.dispose();
             webLogForwarder = await forwardVmServiceLogs(
                 webVmService, session.appInstance.logs);

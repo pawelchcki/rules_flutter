@@ -57,7 +57,14 @@ class VmServiceClient {
       : _connector = connector ?? vmServiceConnectUri;
 
   /// Connect to the VM service at the given URI.
-  Future<void> connect(Uri serviceUri) async {
+  ///
+  /// [createDevFS] reflects what the target actually implements. The Dart VM
+  /// serves `_createDevFS`, and the native reload path uploads dills through
+  /// it. A web app's VM service is DWDS's proxy over the Chrome debugger,
+  /// which has no filesystem to write to and answers `-32601 Unknown method`;
+  /// web reloads push sources over DWDS instead. Callers say which they are
+  /// rather than having a predictable failure reported as a warning.
+  Future<void> connect(Uri serviceUri, {bool createDevFS = true}) async {
     _httpAddress = serviceUri;
 
     // Convert http(s) URI to ws URI for VM service.
@@ -83,8 +90,7 @@ class VmServiceClient {
     // _applyAndVerify.
     await _ensureExtensionStream();
 
-    // Create devFS for file uploads.
-    await _createDevFS();
+    if (createDevFS) await _createDevFS();
   }
 
   /// Ensure the VM is publishing the `Extension` stream (carries

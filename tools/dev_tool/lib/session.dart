@@ -31,11 +31,31 @@ class DeviceSession {
   String? devToolsUrl;
   Process? devToolsProcess;
 
-  /// The Dart Development Service we started on the app's raw VM service. Our
-  /// [vmClient] and DevTools both connect through it (DDS multiplexes), so they
-  /// no longer evict each other. Null only if the device has no VM service
-  /// (web) or DDS failed to start.
+  /// The Dart Development Service we started on the app's VM service — the
+  /// app's own on native, DWDS's debug service on web. Our [vmClient] and
+  /// DevTools both connect through it (DDS multiplexes), so they no longer
+  /// evict each other.
+  ///
+  /// Mutable: a web hot restart reloads the page and replaces the debug
+  /// service, so the session re-owns a fresh DDS on every browser connection.
+  /// Null only when DDS could not be started.
   DartDevelopmentService? dds;
+
+  final Completer<void> _debugReady = Completer<void>();
+
+  /// Completes once [vmClient] and [dds] are both populated.
+  ///
+  /// Native devices are debug-ready the moment the session exists. Web is not:
+  /// DWDS only hands over a debug service when the browser connects, which is
+  /// after the session is constructed and `app.started` has been emitted.
+  /// Consumers that need the VM service — DevTools, chiefly — wait on this
+  /// instead of sampling the fields once and finding them null on web.
+  Future<void> get debugReady => _debugReady.future;
+
+  /// Idempotent: a web hot restart re-runs the connect path.
+  void markDebugReady() {
+    if (!_debugReady.isCompleted) _debugReady.complete();
+  }
 
   DeviceSession({
     required this.device,
@@ -43,7 +63,9 @@ class DeviceSession {
     required this.vmClient,
     required this.appId,
     this.dds,
-  });
+  }) {
+    if (vmClient != null && dds != null) markDebugReady();
+  }
 }
 
 /// Result of a compile + reload/restart operation.
@@ -188,10 +210,14 @@ Future<void> runInteractiveSession({
 }) async {
   log ??= (msg) => stdout.writeln(msg);
 
-  // Launch DevTools for each session with a VM client.
+  // Launch DevTools once each session can serve it. Native is ready
+  // immediately; web resolves when the browser connects, so this is wired as a
+  // continuation rather than a check — waiting here would block the terminal
+  // until a page loads, and checking now would always miss web.
   if (devToolsEnabled) {
+    final logDevTools = log;
     for (final session in sessions) {
-      if (session.vmClient != null && session.dds != null) {
+      unawaited(session.debugReady.then((_) async {
         try {
           // Point DevTools at the DDS endpoint, not the raw VM service. DDS
           // multiplexes clients, so DevTools connecting here does NOT evict
@@ -200,7 +226,7 @@ Future<void> runInteractiveSession({
           session.devToolsProcess = devtools.process;
           if (devtools.url != null) {
             session.devToolsUrl = devtools.url;
-            log('DevTools at ${devtools.url} (${session.device.name})');
+            logDevTools('DevTools at ${devtools.url} (${session.device.name})');
             if (openBrowser != null) {
               await openBrowser(devtools.url!);
             } else {
@@ -211,7 +237,7 @@ Future<void> runInteractiveSession({
           // Non-fatal: DevTools is optional.
           stderr.writeln('Warning: Could not launch DevTools for ${session.device.name}: $e');
         }
-      }
+      }));
     }
   }
 

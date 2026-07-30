@@ -364,6 +364,20 @@ class WebModuleServer implements AssetReader {
         loadStrategy: strategyProvider.strategy,
         debugSettings: DebugSettings(
           enableDebugExtension: true,
+          // We own the Dart Development Service, exactly as the native path
+          // does. DWDS would otherwise spawn one as a subprocess, and its
+          // launcher never forwards a `dartExecutable` — it probes
+          // `Platform.executable`, which under Bazel is this AOT binary, and
+          // re-execs us as `<binary> development-service --vm-service-uri=…`.
+          //
+          // `serveDevTools: false` is not redundant: DWDS's debug-request
+          // handler only refuses gracefully when *both* are off. Left true, an
+          // in-page DevTools request passes that guard and later throws a raw
+          // StateError into the page.
+          ddsConfiguration: DartDevelopmentServiceConfiguration(
+            enable: false,
+            serveDevTools: false,
+          ),
         ),
         appMetadata: AppMetadata(hostname: 'localhost'),
       ),
