@@ -11,7 +11,15 @@ This rule produces outputs that platform-specific wrappers consume:
 3. ICU data file (icudtl.dat)
 """
 
+load("@rules_dart//dart:providers.bzl", "DartInfo")
 load("@rules_dart//dart:utils.bzl", "COPY_TO_DIRECTORY_TOOLCHAINS")
+
+# check_unreplaced_hooks is the same diagnostic rules_dart applies at
+# dart_binary; a Flutter app is the other terminal of the same package graph,
+# and duplicating the offender detection here would let the two drift. It has
+# no public re-export yet — that is a pending ask upstream.
+# buildifier: disable=bzl-visibility
+load("@rules_dart//dart/private:common.bzl", "check_unreplaced_hooks")
 load("//flutter:providers.bzl", "FlutterApplicationInfo", "FlutterInfo")
 load("//flutter/private:common.bzl", "FLUTTER_APPLICATION_ATTRS", "PLATFORM_CONSTRAINT_ATTRS", "collect_native_libs", "detect_target_platform", "flutter_build_assets", "flutter_compile_kernel", "flutter_compile_shaders", "host_target_arch")
 load("//flutter/private:flutter_aot_compile.bzl", "flutter_aot_elf_action", "flutter_aot_macho_action")
@@ -54,6 +62,23 @@ def _flutter_application_impl(ctx):
         ctx.attr._android_constraint[platform_common.ConstraintValueInfo],
     )
     target_platform = detect_target_platform(is_ios, is_macos, is_linux, is_windows, is_android)
+
+    # A pub package that builds its native code with `hook/build.dart` has no
+    # library to contribute unless something stands in for the hook. The
+    # application is where that is knowable and where it matters: the whole
+    # package closure is visible, and it is this target whose manifest would
+    # otherwise be quietly short an entry and die at runtime on an unresolved
+    # `@Native` symbol. Checked before any compilation so the build fails on
+    # the cause rather than minutes later on a symptom.
+    hook_err = check_unreplaced_hooks(
+        ctx.label,
+        depset(transitive = [
+            dep[DartInfo].transitive_packages
+            for dep in ctx.attr.deps
+        ]).to_list(),
+    )
+    if hook_err != None:
+        fail(hook_err)
 
     # Aggregate transitive Native Assets so the manifest exists before
     # kernel compile (the frontend_server reads it via --native-assets).
