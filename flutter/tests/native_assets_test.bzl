@@ -14,7 +14,7 @@ fix.
 load("@bazel_skylib//lib:unittest.bzl", "analysistest", "asserts", "unittest")
 load("//flutter:native_assets.bzl", "flutter_data_asset", "flutter_native_asset")
 load("//flutter:providers.bzl", "FlutterNativeAssetInfo")
-load("//flutter/private:flutter_native_assets.bzl", "native_asset_framework_name", "native_assets_target_string", "write_native_assets_manifest")
+load("//flutter/private:flutter_native_assets.bzl", "bridge_dart_code_assets", "native_asset_framework_name", "native_assets_target_string", "write_native_assets_manifest")
 
 # -- Pure-function tests for the manifest helpers ----------------------
 
@@ -259,3 +259,39 @@ def native_assets_test_suite(name):
             ":" + name + "_pure",
         ],
     )
+
+# --- bridge_dart_code_assets ---
+#
+# Assets rules_dart propagates on `DartPackageInfo.code_assets` must reach the
+# application without anyone writing a `flutter_native_asset`. The probe below
+# runs the bridge over a real `dart_library` graph and reports what it lifted.
+
+def _bridge_probe_impl(ctx):
+    lifted = bridge_dart_code_assets(ctx, ctx.attr.deps)
+    ids = sorted([a.asset_id for a in lifted])
+    if ids != sorted(ctx.attr.expected_asset_ids):
+        fail("%s: expected %s, bridged %s" % (ctx.label, sorted(ctx.attr.expected_asset_ids), ids))
+    for asset in lifted:
+        if asset.link_mode == "dynamic_loading_bundle":
+            if asset.file == None:
+                fail("%s: bundled asset %s has no file" % (ctx.label, asset.asset_id))
+
+            # The bundle filename must be the plain basename, staged out of
+            # `_solib_<arch>/` and into this rule's own output namespace —
+            # rules_apple resolves it package-relative.
+            if asset.bundle_filename != asset.file.basename:
+                fail("%s: bundle_filename %r != staged basename %r" %
+                     (ctx.label, asset.bundle_filename, asset.file.basename))
+            if "_solib" in asset.file.short_path:
+                fail("%s: asset %s was not re-declared out of _solib: %s" %
+                     (ctx.label, asset.asset_id, asset.file.short_path))
+    return [DefaultInfo(files = depset([a.file for a in lifted if a.file != None]))]
+
+bridge_probe = rule(
+    implementation = _bridge_probe_impl,
+    attrs = {
+        "deps": attr.label_list(),
+        "expected_asset_ids": attr.string_list(),
+    },
+    doc = "Asserts which rules_dart code assets the Flutter bridge lifts.",
+)

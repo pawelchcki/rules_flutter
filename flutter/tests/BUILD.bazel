@@ -1,3 +1,4 @@
+load("@bazel_skylib//rules:build_test.bzl", "build_test")
 load(":artifact_urls_test.bzl", "artifact_urls_test_suite")
 load(":asset_bundle_test.bzl", "asset_bundle_test_suite")
 load(":common_test.bzl", "common_test_suite")
@@ -8,7 +9,7 @@ load(":flutter_pub_package_test.bzl", "flutter_pub_package_test_suite")
 load(":flutter_pubspec_test.bzl", "flutter_pubspec_test_suite")
 load(":macos_test.bzl", "macos_test_suite")
 load(":manifest_merge_test.bzl", "manifest_merge_test_suite")
-load(":native_assets_test.bzl", "native_assets_test_suite")
+load(":native_assets_test.bzl", "bridge_probe", "native_assets_test_suite")
 load(":platform_bundle_test.bzl", "platform_bundle_test_suite")
 load(":plugin_registrant_test.bzl", "plugin_registrant_test_suite")
 load(":shader_compile_test.bzl", "shader_compile_test_suite")
@@ -53,5 +54,16 @@ toolchains_repo_test_suite(name = "toolchains_repo_test")
 flutter_application_test_suite(name = "flutter_application_test")
 
 native_assets_test_suite(name = "native_assets_test")
+
+bridge_probe(
+    name = "dart_code_asset_bridge_probe",
+    expected_asset_ids = ["package:asset_fixture/src/ffi/asset_fixture.g.dart"],
+    deps = ["//flutter/tests/dart_asset_fixture:asset_fixture"],
+)
+
+build_test(
+    name = "dart_code_asset_bridge_test",
+    targets = [":dart_code_asset_bridge_probe"],
+)
 
 validation_test_suite(name = "validation_test")

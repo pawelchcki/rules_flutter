@@ -1,0 +1,38 @@
+load("@rules_cc//cc:cc_library.bzl", "cc_library")
+load("@rules_cc//cc:cc_shared_library.bzl", "cc_shared_library")
+load("@rules_dart//dart:defs.bzl", "dart_code_asset", "dart_library")
+
+# A pub-package-shaped `dart_library` that owns a native code asset, exactly as
+# `pub.from_lock()` generates for a package with a curated `//dart/ext` entry.
+# Nothing here mentions Flutter — the point is that rules_flutter picks the
+# asset up off the Dart package graph without a `flutter_native_asset`.
+
+cc_library(
+    name = "empty",
+    srcs = ["empty.cc"],
+)
+
+cc_shared_library(
+    name = "asset_fixture_shared",
+    shared_lib_name = select({
+        "@platforms//os:ios": "libasset_fixture.dylib",
+        "@platforms//os:macos": "libasset_fixture.dylib",
+        "@platforms//os:windows": "asset_fixture.dll",
+        "//conditions:default": "libasset_fixture.so",
+    }),
+    deps = [":empty"],
+)
+
+dart_code_asset(
+    name = "code_asset",
+    asset_id = "package:asset_fixture/src/ffi/asset_fixture.g.dart",
+    shared_library = ":asset_fixture_shared",
+)
+
+dart_library(
+    name = "asset_fixture",
+    package_name = "asset_fixture",
+    srcs = ["lib/fixture.dart"],
+    code_assets = [":code_asset"],
+    visibility = ["//flutter/tests:__pkg__"],
+)
