@@ -96,6 +96,7 @@ bzl_library(
     deps = [
         "//flutter/private:flutter_macos_application",
         "//flutter/private:flutter_macos_registrant",
+        "//flutter/private:flutter_plist_merge",
         "//flutter/private:runner_module",
     ],
 )

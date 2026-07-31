@@ -67,10 +67,17 @@ load("//flutter/private:flutter_apple_plugin_library.bzl", _flutter_apple_plugin
 load("//flutter/private:flutter_apple_plugins_aggregator.bzl", _flutter_apple_plugins_aggregator = "flutter_apple_plugins_aggregator")
 load("//flutter/private:flutter_macos_application.bzl", _flutter_macos_framework_rule = "flutter_macos_framework", _flutter_macos_native_libs_rule = "flutter_macos_native_libs", _flutter_macos_privacy_manifests_rule = "flutter_macos_privacy_manifests")
 load("//flutter/private:flutter_macos_registrant.bzl", _flutter_macos_registrant_rule = "flutter_macos_registrant")
+load("//flutter/private:flutter_plist_merge.bzl", _flutter_entitlements_merge = "flutter_entitlements_merge")
 load("//flutter/private:runner_module.bzl", "runner_module_name")
 
 # Re-export for user BUILD files.
 MACOS_MINIMUM_OS_VERSION = _MACOS_MINIMUM_OS_VERSION
+
+# Merges entitlement additions into a base entitlements file — the additive
+# seam rules_apple's single-file `entitlements` attribute does not provide.
+# Wired into flutter_macos_app as `additional_entitlements`; exposed for
+# Tier 2 users assembling a macos_application themselves.
+flutter_entitlements_merge = _flutter_entitlements_merge
 
 # -- Composable rules (Tier 2) ------------------------------------------------
 #
@@ -256,6 +263,7 @@ def flutter_macos_app(
         version = None,
         additional_contents = {},
         entitlements = None,
+        additional_entitlements = [],
         resources = [],
         **kwargs):
     """Builds a Flutter macOS .app bundle from a flutter_application target.
@@ -270,6 +278,24 @@ def flutter_macos_app(
         - `macos/Runner/Info.plist`
         - `macos/Runner/DebugProfile.entitlements`, `Release.entitlements`
     Generate these with: `flutter create --platforms=macos .`
+
+    Entitlements differ between debug and release, and that is a property of
+    the `flutter create` scaffold rather than of these rules. `flutter
+    create` writes `com.apple.security.network.server` and
+    `com.apple.security.cs.allow-jit` into **DebugProfile.entitlements
+    only**; `Release.entitlements` declares nothing but
+    `com.apple.security.app-sandbox`. The macro selects between the two by
+    compilation mode, so a sandboxed `-c opt` bundle has neither
+    `network.server` nor `network.client` — the sandbox denies the socket
+    with no build error and no runtime exception, and a networked app simply
+    finds no peers. (`network.client` is absent from *both* files: most
+    Flutter apps network through `NSURLSession`, which the sandbox exempts.
+    A raw socket is not exempt.)
+
+    Use `additional_entitlements` for any capability the app itself needs:
+    additions are merged into whichever base the compilation mode selected,
+    so one declaration covers both. Reach for `entitlements` only to replace
+    the selection wholesale.
 
     Args:
         name: Target name (Bazel identifier). The runner's Swift module name
@@ -287,6 +313,13 @@ def flutter_macos_app(
             absence indicates a misconfigured runner). Pass a label to
             override, or a `select()` literal to control per-config
             selection yourself.
+        additional_entitlements: Entitlement plist files merged into the
+            base entitlements in **every** compilation mode — the additive
+            seam for an app that needs one more `com.apple.security.*` key
+            without taking over the `flutter create` files. A key the base
+            already declares with the same value is deduped; a different
+            value is a hard error naming the key and both files. Compose
+            `flutter_entitlements_merge` directly for anything more.
         resources: Extra resources. MainMenu.xib is wired separately, through
             the runner library, so that ibtool resolves its Swift classes
             against the runner's module. Resources passed here are compiled
@@ -338,6 +371,19 @@ def flutter_macos_app(
                 "`flutter create --platforms=macos .`), " +
                 "or pass `entitlements = ` explicitly.",
             )
+
+    # Fold the app's own entitlement additions into whichever base the
+    # compilation mode selected. One declaration, both configurations —
+    # the point being that a capability the app needs is not something the
+    # release build should silently lose.
+    if additional_entitlements:
+        _flutter_entitlements_merge(
+            name = "__%s_entitlements" % name,
+            base = entitlements,
+            additions = additional_entitlements,
+            tags = tags,
+        )
+        entitlements = "__%s_entitlements" % name
 
     # -- Internal targets (all __{name}_ prefixed) --
 

@@ -95,6 +95,13 @@ flutter_macos_info_plist_gen(
 
 flutter_macos_app(
     name = "app",
+    # Capabilities the app needs in *both* configurations. The macro picks
+    # DebugProfile.entitlements for `-c dbg` and Release.entitlements
+    # otherwise, and `flutter create` only writes the network keys into the
+    # debug one — so without this the release bundle is sandboxed with no
+    # network access, silently. Verified from the built bundle's codesign
+    # blob by :verify_macos_entitlements_test.
+    additional_entitlements = ["entitlements/Network.entitlements"],
     app_name = "Flutter App",
     application = ":app_flutter",
     bundle_id = "com.example.flutterapp",
@@ -227,6 +234,17 @@ dart_test(
     name = "verify_macos_bundle_test",
     data = [":app"],
     main = "test/verify_macos_bundle_test.dart",
+    target_compatible_with = ["@platforms//os:macos"],
+)
+
+# Reads the entitlements blob codesign embedded in the built bundle. Bazel's
+# default fastbuild is not `-c dbg`, so this bundle carries the *release*
+# entitlements — finding the network keys proves additional_entitlements
+# survived into the arm where flutter create grants nothing.
+dart_test(
+    name = "verify_macos_entitlements_test",
+    data = [":app"],
+    main = "test/verify_macos_entitlements_test.dart",
     target_compatible_with = ["@platforms//os:macos"],
 )
 
