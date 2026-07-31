@@ -55,6 +55,18 @@ class DevToolException implements Exception {
   String toString() => message;
 }
 
+/// The http form of a DDS websocket URI.
+///
+/// DDS advertises `ws://host:port/<authCode>/ws`; `VmServiceClient.connect`
+/// wants the http root and appends `ws` itself. Mirrors flutter_tools'
+/// `_httpUriFromWebsocketUri`.
+Uri _httpUriFromWebSocketUri(Uri wsUri) {
+  const wsPath = '/ws';
+  final path =
+      wsUri.path.endsWith(wsPath) ? wsUri.path.substring(0, wsUri.path.length - 2) : wsUri.path;
+  return wsUri.replace(scheme: wsUri.scheme == 'wss' ? 'https' : 'http', path: path);
+}
+
 class RunCommand {
   static final parser = ArgParser()
     ..addOption('target',
@@ -628,6 +640,7 @@ class RunCommand {
           buildOutputDir: webOutputDir,
           entrypointFilename: 'web_entrypoint.dart',
           engineRevision: devConfig.engineRevision,
+          dartExecutable: toolchain.dart,
           workspaceRoot: workspace,
           packageConfigPath: packageConfig,
         );
@@ -939,28 +952,36 @@ class RunCommand {
                 await webModuleServer!.debugConnection(appConnection);
             final session = sessions.firstWhere((s) => s.device is WebDevice);
 
-            // Own the DDS here just as the native path does above. DWDS
-            // advertises its debug service as a `ws:` URI with no trailing
-            // slash; DDS wants `http:`, and rejects anything else outright.
-            //
-            // A web hot restart reloads the page, so this callback fires again
-            // with a fresh debug service — the previous DDS is bound to a dead
-            // one and has to go.
-            await session.dds?.shutdown();
-            final dds = await DartDevelopmentService.startDartDevelopmentService(
-              Uri.parse(debugConnection.uri).replace(scheme: 'http'),
-            );
-            session.dds = dds;
-
-            // Everything downstream talks to DDS rather than to DWDS directly.
-            // DDS multiplexes clients, so our own client and DevTools coexist
-            // instead of evicting each other.
+            // DWDS runs the DDS, so `debugConnection.uri` already *is* the DDS
+            // websocket. Everything — our client, DevTools, DWDS's own client —
+            // attaches there, and DDS multiplexes them.
+            final wsUri = Uri.parse(debugConnection.uri);
             final webClient = VmServiceClient();
-            await webClient.connect(dds.uri!, createDevFS: false);
+            await webClient.connect(
+              _httpUriFromWebSocketUri(wsUri),
+              createDevFS: false,
+            );
             session.vmClient = webClient;
-            session.markDebugReady();
             final webVmService = webClient.service!;
             dwdsReload.attachVmService(webVmService);
+
+            // Claim hot reload on the DDS, as flutter_tools does. Without it a
+            // DevTools-initiated reload bypasses us and calls DWDS's raw
+            // `reloadSources` directly — no recompile from our frontend
+            // server, and a second concurrent reload that DWDS does not
+            // serialise. Registering does not capture our own raw call: DDS
+            // resolves only namespaced (`sN.`) names against registrations.
+            await webVmService.registerService(
+              'reloadSources',
+              'rules_flutter dev_tool',
+            );
+
+            // DevTools comes from the DDS that DWDS started, already carrying
+            // the VM service URI — no separate `dart devtools` process, and no
+            // URL for the user to wire up by hand. Setting it before
+            // `markDebugReady` is what tells the session not to launch one.
+            session.devToolsUrl = debugConnection.devToolsUri;
+            session.markDebugReady();
 
             // A browser page has no process pipes, so the VM service is the
             // app's log source here. Re-attached on every connection because a

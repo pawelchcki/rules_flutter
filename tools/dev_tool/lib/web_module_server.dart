@@ -42,6 +42,11 @@ class WebModuleServer implements AssetReader {
   /// Path to package_config.json (for DWDS package URI resolution).
   final String? packageConfigPath;
 
+  /// Dart binary from the Flutter toolchain. DWDS launches its Dart
+  /// Development Service with it rather than probing `Platform.executable`,
+  /// which under Bazel is this AOT binary and cannot serve as a Dart SDK.
+  final String dartExecutable;
+
   /// Cached parsed package config for source resolution.
   pkg.PackageConfig? _packageConfig;
 
@@ -91,6 +96,7 @@ class WebModuleServer implements AssetReader {
     required this.buildOutputDir,
     required this.entrypointFilename,
     required this.engineRevision,
+    required this.dartExecutable,
     this.workspaceRoot,
     this.packageConfigPath,
   });
@@ -363,19 +369,20 @@ class WebModuleServer implements AssetReader {
         loadStrategy: strategyProvider.strategy,
         debugSettings: DebugSettings(
           enableDebugExtension: true,
-          // We own the Dart Development Service, exactly as the native path
-          // does. DWDS would otherwise spawn one as a subprocess, and its
-          // launcher never forwards a `dartExecutable` — it probes
+          // DWDS owns the Dart Development Service, the same arrangement
+          // flutter_tools uses. Naming the Dart binary is what makes that
+          // possible here: left to its own devices the launcher probes
           // `Platform.executable`, which under Bazel is this AOT binary, and
-          // re-execs us as `<binary> development-service --vm-service-uri=…`.
+          // re-execs it as `<binary> development-service --vm-service-uri=…`.
           //
-          // `serveDevTools: false` is not redundant: DWDS's debug-request
-          // handler only refuses gracefully when *both* are off. Left true, an
-          // in-page DevTools request passes that guard and later throws a raw
-          // StateError into the page.
+          // Owning it ourselves instead would cost more than the subprocess:
+          // DWDS registers `hotRestart` and `fullReload` against its DDS, so
+          // with no DDS of its own those land in a local registry that
+          // DevTools cannot see.
           ddsConfiguration: DartDevelopmentServiceConfiguration(
-            enable: false,
-            serveDevTools: false,
+            enable: true,
+            serveDevTools: true,
+            dartExecutable: dartExecutable,
           ),
         ),
         appMetadata: AppMetadata(hostname: 'localhost'),
