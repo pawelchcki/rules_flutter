@@ -27,7 +27,14 @@ flutter_application(
 # Shared Tier 2 targets (used by approaches 2 & 3)
 # =============================================================================
 
-flutter_windows_engine(name = "flutter_engine")
+# Marked Windows-only like every other target here: on a non-Windows host the
+# resolved toolchain has no flutter_windows.dll and the rule hard-fails during
+# analysis, which turned `bazel test //...` on macOS into an error rather than
+# a skip.
+flutter_windows_engine(
+    name = "flutter_engine",
+    target_compatible_with = ["@platforms//os:windows"],
+)
 
 flutter_windows_registrant_gen(
     name = "app_registrant",
