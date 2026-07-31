@@ -1,4 +1,5 @@
 
+import 'package:flutter_bazel_dev_tool/device.dart';
 import 'package:flutter_bazel_dev_tool/run_command.dart';
 import 'package:test/test.dart';
 
@@ -114,6 +115,44 @@ void main() {
     test('accepts custom exit code', () {
       final e = DevToolException('failed', exitCode: 42);
       expect(e.exitCode, 42);
+    });
+  });
+
+  group('assertModeCanRun', () {
+    // The failure this guards is silent — an AOT bundle installs and launches
+    // on a simulator, returns 0, and renders blank forever — so the test is
+    // that the tool refuses rather than that anything reports an error.
+    test('refuses opt on an iOS simulator', () {
+      expect(
+        () => assertModeCanRun('opt', [IOSSimulatorDevice(udid: 'booted')]),
+        throwsA(isA<DevToolException>().having(
+          (e) => e.message,
+          'message',
+          allOf(contains('kernel_blob.bin'), contains('-d ios')),
+        )),
+      );
+    });
+
+    test('allows dbg on an iOS simulator', () {
+      expect(
+        () => assertModeCanRun('dbg', [IOSSimulatorDevice(udid: 'booted')]),
+        returnsNormally,
+      );
+    });
+
+    test('allows opt on every other device', () {
+      expect(
+        () => assertModeCanRun('opt', [MacOSDevice(), IOSDevice()]),
+        returnsNormally,
+      );
+    });
+
+    test('refuses when a simulator is one of several devices', () {
+      expect(
+        () => assertModeCanRun(
+            'opt', [MacOSDevice(), IOSSimulatorDevice(udid: 'booted')]),
+        throwsA(isA<DevToolException>()),
+      );
     });
   });
 

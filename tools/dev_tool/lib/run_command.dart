@@ -55,6 +55,31 @@ class DevToolException implements Exception {
   String toString() => message;
 }
 
+/// Refuses a compilation mode no device in [devices] can actually run.
+///
+/// Only one combination qualifies, and it is the one that fails quietly: an
+/// AOT bundle on an iOS simulator. The simulator slice of the Flutter engine
+/// is JIT and looks for `flutter_assets/kernel_blob.bin`, which a `-c opt`
+/// bundle does not contain — but `simctl install` and `simctl launch` both
+/// return 0, the process stays alive, nothing crashes, the screen stays blank
+/// white, and the reason appears only in the simulator's system log. A build
+/// is deliberately not refused: `bazel build -c opt` for the simulator is a
+/// legitimate thing to do, and the default iOS configuration *is* the
+/// simulator, so failing there would break every release build. It is running
+/// it that cannot work.
+void assertModeCanRun(String? compilationMode, List<Device> devices) {
+  if (compilationMode != 'opt') return;
+  for (final simulator in devices.whereType<IOSSimulatorDevice>()) {
+    throw DevToolException(
+        'Cannot run an AOT build on ${simulator.name}: the simulator\'s '
+        'Flutter engine is JIT-only and needs '
+        'flutter_assets/kernel_blob.bin, which a `-c opt` bundle does not '
+        'contain. It would install, launch, stay alive and render blank.\n'
+        'Run it in JIT (drop --profile, or build -c dbg), or use `-d ios` to '
+        'observe a release build on a physical device.');
+  }
+}
+
 /// The http form of a DDS websocket URI.
 ///
 /// DDS advertises `ws://host:port/<authCode>/ws`; `VmServiceClient.connect`
@@ -498,6 +523,8 @@ class RunCommand {
     } else {
       compilationMode = config;
     }
+
+    assertModeCanRun(compilationMode, devices);
 
     // Debug (JIT) launches await the app's Dart VM service. On Android that
     // service can only bind if the APK holds android.permission.INTERNET —
