@@ -72,18 +72,37 @@ Future<void> main(List<String> args) async {
   _warnIfDirty(repoRoot);
 
   // 1. Package the committed tree.
+  //
+  // Deliberately not `git archive`: it honours `export-ignore`, and
+  // `.gitattributes` marks `e2e/` as one so release tarballs stay small. An
+  // archive built that way arrives on the VM with every workspace this tool
+  // exists to run stripped out, and the run fails on a missing directory.
+  // `git ls-files` names the same committed tree without consulting
+  // export-ignore.
   final tgz = '${Directory.systemTemp.path}/rules_flutter_src.tgz';
   print('Packaging committed HEAD -> $tgz');
-  _run('git', [
-    '-C',
-    repoRoot,
-    'archive',
-    '--format=tar.gz',
-    '--prefix=rules_flutter/',
-    '-o',
-    tgz,
-    'HEAD',
-  ]);
+  final listing = File('${Directory.systemTemp.path}/rules_flutter_files.txt');
+  // NUL-separated so paths with spaces survive; read as bytes because the
+  // separator is not representable in the system text encoding.
+  final lsFiles = Process.runSync(
+    'git',
+    ['-C', repoRoot, 'ls-files', '-z'],
+    stdoutEncoding: null,
+  );
+  if (lsFiles.exitCode != 0) {
+    throw Exception('git ls-files failed:\n${lsFiles.stderr}');
+  }
+  listing.writeAsBytesSync(lsFiles.stdout as List<int>);
+  // No path-rewriting flag: `--transform` is GNU-only and `-s` is bsd-only, so
+  // the archive stores bare repo-relative paths and the VM extracts into a
+  // directory it names itself. COPYFILE_DISABLE stops macOS bsdtar emitting
+  // AppleDouble `._name` sidecars, which would land beside real sources where
+  // Bazel's `glob(["lib/**"])` reads `._main.dart` as a Dart file.
+  _run(
+    'tar',
+    ['-C', repoRoot, '-czf', tgz, '--null', '-T', listing.path],
+    environment: {'COPYFILE_DISABLE': '1'},
+  );
 
   // 2. Wait for the toolchain, then transfer + extract + clone rules_dart.
   await _waitForToolchain(vmName, isWindows: isWindows);
@@ -93,8 +112,8 @@ Future<void> main(List<String> args) async {
     // Separate, simple commands. A compound `cmd /c "... & ... & ..."` mangles
     // through gcloud ssh -> Windows cmd and can silently no-op.
     await sshExec(vmName, 'rmdir /s /q C:\\rf'); // tolerate "not found"
-    await sshRun(vmName, 'mkdir C:\\rf');
-    await sshRun(vmName, 'tar -xf C:\\rf_src.tgz -C C:\\rf');
+    await sshRun(vmName, 'mkdir C:\\rf\\rules_flutter');
+    await sshRun(vmName, 'tar -xf C:\\rf_src.tgz -C C:\\rf\\rules_flutter');
     await sshExec(vmName, 'rmdir /s /q C:\\rules_dart');
     await sshRun(
       vmName,
@@ -105,8 +124,8 @@ Future<void> main(List<String> args) async {
     await scpToVm(vmName, tgz, '~/rules_flutter_src.tgz', compress: true);
     await sshRun(
       vmName,
-      "bash -lc 'rm -rf ~/rf && mkdir -p ~/rf && "
-      "tar xzf ~/rules_flutter_src.tgz -C ~/rf'",
+      "bash -lc 'rm -rf ~/rf && mkdir -p ~/rf/rules_flutter && "
+      "tar xzf ~/rules_flutter_src.tgz -C ~/rf/rules_flutter'",
     );
     await sshRun(
       vmName,
@@ -256,8 +275,8 @@ void _warnIfDirty(String repoRoot) {
   }
 }
 
-void _run(String exe, List<String> args) {
-  final r = Process.runSync(exe, args);
+void _run(String exe, List<String> args, {Map<String, String>? environment}) {
+  final r = Process.runSync(exe, args, environment: environment);
   if (r.exitCode != 0) {
     throw Exception('$exe ${args.join(' ')} failed:\n${r.stderr}');
   }
