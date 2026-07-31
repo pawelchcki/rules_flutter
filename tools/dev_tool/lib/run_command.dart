@@ -1039,15 +1039,15 @@ class RunCommand {
             dillPath: '',
             success: true,
           );
-          final ok = await strategy.applyRestart(dummyResult, sessions);
+          final outcome = await strategy.applyRestart(dummyResult, sessions);
           stopwatch.stop();
-          if (ok) {
+          if (outcome.isSuccess) {
             return {
               'message':
                   'Restart successful (${stopwatch.elapsedMilliseconds}ms)'
             };
           }
-          return {'message': 'WASM restart failed'};
+          return {'error': 'Restart failed: ${outcome.message}'};
         });
 
         commandRunner.register('app.hotReload', (params) async {

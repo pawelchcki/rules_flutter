@@ -107,6 +107,7 @@ _UNIT_TESTS = {
         "deps": _PATH_DEP,
     },
     "run_command_test": {},
+    "reload_strategy_test": {"fakes": True},
     "session_test": {"fakes": True},
     "source_watcher_test": {"deps": ["@dev_tool_deps//:watcher"]},
     "toolchain_info_test": {"deps": _PATH_DEP},

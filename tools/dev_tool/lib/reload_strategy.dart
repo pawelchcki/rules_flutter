@@ -18,13 +18,65 @@ import 'web_module_server.dart';
 /// rebuilds the tree).
 const int _rpcMethodNotFound = -32601;
 
+/// What applying compiled output to the running app(s) achieved.
+///
+/// Sits below `ReloadOutcome` in `hot_reload/reload_orchestrator.dart`, which
+/// describes a whole compile-and-apply cycle; this describes only the apply.
+/// The two converge once web joins the orchestrator via `AppInstance`.
+///
+/// A bool cannot tell "every app took it" apart from "no app could take it",
+/// and both reduce to `true` under `[].every(...)`. Reporting the second as
+/// success is worse than reporting a failure: the user is told their edit is
+/// live when nothing received it.
+sealed class StrategyOutcome {
+  const StrategyOutcome();
+
+  /// Whether the edit is actually running now.
+  bool get isSuccess => this is StrategyApplied;
+
+  /// One line explaining a non-success, for the terminal and the protocol.
+  String get message;
+}
+
+/// The edit reached [deviceCount] running app(s).
+final class StrategyApplied extends StrategyOutcome {
+  final int deviceCount;
+
+  const StrategyApplied(this.deviceCount);
+
+  @override
+  String get message => 'applied to $deviceCount device(s)';
+}
+
+/// Nothing could take the edit, so nothing changed.
+///
+/// Distinct from rejection: no app was ever reached. A session with no VM
+/// service connection, or a compilation mode with no reload mechanism at all,
+/// lands here.
+final class StrategyUnsupported extends StrategyOutcome {
+  @override
+  final String message;
+
+  const StrategyUnsupported(this.message);
+}
+
+/// An app was reached and refused the edit.
+final class StrategyRejected extends StrategyOutcome {
+  @override
+  final String message;
+
+  const StrategyRejected(this.message);
+}
+
 /// How to apply compiled output to running devices.
 abstract interface class ReloadStrategy {
   /// Apply incremental changes (hot reload).
-  Future<bool> applyReload(CompileResult result, List<DeviceSession> sessions);
+  Future<StrategyOutcome> applyReload(
+      CompileResult result, List<DeviceSession> sessions);
 
   /// Apply full restart.
-  Future<bool> applyRestart(CompileResult result, List<DeviceSession> sessions);
+  Future<StrategyOutcome> applyRestart(
+      CompileResult result, List<DeviceSession> sessions);
 }
 
 /// Reload strategy for native platforms via Dart VM service.
@@ -32,24 +84,42 @@ abstract interface class ReloadStrategy {
 /// Uploads the compiled dill to each device's devFS and triggers
 /// `reloadSources` + `reassemble` (reload) or `hotRestart` (restart).
 class VmServiceReloadStrategy implements ReloadStrategy {
-  @override
-  Future<bool> applyReload(
-      CompileResult result, List<DeviceSession> sessions) async {
-    final results = await Future.wait([
-      for (final s in sessions)
-        if (s.vmClient != null) s.vmClient!.hotReload(result.dillPath),
-    ]);
-    return results.every((ok) => ok);
+  /// The sessions that can actually be reloaded.
+  ///
+  /// Sessions without a VM service connection are not failures, but they are
+  /// not successes either — they cannot receive anything. Separating them here
+  /// is what stops an all-unreachable run reporting success.
+  static List<DeviceSession> _reachable(List<DeviceSession> sessions) =>
+      [for (final s in sessions) if (s.vmClient != null) s]; // no client, no reload
+
+  static StrategyOutcome _outcome(List<bool> results, int reachable) {
+    if (reachable == 0) {
+      return const StrategyUnsupported(
+          'no device has a VM service connection — nothing received the edit');
+    }
+    final failed = results.where((ok) => !ok).length;
+    if (failed > 0) {
+      return StrategyRejected('$failed of $reachable device(s) refused it');
+    }
+    return StrategyApplied(reachable);
   }
 
   @override
-  Future<bool> applyRestart(
+  Future<StrategyOutcome> applyReload(
       CompileResult result, List<DeviceSession> sessions) async {
-    final results = await Future.wait([
-      for (final s in sessions)
-        if (s.vmClient != null) s.vmClient!.hotRestart(result.dillPath),
-    ]);
-    return results.every((ok) => ok);
+    final reachable = _reachable(sessions);
+    final results = await Future.wait(
+        [for (final s in reachable) s.vmClient!.hotReload(result.dillPath)]);
+    return _outcome(results, reachable.length);
+  }
+
+  @override
+  Future<StrategyOutcome> applyRestart(
+      CompileResult result, List<DeviceSession> sessions) async {
+    final reachable = _reachable(sessions);
+    final results = await Future.wait(
+        [for (final s in reachable) s.vmClient!.hotRestart(result.dillPath)]);
+    return _outcome(results, reachable.length);
   }
 }
 
@@ -127,29 +197,32 @@ class DwdsReloadStrategy implements ReloadStrategy {
   }
 
   @override
-  Future<bool> applyReload(
+  Future<StrategyOutcome> applyReload(
       CompileResult result, List<DeviceSession> sessions) async {
     // Update modules — DDC writes incremental output to the same files.
     moduleServer.updateModules(result.dillPath);
 
     if (vmService == null) {
-      stderr.writeln('Warning: DWDS VM service not connected — '
-          'falling back to hot restart.');
-      return applyRestart(result, sessions);
+      // A restart still gets the edit in front of the user, but it is not the
+      // reload they asked for — say so rather than reporting it as one.
+      final restarted = await applyRestart(result, sessions);
+      if (restarted.isSuccess) {
+        return const StrategyUnsupported(
+            'DWDS VM service not connected — restarted instead of reloading');
+      }
+      return restarted;
     }
 
     try {
       final isolateId = await _getIsolateId();
       if (isolateId == null) {
-        stderr.writeln('Warning: No isolate found — cannot hot reload.');
-        return false;
+        return const StrategyUnsupported('no isolate found in the browser');
       }
 
       // Trigger DWDS hot reload: reloadSources → $dartReloadModifiedModules.
       final report = await vmService!.reloadSources(isolateId);
       if (report.success != true) {
-        stderr.writeln('Warning: reloadSources reported failure.');
-        return false;
+        return const StrategyRejected('the browser refused the new sources');
       }
 
       // Trigger Flutter widget rebuild to pick up the new code. On the modern
@@ -171,23 +244,22 @@ class DwdsReloadStrategy implements ReloadStrategy {
         stderr.writeln('Warning: ext.flutter.reassemble failed: $e');
       }
 
-      return true;
+      return const StrategyApplied(1);
     } catch (e) {
-      stderr.writeln('Warning: DWDS hot reload failed: $e');
-      return false;
+      return StrategyRejected('DWDS hot reload failed: $e');
     }
   }
 
   @override
-  Future<bool> applyRestart(
+  Future<StrategyOutcome> applyRestart(
       CompileResult result, List<DeviceSession> sessions) async {
     moduleServer.updateModules(result.dillPath);
 
     // Hot restart uses CDP page reload — the page reloads and picks up
     // the new modules from the module server.
     if (cdpPort == null) {
-      stderr.writeln('Warning: CDP port not available — cannot hot restart.');
-      return false;
+      return const StrategyUnsupported(
+          'no CDP port — cannot reload the browser page');
     }
     try {
       // Arm BEFORE triggering the reload so we can't miss the reconnect event.
@@ -197,14 +269,20 @@ class DwdsReloadStrategy implements ReloadStrategy {
       // hot reload issued right after this restart uses the live connection
       // rather than the now-dead one. Bounded so a missed reconnect logs and
       // returns instead of hanging the session.
+      var reconnected = true;
       await reattached.timeout(const Duration(seconds: 10), onTimeout: () {
-        stderr.writeln(
-            'Warning: timed out waiting for browser reconnect after restart.');
+        reconnected = false;
       });
-      return true;
+      if (!reconnected) {
+        // The page was told to reload but never came back, so there is no
+        // live connection and no evidence the new code is running. Reporting
+        // success here left the next reload talking to a dead isolate.
+        return const StrategyRejected(
+            'the browser did not reconnect within 10s of the page reload');
+      }
+      return const StrategyApplied(1);
     } catch (e) {
-      stderr.writeln('Warning: CDP page reload failed: $e');
-      return false;
+      return StrategyRejected('CDP page reload failed: $e');
     }
   }
 }
@@ -227,23 +305,22 @@ class CdpReloadStrategy implements ReloadStrategy {
   });
 
   @override
-  Future<bool> applyReload(
+  Future<StrategyOutcome> applyReload(
       CompileResult result, List<DeviceSession> sessions) async {
     // CDP has no incremental reload — always do full page reload.
     return applyRestart(result, sessions);
   }
 
   @override
-  Future<bool> applyRestart(
+  Future<StrategyOutcome> applyRestart(
       CompileResult result, List<DeviceSession> sessions) async {
     // Update module server with recompiled DDC output before reload.
     moduleServer?.updateModules(result.dillPath);
     try {
       await _cdpPageReload(cdpPort, appUrl: appUrl);
-      return true;
+      return const StrategyApplied(1);
     } catch (e) {
-      stderr.writeln('Warning: CDP Page.reload failed: $e');
-      return false;
+      return StrategyRejected('CDP Page.reload failed: $e');
     }
   }
 }
@@ -267,26 +344,31 @@ class WasmReloadStrategy implements ReloadStrategy {
   });
 
   @override
-  Future<bool> applyReload(
+  Future<StrategyOutcome> applyReload(
       CompileResult result, List<DeviceSession> sessions) async {
-    // WASM has no incremental reload — do full restart.
-    return applyRestart(result, sessions);
+    // dart2wasm has no incremental reload, so this is a rebuild and a page
+    // reload. It gets the edit running, but state is lost — reporting it as a
+    // hot reload would misdescribe what the user just got.
+    final restarted = await applyRestart(result, sessions);
+    if (restarted.isSuccess) {
+      return const StrategyUnsupported(
+          'WASM has no hot reload — rebuilt and reloaded the page instead');
+    }
+    return restarted;
   }
 
   @override
-  Future<bool> applyRestart(
+  Future<StrategyOutcome> applyRestart(
       CompileResult result, List<DeviceSession> sessions) async {
     try {
       final buildOk = await rebuild();
       if (!buildOk) {
-        stderr.writeln('WASM rebuild failed.');
-        return false;
+        return const StrategyRejected('the WASM rebuild failed');
       }
       await _cdpPageReload(cdpPort, appUrl: appUrl);
-      return true;
+      return const StrategyApplied(1);
     } catch (e) {
-      stderr.writeln('Warning: WASM hot restart failed: $e');
-      return false;
+      return StrategyRejected('WASM hot restart failed: $e');
     }
   }
 }

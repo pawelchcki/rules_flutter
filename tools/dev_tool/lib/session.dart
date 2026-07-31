@@ -73,18 +73,29 @@ class ReloadResult {
   /// Whether the compile step succeeded.
   final bool compileSuccess;
 
-  /// Whether all devices were successfully reloaded/restarted.
-  final bool deviceSuccess;
+  /// What applying the compiled output achieved. Null when the compile failed
+  /// and nothing was applied.
+  final StrategyOutcome? outcome;
 
   final String diagnostics;
   final int elapsedMs;
 
+  /// Whether every device that could take the edit took it.
+  ///
+  /// A run where no device could take it is not a success: `outcome` is
+  /// [StrategyUnsupported] and nothing is live.
+  bool get deviceSuccess => outcome?.isSuccess ?? false;
+
   /// Overall success: both compile and device steps succeeded.
   bool get success => compileSuccess && deviceSuccess;
 
+  /// The user-facing explanation when this was not a clean success.
+  String? get failureReason =>
+      outcome == null || outcome!.isSuccess ? null : outcome!.message;
+
   ReloadResult({
     required this.compileSuccess,
-    this.deviceSuccess = true,
+    this.outcome,
     this.diagnostics = '',
     required this.elapsedMs,
   });
@@ -119,11 +130,11 @@ Future<ReloadResult> recompileAndReload({
       );
     }
     frontendServer.accept();
-    final allOk = await strategy.applyReload(result, sessions);
+    final outcome = await strategy.applyReload(result, sessions);
     stopwatch.stop();
     return ReloadResult(
       compileSuccess: true,
-      deviceSuccess: allOk,
+      outcome: outcome,
       elapsedMs: stopwatch.elapsedMilliseconds,
     );
   } catch (e) {
@@ -161,11 +172,11 @@ Future<ReloadResult> recompileAndRestart({
       );
     }
     frontendServer.accept();
-    final allOk = await strategy.applyRestart(result, sessions);
+    final outcome = await strategy.applyRestart(result, sessions);
     stopwatch.stop();
     return ReloadResult(
       compileSuccess: true,
-      deviceSuccess: allOk,
+      outcome: outcome,
       elapsedMs: stopwatch.elapsedMilliseconds,
     );
   } catch (e) {
