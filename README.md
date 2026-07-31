@@ -165,6 +165,8 @@ flutter_macos_app(
 | `minimum_os_version` | Minimum macOS version. Default: `"10.14"`. |
 | `info_plist` | Override the conventional `macos/Runner/Info.plist`. |
 | `version` | An `apple_bundle_version` target. Defaults to `"1.0"`. |
+| `entitlements` | Replace the entitlements wiring wholesale. By default the macro auto-discovers `macos/Runner/{DebugProfile,Release}.entitlements` and selects between them by compilation mode. |
+| `additional_entitlements` | Entitlement plist files merged into the selected base in **every** compilation mode. See [Release builds and permissions](#release-builds-and-permissions). |
 
 Produces a `.app` bundle with `FlutterMacOS.framework`, `App.framework`, and `flutter_assets/`.
 
@@ -175,6 +177,7 @@ For full control over the macOS bundle (custom runner, custom framework layout, 
 
 ```starlark
 load("@rules_flutter//flutter:macos.bzl",
+    "flutter_entitlements_merge",
     "flutter_macos_engine",
     "flutter_macos_framework_gen",
     "flutter_macos_info_plist_gen",
@@ -194,6 +197,15 @@ flutter_macos_runner_lib_gen(
     name = "my_runner",
     registrant = ":my_registrant",
     engine = ":my_engine",
+)
+
+# rules_apple's `entitlements` takes one file; this merges additions into
+# it (add-only, with a hard error on a conflicting value). Also exported
+# from flutter:ios.bzl.
+flutter_entitlements_merge(
+    name = "my_entitlements",
+    base = "macos/Runner/Release.entitlements",
+    additions = ["entitlements/Network.entitlements"],
 )
 
 macos_application(
@@ -251,6 +263,9 @@ use_repo(flutter, "flutter_toolchains", "flutter_ios_engine")
 | `info_plist` | Override conventional `ios/Runner/Info.plist`. |
 | `version` | An `apple_bundle_version` target. Defaults to `"1.0"`. |
 | `launch_storyboard` | Override launch storyboard. |
+| `entitlements` | Replace the entitlements wiring. By default the macro auto-discovers `ios/Runner/Runner.entitlements` if present; its absence is a valid, capability-less app. |
+| `additional_entitlements` | Entitlement plist files merged into the base in **every** compilation mode. Works when the app ships no entitlements file at all. See [Release builds and permissions](#release-builds-and-permissions). |
+| `provisioning_profile` | A `.mobileprovision` file (usually a `local_provisioning_profile` target) to sign a device build with. Required for device builds; unused by simulator builds. See [Running an iOS example on a physical device](#running-an-ios-example-on-a-physical-device). |
 
 The platform transition to iOS arm64 is handled automatically by `rules_apple`'s `ios_application`.
 
@@ -259,6 +274,7 @@ The platform transition to iOS arm64 is handled automatically by `rules_apple`'s
 
 ```starlark
 load("@rules_flutter//flutter:ios.bzl",
+    "flutter_entitlements_merge",
     "flutter_ios_engine",
     "flutter_ios_framework_gen",
     "flutter_ios_info_plist_gen",
@@ -349,7 +365,9 @@ bazel build //:my_app_android
 | `android_abi` | Target ABI — `"arm64"` (default) or `"x64"`. Selects the engine and the Android platform the app is built for. |
 | `min_sdk_version` | Minimum Android SDK version. |
 | `target_sdk_version` | Target Android SDK version. |
-| `manifest` | Override AndroidManifest.xml (auto-discovered from `flutter create` output or generated). |
+| `manifest` | Override AndroidManifest.xml (auto-discovered from `flutter create` output or generated). Used verbatim: `${applicationName}` is **not** substituted, so this attribute cannot take `flutter create`'s own `android/app/src/main/AndroidManifest.xml` — let the macro discover that one instead. |
+| `debug_manifest` | Variant manifest whose permissions merge into `-c dbg` APKs only. `None` (default) discovers `android/app/src/debug/AndroidManifest.xml`; a label overrides discovery; `False` disables variant handling. |
+| `permissions` | Permission names added to the effective manifest in **every** compilation mode, e.g. `["android.permission.INTERNET"]`. See [Release builds and permissions](#release-builds-and-permissions). |
 | `multidex` | Multidex mode. Default: `"native"`. |
 
 <details>
@@ -362,6 +380,8 @@ load("@rules_flutter//flutter:android.bzl",
     "flutter_android_bundle",
     "flutter_android_engine",
     "flutter_android_manifest_gen",
+    "flutter_android_manifest_merge",
+    "flutter_android_permissions_manifest",
     "flutter_android_runner_lib_gen")
 load("@rules_android//android:rules.bzl", "android_binary")
 
@@ -1072,16 +1092,203 @@ End-to-end examples are in the `e2e/` directory:
 | `e2e/cross_compile_example` | Cross-compile Linux bundle from macOS. |
 | `e2e/multi_window_example` | Multi-window macOS + multi-scene iOS builds with FlutterEngineGroup. |
 
-### Running an iOS example on a physical device
+## Release builds and permissions
+
+**`flutter create`'s scaffold grants network access in debug only, and these
+rules reproduce that faithfully.** An app that networks perfectly under
+`-c dbg` can be silently offline under `-c opt`: there is no build error, no
+runtime exception, and nothing in the app's own log — just an app that never
+reaches anything. Every platform has the same shape, because on every
+platform the debug-only grant exists for the *Dart VM service*, not for the
+app.
+
+| Platform | What debug has that release does not | Why it is there |
+|----------|--------------------------------------|-----------------|
+| macOS | `com.apple.security.network.server`, `com.apple.security.cs.allow-jit` in `DebugProfile.entitlements`; `Release.entitlements` declares only `app-sandbox` | The sandbox must let the VM service bind and the JIT engine map executable pages |
+| Android | `android.permission.INTERNET`, from `android/app/src/debug/AndroidManifest.xml` | Android enforces `INTERNET` at the kernel level (AID_INET group membership) — without it the VM service cannot bind even a loopback socket |
+| iOS | `NSBonjourServices`, `NSLocalNetworkUsageDescription`, merged by these rules into non-release builds | The engine advertises the VM service over mDNS |
+
+None of that is the app's network grant, and none of it survives into
+release. An app that networks for itself must say so, once, in a way that
+applies to every compilation mode:
+
+```starlark
+flutter_macos_app(
+    name = "my_app_macos",
+    application = ":my_app",
+    bundle_id = "com.example.myapp",
+    additional_entitlements = ["entitlements/Network.entitlements"],
+)
+
+flutter_ios_app(
+    name = "my_app_ios",
+    application = ":my_app",
+    bundle_id = "com.example.myapp",
+    additional_entitlements = ["entitlements/Network.entitlements"],
+)
+
+flutter_android_app(
+    name = "my_app_android",
+    application = ":my_app",
+    package_name = "com.example.myapp",
+    permissions = ["android.permission.INTERNET"],
+)
+```
+
+where `entitlements/Network.entitlements` is an ordinary plist fragment:
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>com.apple.security.network.client</key>
+	<true/>
+	<key>com.apple.security.network.server</key>
+	<true/>
+</dict>
+</plist>
+```
+
+These attributes are **additive**, which is the point: they merge into
+whichever base the compilation mode selected, so one declaration covers
+debug and release both, and `flutter create`'s files stay untouched.
+
+- A key the base already declares with the *same* value is deduped —
+  `DebugProfile.entitlements` already grants `network.server`, so declaring
+  it above is safe in both configurations.
+- A key the base declares with a *different* value is a hard error naming
+  the key and both files, rather than a silent winner.
+- `com.apple.security.network.client` is absent from **both** scaffold
+  files. Most Flutter apps network through `NSURLSession`, which the sandbox
+  exempts; a raw socket is not exempt. If you open one, you need this key.
+
+### iOS Local Network Privacy
+
+iOS 14+ gates LAN access behind `NSLocalNetworkUsageDescription` and
+`NSBonjourServices`. These rules add both to non-release builds for the Dart
+VM service and drop them in release, which is correct — they are the
+debugger's, not the app's. An app that needs LAN access **for itself**
+declares them in `ios/Runner/Info.plist`, where they survive into `-c opt`;
+the rules merge the VM service keys into that file, keeping your usage
+description and unioning your Bonjour service list with
+`_dartVmService._tcp`.
+
+> The iOS **simulator** does not enforce Local Network Privacy at all, so a
+> simulator build proves nothing about these keys. Only a physical device
+> does.
+
+### Verifying, rather than assuming
+
+These are exactly the defects a `build_test` cannot see. Check the artifact:
+
+```sh
+# macOS — the entitlements codesign actually embedded
+unzip -oq bazel-bin/my_app_macos.zip -d /tmp/app && \
+  codesign -d --entitlements - "/tmp/app/My App.app"
+
+# Android — the compiled manifest inside the APK
+aapt2 dump xmltree --file AndroidManifest.xml bazel-bin/my_app_android.apk
+
+# iOS — the processed Info.plist inside the .ipa
+unzip -oq bazel-bin/my_app_ios.ipa -d /tmp/ipa && \
+  plutil -p "/tmp/ipa/Payload/my_app_ios.app/Info.plist"
+```
+
+Bazel's default `fastbuild` is *not* `-c dbg`, so a plain `bazel build`
+already takes the release arm of each of these selects. `e2e/macos_example`,
+`e2e/android_example` and `e2e/ios_example` each carry a test that reads the
+built artifact this way.
+
+## Running an iOS example on a physical device
 
 iOS simulator builds need no code signing and run out of the box (e.g.
 `flutter_bazel run -t //:hello_world_ios -d ios-simulator`). Device builds need
-signing, which is per-developer and must stay out of version control. Each iOS
-example therefore ships a `device.example/` template: copy it to a git-ignored
-`device/` package, set your bundle id, and generate a provisioning profile the
-same way `flutter run` does (Xcode automatic signing). Then:
-`flutter_bazel run -t //device:app -d ios`. See the header of any
-`e2e/*/device.example/BUILD.bazel.example` for the exact steps.
+signing, which is per-developer and must stay out of version control.
+
+`flutter_ios_app` takes the credential directly:
+
+```starlark
+load("@rules_apple//apple:apple.bzl", "local_provisioning_profile")
+
+# In a git-ignored //device package, so the credential stays local.
+local_provisioning_profile(
+    name = "profile",
+    profile_name = "iOS Team Provisioning Profile: com.example.myapp",
+    tags = ["manual"],
+)
+```
+
+```starlark
+flutter_ios_app(
+    name = "my_app_ios_device",
+    application = ":my_app",
+    bundle_id = "com.example.myapp",
+    provisioning_profile = "//device:profile",
+)
+```
+
+That is the whole difference from the simulator target — the device bundle is
+the same construction, not a second hand-assembled one. `flutter_ios_app`
+defaults to `tags = ["manual"]`, so `bazel build //...` on a fresh clone does
+not expand the target and therefore does not load the missing `//device`
+package.
+
+Without `provisioning_profile`, a device build fails at analysis with
+*"The provisioning_profile attribute must be set for device builds on this
+platform (ios)"*.
+
+**Obtaining the profile.** This is an Apple Developer account operation and
+these rules cannot do it for you. You need a development provisioning profile
+whose App ID matches your `bundle_id`, installed in
+`~/Library/Developer/Xcode/UserData/Provisioning Profiles/`. Either:
+
+- **From the Developer portal** — create the App ID and a development profile,
+  download it, and double-click it. This works for any repository layout.
+- **From any Xcode project** whose `PRODUCT_BUNDLE_IDENTIFIER` is your bundle
+  id, using automatic signing:
+  ```sh
+  xcodebuild -project <some>.xcodeproj -scheme <scheme> -configuration Debug \
+    -destination generic/platform=iOS \
+    -allowProvisioningUpdates -allowProvisioningDeviceRegistration build
+  ```
+  Note this needs an `.xcodeproj`, and a `flutter create --platforms=ios .`
+  tree checked into a Bazel repository has no reason to keep one —
+  `flutter_ios_app` only ever reads `ios/Runner/*.swift` and
+  `ios/Runner/Info.plist`. The project can be any scratch project with the
+  right bundle id; it does not have to be, and usually is not, the app you
+  are building with Bazel.
+
+Free ("Personal Team") profiles expire after about seven days; when a build
+fails with *"no provisioning profile was found named …"*, mint a fresh one the
+same way.
+
+Then: `flutter_bazel run -t //:my_app_ios_device -d ios`. Each iOS example
+also ships a `device.example/` template — copy it to a git-ignored `device/`
+package and set your bundle id.
+
+## Observing an iOS release build
+
+There is no way to *run* a release-configured iOS build without a signing
+credential, which matters because release-only defects (see
+[Release builds and permissions](#release-builds-and-permissions)) are found
+by running, not by reading.
+
+- **Device, `-c opt`** — the real thing, and it needs a provisioning profile.
+- **Simulator, `-c opt`** — builds a complete `.ipa` with no warning, and
+  `xcrun simctl install` and `launch` both return 0 and print a pid. The
+  process then stays alive and renders **blank white forever**. It never
+  crashes, so nothing appears in a crash log. The simulator slice of the
+  engine is JIT and looks for `flutter_assets/kernel_blob.bin`, which an AOT
+  bundle does not contain; the only evidence is in the simulator's system log:
+  ```
+  (Flutter) Failed to find snapshot at .../App.framework/flutter_assets/kernel_blob.bin
+  (Flutter) [ERROR:flutter/shell/common/engine.cc(219)] Engine run configuration was invalid.
+  ```
+  Read it with
+  `xcrun simctl spawn booted log show --last 5m --predicate 'eventMessage CONTAINS "kernel_blob"'`.
+
+Use `-c dbg` on the simulator, and a device for release.
 
 ## License
 
