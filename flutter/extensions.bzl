@@ -17,6 +17,7 @@ load("@rules_dart//dart/pub:yaml_parser.bzl", "parse_pubspec_lock")
 load("//flutter/private:flutter_pub_lock_hub.bzl", "flutter_pub_lock_hub")
 load("//flutter/private:flutter_pub_package.bzl", "flutter_pub_package")
 load("//flutter/private:flutter_sdk_package.bzl", "flutter_sdk_package")
+load("//flutter/private:pub_lock_sdks.bzl", "parse_lock_sdk_constraints", "version_below_lower_bound")
 load(":repositories.bzl", "flutter_register_toolchains")
 
 _DEFAULT_NAME = "flutter"
@@ -134,6 +135,26 @@ def _toolchain_extension(module_ctx):
             flutter_version = selected_versions.get(_DEFAULT_NAME)
             if not flutter_version:
                 fail("flutter.pub() requires a flutter.toolchain() to be registered.")
+
+            # This is the one moment where the SDK that resolved the lock and
+            # the SDK that will consume it are both in view. Pub does not
+            # record the resolver's version, but it does record the floor its
+            # solution needs; a toolchain below that floor cannot compile what
+            # the lock pins.
+            flutter_constraint = parse_lock_sdk_constraints(lock_content).get("flutter", "")
+            if flutter_constraint and version_below_lower_bound(flutter_version, flutter_constraint):
+                fail((
+                    "{lock} was resolved against a newer Flutter than this " +
+                    "build pins: the lock requires flutter {constraint}, and " +
+                    "flutter.toolchain() pins {version}.\n" +
+                    "Either raise flutter.toolchain(flutter_version = ...) or " +
+                    "re-resolve with the pinned toolchain:\n" +
+                    "    bazel run @rules_flutter//flutter:pub -- upgrade"
+                ).format(
+                    lock = str(pub_tag.lock),
+                    constraint = flutter_constraint,
+                    version = flutter_version,
+                ))
 
             # Classify packages by source.
             hosted = {}

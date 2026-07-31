@@ -14,6 +14,7 @@ load(":native_assets_test.bzl", "bridge_probe", "native_assets_test_suite")
 load(":platform_bundle_test.bzl", "platform_bundle_test_suite")
 load(":plist_merge_test.bzl", "plist_merge_test_suite")
 load(":plugin_registrant_test.bzl", "plugin_registrant_test_suite")
+load(":pub_lock_sdks_test.bzl", "pub_lock_sdks_test_suite")
 load(":shader_compile_test.bzl", "shader_compile_test_suite")
 load(":toolchain_test.bzl", "toolchain_test_suite")
 load(":toolchains_repo_test.bzl", "toolchains_repo_test_suite")
@@ -52,6 +53,8 @@ plugin_registrant_test_suite(name = "plugin_registrant_test")
 platform_bundle_test_suite(name = "platform_bundle_test")
 
 linux_sysroot_link_test_suite(name = "linux_sysroot_link_test")
+
+pub_lock_sdks_test_suite(name = "pub_lock_sdks_test")
 
 shader_compile_test_suite(name = "shader_compile_test")
 

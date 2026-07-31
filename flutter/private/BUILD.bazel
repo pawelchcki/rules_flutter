@@ -64,6 +64,12 @@ bzl_library(
 )
 
 bzl_library(
+    name = "pub_lock_sdks",
+    srcs = ["pub_lock_sdks.bzl"],
+    visibility = ["//flutter:__subpackages__"],
+)
+
+bzl_library(
     name = "flutter_pub",
     srcs = ["flutter_pub.bzl"],
     visibility = ["//flutter:__subpackages__"],
