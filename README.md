@@ -29,7 +29,7 @@ If you're already using `flutter build`, here's what you gain by switching to Ba
 | All | Bazel 9+ |
 | macOS | Xcode (for `rules_apple` and `rules_swift`) |
 | iOS | Xcode + valid signing identity (simulator works without signing) |
-| Android | Android SDK (`$ANDROID_HOME` set), Android NDK (`$ANDROID_NDK_HOME` set), rules_android, rules_android_ndk, rules_kotlin |
+| Android | Android SDK (`$ANDROID_HOME`), Android NDK (`$ANDROID_NDK_HOME`, pointing at a *versioned* `ndk/<version>` directory), rules_android, rules_android_ndk, rules_kotlin — see [Android](#android) |
 | Linux | C++ toolchain (native or LLVM cross-toolchain from macOS) |
 | Windows | MSVC (native builds), or C++ cross-toolchain (debug JIT only from macOS/Linux) |
 | Web | None (Dart-to-WASM/JS compilation is fully hermetic) |
@@ -347,14 +347,51 @@ use_repo(android_ndk_repository_extension, "androidndk")
 register_toolchains("@androidndk//:all")
 ```
 
-Set `ANDROID_NDK_HOME` to your NDK path (e.g. in `.bazelrc.user`: `build --action_env=ANDROID_NDK_HOME=/path/to/ndk`).
+**Environment.** Android builds need *two* variables, both read by repository
+rules during fetch:
+
+| Variable | Value | Read by |
+|---|---|---|
+| `ANDROID_HOME` | the SDK root, e.g. `~/Library/Android/sdk` | `rules_android`'s `android_sdk_repository` |
+| `ANDROID_NDK_HOME` | a **versioned** NDK directory, e.g. `$ANDROID_HOME/ndk/28.2.13676358` | `rules_android_ndk`'s `android_ndk_repository` |
+
+`ANDROID_NDK_HOME` must name the versioned directory, not its `ndk/` parent.
+Pointing at the parent fails inside the NDK repository rule with a message that
+mentions neither the variable nor the mistake:
+
+```
+Error in readdir: can't readdir(), not a directory:
+  .../Android/sdk/ndk/toolchains/llvm/prebuilt/darwin-x86_64
+```
+
+Exporting both in the environment works. Putting them in a `.bazelrc` requires
+`--repo_env`, **not** `--action_env` — `--action_env` reaches build actions
+only, and repository rules never see it, so an `--action_env` line fails
+exactly as if nothing were set:
+
+```bazelrc
+common --repo_env=ANDROID_HOME=/path/to/Android/sdk
+common --repo_env=ANDROID_NDK_HOME=/path/to/Android/sdk/ndk/28.2.13676358
+```
+
+With `ANDROID_NDK_HOME` unset, the build stops during repository fetch, before
+anything Android-specific is analyzed:
+
+```
+ERROR: An error occurred during the fetch of repository
+  'rules_android_ndk++android_ndk_repository_extension+androidndk':
+  Error in fail: Either the ANDROID_NDK_HOME environment variable or the
+  path attribute of android_ndk_repository must be set.
+```
 
 Build — no platform flags needed. `flutter_android_bundle` transitions the
 Flutter application (AOT compile, FFI deps, and all) to the Android platform
 matching its `android_abi`:
 
 ```sh
-bazel build //:my_app_android
+ANDROID_HOME=~/Library/Android/sdk \
+ANDROID_NDK_HOME=~/Library/Android/sdk/ndk/28.2.13676358 \
+  bazel build //:my_app_android
 ```
 
 | Attribute | Description |
@@ -435,7 +472,19 @@ flutter_linux_app(
 
 **Prerequisites:** Run `flutter create --platforms=linux .` to generate `linux/runner/` with C++ sources. If no runner files are found, the built-in template is used automatically.
 
-Cross-compile from macOS (debug/JIT only):
+**GTK3 and your cc toolchain.** rules_flutter ships its own hermetic Chromium
+sysroot for GTK3 headers and libraries, and links those libraries **as explicit
+files** — it adds no `-L` to the link line and never passes `-lgtk-3`-style
+flags. Your cc toolchain's `--sysroot` is untouched and remains the sole owner
+of libc, libm and the rest of the C runtime. (This matters: a Debian sysroot's
+`libm.so` is a GNU ld script holding absolute paths that `lld` rewrites only for
+scripts found beneath `--sysroot`, so a second sysroot on the `-l` search path
+would break `-lm` with a "no such file" error naming a file that exists.)
+
+Cross-compile from macOS. Desktop cross-compiles are **debug/JIT only** — see
+[Cross-Compilation](#cross-compilation); Flutter publishes no
+cross-`gen_snapshot` for desktop targets, so there is no `-c opt` equivalent of
+this command:
 
 ```sh
 bazel build //:my_app_linux -c dbg --platforms=@rules_flutter//flutter/platforms:linux_x64
@@ -802,6 +851,40 @@ flutter_plugin(
 ```
 
 See `e2e/plugin_example/` for a complete example.
+
+### Regenerating `pubspec.lock`
+
+Bazel *consumes* `pubspec.lock` — it never writes one. Resolve it with the
+toolchain rules_flutter pins, not with a Flutter installed separately:
+
+```sh
+bazel run @rules_flutter//flutter:pub -- get       # after editing pubspec.yaml
+bazel run @rules_flutter//flutter:pub -- upgrade
+bazel run @rules_flutter//flutter:pub -- add qr
+```
+
+Arguments pass through to `dart pub` unchanged, and the command runs in your
+workspace root, so `pubspec.lock` lands where `flutter.pub()` reads it.
+
+**Why not the `flutter` on your `PATH`.** The version matters and the failure is
+silent. Pub's solver treats the running Dart SDK's version and the Flutter SDK's
+version as constraints, so an installation older than the pinned toolchain
+quietly selects older packages — and the lock it writes is still perfectly
+valid, so nothing downstream can tell. Resolving `e2e/plugin_example` with a
+host Flutter 3.41.6 (Dart 3.11.4) pins `meta 1.17.0`; the pinned 3.44.1
+toolchain (Dart 3.12.1) pins `meta 1.18.0`.
+
+The fetched toolchain is engine artifacts plus a Dart SDK — there is no
+`bin/flutter` in it, and no `pub` executable — so this target runs `dart pub`
+with `FLUTTER_ROOT` pointed at `@flutter_dev_root`, a tree assembled from the
+same flutter/flutter tag the toolchain pins. That repository is fetched the
+first time you run the target and by nothing else.
+
+Two consequences of it being `dart pub` rather than `flutter pub`: it writes
+`pubspec.lock` and `.dart_tool/package_config.json` (both already covered by
+`flutter create`'s `.gitignore` for the latter), and it does not write
+`.flutter-plugins-dependencies` — rules_flutter generates plugin registrants
+from the build graph, so nothing here reads that file.
 
 ## Native Interop
 

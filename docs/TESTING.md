@@ -99,7 +99,7 @@ cd e2e/windows_example && bazel test //...  # Windows-only (target_compatible_wi
 - macOS-only targets (macos bundle tests, ios_example) are skipped on other platforms via `target_compatible_with`.
 - Linux-only targets (linux bundle tests, linux_example) are skipped on macOS/Windows.
 - Windows-only targets (windows_example) are skipped on macOS/Linux.
-- `android_example` and `hello_world` (Android targets) require `ANDROID_HOME` to be set to the Android SDK path (e.g. `export ANDROID_HOME=$HOME/Library/Android/sdk` on macOS) and `ANDROID_NDK_HOME` to the NDK path (e.g. `export ANDROID_NDK_HOME=$ANDROID_HOME/ndk/<version>`).
+- `android_example` and `hello_world` (Android targets) require `ANDROID_HOME` to be set to the Android SDK path (e.g. `export ANDROID_HOME=$HOME/Library/Android/sdk` on macOS) and `ANDROID_NDK_HOME` to the NDK path (e.g. `export ANDROID_NDK_HOME=$ANDROID_HOME/ndk/<version>`, the versioned directory, not its `ndk/` parent). Any workspace that registers the NDK toolchain needs both even for non-Android targets, because toolchain resolution fetches the repository. In a `.bazelrc` these need `--repo_env`, not `--action_env` — repository rules never see `--action_env`.
 - Android workspaces whose plugins declare `<uses-permission>` in their library manifests (e.g. `record_android`'s RECORD_AUDIO) need `common --merge_android_manifest_permissions` in `.bazelrc`: Bazel's manifest merger strips library permissions by default, while AGP always merges them. The flag matters only for **plugin library** manifests — the app's own debug INTERNET permission comes from `flutter_android_app`'s variant-manifest merge (below) and needs no flag.
 - `flutter_android_app` merges `android/app/src/debug/AndroidManifest.xml` (where `flutter create` declares `android.permission.INTERNET`) into `-c dbg` APKs only, mirroring Gradle's variant merge. Debug APKs therefore host the Dart VM service out of the box; release APKs stay permission-free. `plugin_example`'s and `hello_world`'s flutter-create manifests are kept pristine to cover this path; `android_example` declares INTERNET in its hand-written `src/main` manifest and has no variant manifests, covering the no-op path. `verify_android_apk_test` in `plugin_example` is mode-aware: it asserts INTERNET present + `kernel_blob.bin` under `-c dbg`, and INTERNET absent + `libapp.so` in default (release) builds.
 - Android builds need no platform flags: `flutter_android_bundle` transitions the application to the Android platform matching its `android_abi`, and packaging hard-fails on any non-ELF native library. `verify_android_apk_test` in `e2e/android_example` asserts every packaged `.so` is ELF with the ABI's machine type, and that every androidx class the engine needs at runtime (including the profileinstaller → concurrent-futures → listenablefuture chain) is defined in the APK's dex — so a missing runtime dep fails in CI without an emulator.
@@ -190,7 +190,7 @@ Procedure:
 2. Reproduce the build with `cc_shared_library` + `objc_library` (Apple) / `cc_library` (other platforms). Set `shared_lib_name` to something *different* from the bundle filename — `flutter_native_asset` symlinks the cc output to `<bundle_filename>` in its own package, and matching names collide.
 3. Wrap the output in `flutter_native_asset(name = "<pkg>_native_asset", asset_id = "package:<pkg>/<basename>", link_mode = "dynamic_loading_bundle", library = ":_<pkg>_dylib", bundle_filename = "<basename>")`, constrained to the supported platforms with `target_compatible_with`. Platforms that need a different `bundle_filename` (`lib<x>.so`, `<x>.dll`) get their own target; platforms that agree on every attribute share one.
 4. Hang a `flutter_plugin(name = "<pkg>", platforms = [], native_assets = select({...}))` over them. Even though the package is "pure Dart" from pub's perspective, the empty-`platforms` plugin shape is what carries the native-assets entry into `FlutterInfo` for the application's manifest. The `select()` is what decides which asset targets an application sees: list exactly the ones that belong to the platform being built, and `//conditions:default: []` for the rest. Two targets claiming the same `asset_id` in one build fail analysis.
-5. Drop the template at `ext/<pkg>/<major>/BUILD.bazel.tpl`. The next `flutter pub get` + Bazel build picks it up automatically.
+5. Drop the template at `ext/<pkg>/<major>/BUILD.bazel.tpl`. The next `bazel run @rules_flutter//flutter:pub -- get` + Bazel build picks it up automatically.
 
 If the build fails at runtime with `Couldn't resolve native function "<symbol>"`, the most common cause is the `cc_shared_library`'s `install_name` not matching the asset id's basename — set `user_link_flags = ["-Wl,-install_name,@rpath/<basename>"]` on Apple targets. See `ext/objective_c/9/BUILD.bazel.tpl` for the canonical example.
 
@@ -383,6 +383,23 @@ gcloud compute instances delete flutter-linux-test --quiet
 ```
 
 **When to run:** After any change to Linux runner code, engine selection, or bundle assembly.
+
+**What the check actually asserts:** that a window *titled "Flutter"* appears
+(not merely that some window exists — the Xvfb root window always does), and
+that a capture of it differs from the blank display measured before launch. It
+fails loudly if the runner dies on a missing library, or maps a window and
+paints nothing.
+
+**Three things the VM needs, all handled by `create_linux_vm.dart` and
+`verify_linux_app.dart`** — worth knowing because each failed silently before:
+- `libgtk-3-0` is **not** in the Ubuntu cloud image; without it the runner exits
+  with `libgtk-3.so.0: cannot open shared object file`.
+- Flutter's GTK embedder renders through EGL, which ignores
+  `LIBGL_ALWAYS_SOFTWARE` and tries DRI3 — unavailable under Xvfb.
+  `GALLIUM_DRIVER=llvmpipe` is what actually selects software rendering; without
+  it the window appears and stays empty.
+- `scrot` refuses to replace an existing file unless given `--overwrite`, so a
+  polled screenshot silently keeps reporting the first frame it ever captured.
 
 ### Windows visual verification (GCP VM)
 

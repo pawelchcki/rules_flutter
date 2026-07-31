@@ -1,4 +1,17 @@
-"E2e test: full Android APK via rules_flutter + rules_android composition"
+"""E2e test: full Android APK via rules_flutter + rules_android composition.
+
+Build it with both Android variables set. `ANDROID_NDK_HOME` must name the
+*versioned* NDK directory; `$ANDROID_HOME/ndk` (its parent) fails inside
+rules_android_ndk with an unrelated-looking `readdir()` error:
+
+    ANDROID_HOME=~/Library/Android/sdk \\
+    ANDROID_NDK_HOME=~/Library/Android/sdk/ndk/<version> \\
+      bazel build //:app_android -c dbg
+
+In a `.bazelrc` the same two values need `--repo_env`, not `--action_env` —
+both repositories are fetched by repository rules, which never see
+`--action_env`. See the Android section of the rules_flutter README.
+"""
 
 module(name = "rules_flutter_android_example")
 
