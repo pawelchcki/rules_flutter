@@ -101,6 +101,18 @@ flutter_macos_app(
     target_compatible_with = ["@platforms//os:macos"],
 )
 
+# A second app in the same package. Regression guard: each app's runner
+# compiles into its own Swift module, so two of them can be built in one
+# invocation. While every runner shared module_name = "Runner" they both wrote
+# <pkg>/Runner.swiftmodule and analysis failed with an action conflict.
+flutter_macos_app(
+    name = "app_second",
+    app_name = "Flutter App Second",
+    application = ":app_flutter",
+    bundle_id = "com.example.flutterapp.second",
+    target_compatible_with = ["@platforms//os:macos"],
+)
+
 # =============================================================================
 # Approach 2: Bazel-generated runner (flutter_macos_runner_lib_gen)
 #
@@ -155,9 +167,9 @@ swift_library(
         "custom_runner/MainFlutterWindow.swift",
         ":app_registrant",
     ],
-    # Not "Runner" — that would conflict with flutter_macos_app's internal
-    # __app_runner. The @objc annotations on AppDelegate and MainFlutterWindow
-    # ensure correct ObjC class names regardless of Swift module.
+    # Free to be anything: the @objc annotations on AppDelegate and
+    # MainFlutterWindow give them unmangled ObjC class names, so the XIB
+    # resolves them regardless of Swift module.
     module_name = "CustomRunner",
     tags = ["manual"],
     deps = [":flutter_engine"],
@@ -186,6 +198,17 @@ build_test(
     name = "macos_app_build_test",
     target_compatible_with = ["@platforms//os:macos"],
     targets = [":app"],
+)
+
+# Both apps in one build_test: a per-package module-name collision is an
+# analysis-time action conflict, so it fails here rather than at runtime.
+build_test(
+    name = "macos_two_apps_one_package_build_test",
+    target_compatible_with = ["@platforms//os:macos"],
+    targets = [
+        ":app",
+        ":app_second",
+    ],
 )
 
 build_test(

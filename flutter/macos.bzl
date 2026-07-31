@@ -67,6 +67,7 @@ load("//flutter/private:flutter_apple_plugin_library.bzl", _flutter_apple_plugin
 load("//flutter/private:flutter_apple_plugins_aggregator.bzl", _flutter_apple_plugins_aggregator = "flutter_apple_plugins_aggregator")
 load("//flutter/private:flutter_macos_application.bzl", _flutter_macos_framework_rule = "flutter_macos_framework", _flutter_macos_native_libs_rule = "flutter_macos_native_libs", _flutter_macos_privacy_manifests_rule = "flutter_macos_privacy_manifests")
 load("//flutter/private:flutter_macos_registrant.bzl", _flutter_macos_registrant_rule = "flutter_macos_registrant")
+load("//flutter/private:runner_module.bzl", "runner_module_name")
 
 # Re-export for user BUILD files.
 MACOS_MINIMUM_OS_VERSION = _MACOS_MINIMUM_OS_VERSION
@@ -271,7 +272,8 @@ def flutter_macos_app(
     Generate these with: `flutter create --platforms=macos .`
 
     Args:
-        name: Target name (Bazel identifier).
+        name: Target name (Bazel identifier). The runner's Swift module name
+            is derived from it, so it must be a bare Swift identifier.
         application: A flutter_application target (required).
         bundle_id: CFBundleIdentifier (required — rules_apple constraint).
         app_name: User-facing display name (menu bar, window title). Defaults to name.
@@ -288,13 +290,15 @@ def flutter_macos_app(
         resources: Extra resources. MainMenu.xib is wired separately, through
             the runner library, so that ibtool resolves its Swift classes
             against the runner's module. Resources passed here are compiled
-            against the app target's name instead — so a XIB listed here
-            cannot reference the runner's Swift classes (an `@objc` class name
-            works regardless).
+            against the app target's name instead, which is not a module any
+            target produces — so a XIB listed here cannot reference the
+            runner's Swift classes (an `@objc` class name works regardless).
         **kwargs: Passed through to macos_application.
     """
     display_name = app_name or name
     tags = kwargs.pop("tags", ["manual"])
+
+    module_name = runner_module_name("flutter_macos_app", name)
 
     # Auto-discover the conventional entitlements pair. flutter create
     # always emits both files; treat their absence as an error rather
@@ -391,32 +395,36 @@ def flutter_macos_app(
         tags = tags,
     )
 
-    # 6. XIB — substitute APP_NAME and let the NIB's module follow the runner.
+    # 6. XIB — substitute APP_NAME and keep the NIB's module in sync.
     #
     #    The runner's Swift classes (MainFlutterWindow, AppDelegate) carry no
     #    @objc annotation in `flutter create` output, so their Objective-C
     #    runtime names are Swift-mangled and module-qualified
     #    (_TtC<n><module>17MainFlutterWindow). The XIB names them via
-    #    customClass plus customModuleProvider="target", which tells ibtool to
-    #    use the module of the target being built. If the module baked into
-    #    the NIB does not match the module the classes were compiled into,
-    #    AppKit silently instantiates a plain NSWindow — blank window, no
-    #    error.
+    #    customClass/customModule. If the module baked into the NIB does not
+    #    match the module the classes were compiled into, AppKit silently
+    #    instantiates a plain NSWindow — blank window, no error.
     #
-    #    rules_apple derives that module from the resource's owner: a XIB
-    #    reached through a swift_library's `data` is bucketed with that
-    #    library's own module_name (resource_aspect.bzl), while one passed to
-    #    macos_application(resources = ...) falls back to the app target's
-    #    name (resources_support.bzl: `swift_module or rule_label.name`).
-    #    Attaching the XIB to __<name>_runner therefore makes ibtool's
-    #    --module track the runner structurally, with no name to keep in sync
-    #    by hand.
+    #    Two mechanisms keep the two sides together:
+    #
+    #    a) customModuleProvider="target" (what `flutter create` emits) tells
+    #       ibtool to use the module of the target being built. rules_apple
+    #       derives that from the resource's owner: a XIB reached through a
+    #       swift_library's `data` is bucketed with that library's own
+    #       module_name (resource_aspect.bzl), so attaching the XIB to
+    #       __<name>_runner below makes ibtool's --module follow the runner
+    #       structurally, with no name to keep in sync by hand.
+    #
+    #    b) Rewriting the literal customModule covers XIBs that dropped the
+    #       provider attribute and hardcode customModule="Runner". Harmless
+    #       when the provider is present, since the provider wins.
     expand_template(
         name = "__%s_menu_xib" % name,
         template = "macos/Runner/Base.lproj/MainMenu.xib",
         out = "__%s/Base.lproj/MainMenu.xib" % name,
         substitutions = {
             "APP_NAME": display_name,
+            "customModule=\"Runner\"": "customModule=\"%s\"" % module_name,
         },
         tags = tags,
     )
@@ -425,7 +433,7 @@ def flutter_macos_app(
         name = "__%s_runner" % name,
         srcs = runner_srcs + ["__%s_registrant" % name],
         data = ["__%s_menu_xib" % name],
-        module_name = "Runner",
+        module_name = module_name,
         tags = tags,
         deps = [
             "__%s_engine" % name,

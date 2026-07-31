@@ -40,6 +40,104 @@ def is_valid_bundle_id(bundle_id):
             return False
     return True
 
+# Swift keywords that cannot be used bare as a module name. `import <keyword>`
+# and `<keyword>.SomeClass` both fail to parse, so a target so named would
+# produce a runner that cannot be imported or referenced from an Info.plist.
+_SWIFT_RESERVED_MODULE_NAMES = (
+    "associatedtype",
+    "class",
+    "deinit",
+    "enum",
+    "extension",
+    "fileprivate",
+    "func",
+    "import",
+    "init",
+    "inout",
+    "internal",
+    "let",
+    "open",
+    "operator",
+    "private",
+    "precedencegroup",
+    "protocol",
+    "public",
+    "rethrows",
+    "static",
+    "struct",
+    "subscript",
+    "typealias",
+    "var",
+    "break",
+    "case",
+    "catch",
+    "continue",
+    "default",
+    "defer",
+    "do",
+    "else",
+    "fallthrough",
+    "for",
+    "guard",
+    "if",
+    "in",
+    "repeat",
+    "return",
+    "throw",
+    "switch",
+    "where",
+    "while",
+    "as",
+    "Any",
+    "false",
+    "is",
+    "nil",
+    "self",
+    "Self",
+    "super",
+    "throws",
+    "true",
+    "try",
+)
+
+def validate_swift_module_name(module_name, what):
+    """Validate that a string can be used verbatim as a Swift module name.
+
+    Args:
+        module_name: The candidate module name.
+        what: Description of where the name came from, used in the failure
+            message (e.g. "flutter_macos_app(name = ...)").
+    """
+    if not is_valid_swift_module_name(module_name):
+        fail(
+            ("%s: %r cannot be used as a Swift module name. Apple's NIB and " +
+             "Info.plist class lookups spell classes as <module>.<Class>, so " +
+             "the module name must be a bare Swift identifier: a letter or " +
+             "'_' followed by letters, digits or '_', and not a Swift " +
+             "keyword. Rename the target.") % (what, module_name),
+        )
+
+def is_valid_swift_module_name(module_name):
+    """Check if a string is a bare Swift identifier usable as a module name.
+
+    Args:
+        module_name: The candidate module name.
+
+    Returns:
+        True if the name is a valid Swift module name, False otherwise.
+    """
+    if len(module_name) == 0:
+        return False
+    if module_name in _SWIFT_RESERVED_MODULE_NAMES:
+        return False
+    first = module_name[0]
+    if not (first.isalpha() or first == "_"):
+        return False
+    for c in module_name.elems():
+        if not (c.isalpha() or c.isdigit() or c == "_"):
+            return False
+    return True
+
 _VALID_WEB_COMPILER_RENDERER = {
     "dart2wasm": ["skwasm", "canvaskit"],
     "dart2js": ["canvaskit"],

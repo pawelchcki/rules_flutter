@@ -66,6 +66,7 @@ load("//flutter/private:flutter_apple_plugin_library.bzl", _flutter_apple_plugin
 load("//flutter/private:flutter_apple_plugins_aggregator.bzl", _flutter_apple_plugins_aggregator = "flutter_apple_plugins_aggregator")
 load("//flutter/private:flutter_ios_application.bzl", _flutter_ios_application = "flutter_ios_application", _flutter_ios_framework_rule = "flutter_ios_framework", _flutter_ios_native_frameworks_rule = "flutter_ios_native_frameworks", _flutter_ios_privacy_manifests_rule = "flutter_ios_privacy_manifests")
 load("//flutter/private:flutter_ios_registrant.bzl", _flutter_ios_registrant_rule = "flutter_ios_registrant")
+load("//flutter/private:runner_module.bzl", "runner_module_name")
 
 # Re-export constants for user BUILD files.
 IOS_MINIMUM_OS_VERSION = _IOS_MINIMUM_OS_VERSION
@@ -319,13 +320,19 @@ def flutter_ios_app(
     Generate these with: `flutter create --platforms=ios .`
 
     Args:
-        name: Target name (Bazel identifier).
+        name: Target name (Bazel identifier). The runner's Swift module name
+            is derived from it, so it must be a bare Swift identifier.
         application: A flutter_application target (required).
         bundle_id: CFBundleIdentifier (required — rules_apple constraint).
         families: Device families (default ["iphone"]).
         app_name: User-facing display name. Defaults to name.
         minimum_os_version: Minimum iOS version.
-        info_plist: Override conventional ios/Runner/Info.plist.
+        info_plist: Override conventional ios/Runner/Info.plist. The macro
+            substitutes `$(PRODUCT_MODULE_NAME)` in the conventional plist
+            with the runner's module name; an overriding plist that spells
+            `UISceneDelegateClassName` out as `Runner.SceneDelegate` will not
+            find the scene delegate. Keep the `$(PRODUCT_MODULE_NAME)`
+            variable, or write `<name>.SceneDelegate`.
         version: An apple_bundle_version target. Defaults to "1.0".
         launch_storyboard: Override launch storyboard. Defaults to
             ios/Runner/Base.lproj/LaunchScreen.storyboard.
@@ -336,11 +343,18 @@ def flutter_ios_app(
             Runner.entitlements when capabilities are enabled in Xcode;
             its absence is a valid, capability-less app and the macro
             ships nothing rather than synthesizing a default.
-        resources: Extra resources.
+        resources: Extra resources. Main.storyboard is wired separately,
+            through the runner library, so that ibtool resolves its classes
+            against the runner's module. Resources passed here are compiled
+            against the app target's name instead, which is not a module any
+            target produces — so a storyboard listed here cannot reference the
+            runner's Swift classes (an `@objc` class name works regardless).
         **kwargs: Passed through to ios_application.
     """
     display_name = app_name or name
     tags = kwargs.pop("tags", ["manual"])
+
+    module_name = runner_module_name("flutter_ios_app", name)
 
     # target_compatible_with doesn't work on ios_application (it transitions to
     # iOS platform, so macOS constraints would fail). Users should put
@@ -437,7 +451,7 @@ def flutter_ios_app(
         name = "__%s_runner" % name,
         srcs = runner_srcs + ["__%s_registrant" % name],
         data = native.glob(["ios/Runner/Base.lproj/Main.storyboard"]),
-        module_name = "Runner",
+        module_name = module_name,
         tags = tags,
         deps = [
             "__%s_engine" % name,
@@ -454,7 +468,10 @@ def flutter_ios_app(
             out = "__%s_Info.plist" % name,
             substitutions = {
                 "$(DEVELOPMENT_LANGUAGE)": "en",
-                "$(PRODUCT_MODULE_NAME)": "Runner",
+                # UISceneDelegateClassName is <module>.SceneDelegate: the
+                # flutter create SceneDelegate carries no @objc, so its
+                # runtime name is module-qualified and must track module_name.
+                "$(PRODUCT_MODULE_NAME)": module_name,
                 "$(FLUTTER_BUILD_NAME)": "1.0",
                 "$(FLUTTER_BUILD_NUMBER)": "1",
             },

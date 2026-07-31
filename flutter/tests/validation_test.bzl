@@ -1,7 +1,8 @@
-"""Unit tests for validation.bzl dart-define helpers."""
+"""Unit tests for validation.bzl dart-define and Swift module name helpers."""
 
 load("@bazel_skylib//lib:unittest.bzl", "asserts", "unittest")
-load("//flutter/private:validation.bzl", "is_valid_dart_define")
+load("//flutter/private:runner_module.bzl", "runner_module_name")
+load("//flutter/private:validation.bzl", "is_valid_dart_define", "is_valid_swift_module_name")
 
 def _accepts_simple_define_test_impl(ctx):
     env = unittest.begin(ctx)
@@ -61,6 +62,53 @@ def _rejects_empty_test_impl(ctx):
     asserts.false(env, is_valid_dart_define(""))
     return unittest.end(env)
 
+def _accepts_swift_identifier_test_impl(ctx):
+    """Names `flutter create` produces are lower_snake_case identifiers."""
+    env = unittest.begin(ctx)
+    for name in ["app", "hello_world", "_private", "App2", "a"]:
+        asserts.true(env, is_valid_swift_module_name(name), "Expected %r to be valid" % name)
+    return unittest.end(env)
+
+def _rejects_non_identifier_test_impl(ctx):
+    """Anything Swift cannot spell as a bare module name is rejected loudly.
+
+    Sanitizing instead (my-app -> my_app) would silently reintroduce the
+    collision this naming exists to prevent: `my-app` and `my.app` in one
+    package would land on the same module.
+    """
+    env = unittest.begin(ctx)
+    for name in ["", "my-app", "my.app", "1app", "my app", "my/app", "my+app"]:
+        asserts.false(env, is_valid_swift_module_name(name), "Expected %r to be invalid" % name)
+    return unittest.end(env)
+
+def _rejects_swift_keyword_test_impl(ctx):
+    """`import class` does not parse, so a target named `class` cannot work."""
+    env = unittest.begin(ctx)
+    for name in ["class", "import", "func", "self", "Any"]:
+        asserts.false(env, is_valid_swift_module_name(name), "Expected %r to be invalid" % name)
+    return unittest.end(env)
+
+def _runner_module_is_distinct_test_impl(ctx):
+    """The runner module must differ from the app target's own name.
+
+    rules_apple names the linked-storyboard dir `storyboards/<parent>/<module>`
+    and falls back to the target name for resources it cannot attribute to a
+    module — so an equal module collides with the launch storyboard.
+    """
+    env = unittest.begin(ctx)
+    for name in ["app", "hello_world"]:
+        module = runner_module_name("flutter_macos_app", name)
+        asserts.false(env, module == name, "Module %r must differ from target %r" % (module, name))
+        asserts.true(env, is_valid_swift_module_name(module), "Module %r must stay a valid identifier" % module)
+    return unittest.end(env)
+
+def _runner_module_is_injective_test_impl(ctx):
+    """Distinct targets must get distinct modules, or the original bug returns."""
+    env = unittest.begin(ctx)
+    modules = [runner_module_name("flutter_ios_app", n) for n in ["a", "b", "app", "app_b"]]
+    asserts.equals(env, len(modules), len({m: None for m in modules}))
+    return unittest.end(env)
+
 _t0_test = unittest.make(_accepts_simple_define_test_impl)
 _t1_test = unittest.make(_accepts_comma_in_value_test_impl)
 _t2_test = unittest.make(_accepts_equals_in_value_test_impl)
@@ -70,6 +118,27 @@ _t5_test = unittest.make(_rejects_reserved_product_test_impl)
 _t6_test = unittest.make(_rejects_bare_reserved_key_test_impl)
 _t7_test = unittest.make(_rejects_empty_test_impl)
 _t8_test = unittest.make(_rejects_registrant_define_test_impl)
+_t9_test = unittest.make(_accepts_swift_identifier_test_impl)
+_t10_test = unittest.make(_rejects_non_identifier_test_impl)
+_t11_test = unittest.make(_rejects_swift_keyword_test_impl)
+_t12_test = unittest.make(_runner_module_is_distinct_test_impl)
+_t13_test = unittest.make(_runner_module_is_injective_test_impl)
 
 def validation_test_suite(name):
-    unittest.suite(name, _t0_test, _t1_test, _t2_test, _t3_test, _t4_test, _t5_test, _t6_test, _t7_test, _t8_test)
+    unittest.suite(
+        name,
+        _t0_test,
+        _t1_test,
+        _t2_test,
+        _t3_test,
+        _t4_test,
+        _t5_test,
+        _t6_test,
+        _t7_test,
+        _t8_test,
+        _t9_test,
+        _t10_test,
+        _t11_test,
+        _t12_test,
+        _t13_test,
+    )
