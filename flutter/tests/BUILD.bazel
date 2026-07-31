@@ -11,6 +11,7 @@ load(":macos_test.bzl", "macos_test_suite")
 load(":manifest_merge_test.bzl", "manifest_merge_test_suite")
 load(":native_assets_test.bzl", "bridge_probe", "native_assets_test_suite")
 load(":platform_bundle_test.bzl", "platform_bundle_test_suite")
+load(":plist_merge_test.bzl", "plist_merge_test_suite")
 load(":plugin_registrant_test.bzl", "plugin_registrant_test_suite")
 load(":shader_compile_test.bzl", "shader_compile_test_suite")
 load(":toolchain_test.bzl", "toolchain_test_suite")
@@ -32,6 +33,8 @@ asset_bundle_test_suite(name = "asset_bundle_test")
 macos_test_suite(name = "macos_test")
 
 manifest_merge_test_suite(name = "manifest_merge_test")
+
+plist_merge_test_suite(name = "plist_merge_test")
 
 web_test_suite(name = "web_test")
 
