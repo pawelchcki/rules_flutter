@@ -95,4 +95,35 @@ void main() {
     });
   });
 
+  group('reportReloadCommand', () {
+    test('renders an error rather than staying silent', () {
+      final logged = <String>[];
+      reportReloadCommand('Hot reload', {'error': 'no device'}, logged.add);
+
+      // Errors go to stderr, so nothing reaches the normal log sink — the
+      // point is that the caller no longer discards the map entirely.
+      expect(logged, isEmpty);
+    });
+
+    test('renders the message and recompiled file count', () {
+      final logged = <String>[];
+      reportReloadCommand('Hot reload', {
+        'message': 'Hot reload successful',
+        'filesRecompiled': ['package:app/main.dart'],
+      }, logged.add);
+
+      expect(logged.single, contains('Hot reload successful'));
+      expect(logged.single, contains('1 file'));
+    });
+
+    test('calls out a no-op reload', () {
+      final logged = <String>[];
+      reportReloadCommand('Hot reload', {
+        'message': 'Hot reload successful',
+        'isEmpty': true,
+      }, logged.add);
+
+      expect(logged.single, contains('no changes'));
+    });
+  });
 }

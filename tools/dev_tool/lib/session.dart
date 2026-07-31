@@ -189,6 +189,35 @@ Future<ReloadResult> recompileAndRestart({
   }
 }
 
+/// Render the result of an `app.hotReload` / `app.restart` command.
+///
+/// The HTTP control channel hands this map back to its caller, but the
+/// interactive session dropped it — so pressing "r" printed nothing whether
+/// the edit went live, was refused, or reached no device at all. A silent
+/// success and a silent failure are indistinguishable, which makes the key
+/// useless as feedback.
+void reportReloadCommand(
+  String action,
+  Map<String, dynamic> result,
+  void Function(String message) log,
+) {
+  if (result['error'] case final error?) {
+    stderr.writeln('$action failed: $error');
+    return;
+  }
+  final message = result['message'] ?? '$action complete';
+  if (result['isEmpty'] == true) {
+    log('$message (no changes)');
+    return;
+  }
+  final files = result['filesRecompiled'];
+  if (files is List && files.isNotEmpty) {
+    log('$message (${files.length} file(s))');
+    return;
+  }
+  log('$message');
+}
+
 /// Signature for reading keyboard input (allows test injection).
 typedef KeyboardReader = Stream<List<int>> Function();
 
@@ -289,6 +318,7 @@ Future<void> runInteractiveSession({
       resolver: resolver,
       commandRunner: commandRunner,
       reloadStrategy: reloadStrategy,
+      log: log,
     );
     watcherSubscription = watchResult.subscription;
     debounce = watchResult.debounce;
@@ -352,7 +382,8 @@ Future<void> runInteractiveSession({
       case 'r':
         if (hotReloadEnabled) {
           if (commandRunner != null && commandRunner.hasCommand('app.hotReload')) {
-            await commandRunner.run('app.hotReload', {});
+            reportReloadCommand(
+                'Hot reload', await commandRunner.run('app.hotReload', {}), log);
           } else if (frontendServer != null) {
             await _performHotReloadAll(
               frontendServer: frontendServer,
@@ -367,7 +398,8 @@ Future<void> runInteractiveSession({
         if (hotReloadEnabled) {
           if (commandRunner != null && commandRunner.hasCommand('app.restart')) {
             stdout.writeln('Performing hot restart...');
-            await commandRunner.run('app.restart', {});
+            reportReloadCommand(
+                'Hot restart', await commandRunner.run('app.restart', {}), log);
           } else if (frontendServer != null) {
             stdout.writeln('Performing hot restart...');
             final result = await recompileAndRestart(
@@ -437,6 +469,7 @@ Future<void> runInteractiveSession({
   PackageUriResolver? resolver,
   CommandRunner? commandRunner,
   ReloadStrategy? reloadStrategy,
+  required void Function(String message) log,
 }) {
   final watcher = DirectoryWatcher(workspace);
   Timer? debounce;
@@ -464,9 +497,12 @@ Future<void> runInteractiveSession({
       if (invalidated.isEmpty) return;
 
       if (commandRunner != null && commandRunner.hasCommand('app.hotReload')) {
-        await commandRunner.run('app.hotReload', {
-          'invalidatedFiles': invalidated,
-        });
+        reportReloadCommand(
+            'Hot reload',
+            await commandRunner.run('app.hotReload', {
+              'invalidatedFiles': invalidated,
+            }),
+            log);
       } else {
         await _performHotReloadAll(
           frontendServer: frontendServer,
