@@ -4,10 +4,20 @@
 /// uses `tags = ["manual"]` to skip during normal `bazel test //...` runs.
 /// Run explicitly: `bazel test :verify_macos_app_test --test_tag_filters=`
 ///
+/// Everything is addressed by the PID this test launched, never by the bundle
+/// name. Naming the process instead let a leftover "Flutter App" — one an
+/// earlier run failed to reap, or a copy the developer launched by hand —
+/// answer for the bundle under test: the window count came back positive, the
+/// size was plausible, and the test passed without the freshly built binary
+/// ever having drawn anything. Launching `Contents/MacOS/<exe>` directly
+/// rather than through `open` is part of that: LaunchServices would activate
+/// an already-running instance of the same bundle id instead of starting ours.
+///
 /// Pass criteria:
 /// - App launches without crashing
 /// - Window appears within 30s
 /// - Window width > 100 AND height > 100 (catches the 1x32 sizing bug)
+import 'dart:async';
 import 'dart:io';
 
 Future<void> main() async {
@@ -34,39 +44,47 @@ Future<void> main() async {
       exit(1);
     }
 
-    final appPath = '${tmpDir.path}/Flutter App.app';
-    final bundleName = 'Flutter App';
+    await _assertWindowEnumerationWorks();
 
-    // Launch the app.
-    print('Launching $appPath ...');
-    final launch = await Process.run('open', [appPath]);
-    if (launch.exitCode != 0) {
-      stderr.writeln('Failed to launch app: ${launch.stderr}');
-      exit(1);
-    }
+    const bundleName = 'Flutter App';
+    final appPath = '${tmpDir.path}/$bundleName.app';
+    final executable = '$appPath/Contents/MacOS/$bundleName';
+
+    print('Launching $executable ...');
+    final process = await Process.start(executable, const []);
+    final pid = process.pid;
+    print('PID: $pid');
+
+    // A crash exits before any window can appear; report that rather than
+    // spending 30s waiting for a window from a process that is already gone.
+    var exitCode = -1;
+    var exited = false;
+    unawaited(process.exitCode.then((code) {
+      exited = true;
+      exitCode = code;
+    }));
 
     // Poll for window to appear (up to 30s).
     print('Waiting for window (up to 30s) ...');
     final deadline = DateTime.now().add(const Duration(seconds: 30));
     var windowFound = false;
     while (DateTime.now().isBefore(deadline)) {
-      final result = await Process.run('osascript', [
-        '-e',
-        'tell application "System Events" to get (count of windows of process "$bundleName")',
-      ]);
-      if (result.exitCode == 0) {
-        final count = int.tryParse(result.stdout.toString().trim()) ?? 0;
-        if (count > 0) {
-          windowFound = true;
-          break;
-        }
+      if (exited) {
+        stderr.writeln(
+            'FAIL: process $pid exited with code $exitCode before showing a window');
+        exit(1);
+      }
+      final count = await _windowCount(pid);
+      if (count > 0) {
+        windowFound = true;
+        break;
       }
       await Future<void>.delayed(const Duration(seconds: 1));
     }
 
     if (!windowFound) {
-      stderr.writeln('FAIL: No window found for $bundleName after 30s');
-      await _quitApp(bundleName);
+      stderr.writeln('FAIL: No window found for PID $pid after 30s');
+      await _quitApp(pid);
       exit(1);
     }
     print('Window found.');
@@ -77,7 +95,8 @@ Future<void> main() async {
     // Check window size.
     final sizeResult = await Process.run('osascript', [
       '-e',
-      'tell application "System Events" to tell process "$bundleName" to get size of window 1',
+      'tell application "System Events" to tell (first process whose unix id '
+          'is $pid) to get size of window 1',
     ]);
     final sizeStr = sizeResult.stdout.toString().trim();
     print('Window size: $sizeStr');
@@ -87,14 +106,10 @@ Future<void> main() async {
     final width = parts.isNotEmpty ? parts[0] : 0;
     final height = parts.length > 1 ? parts[1] : 0;
 
-    // Verify process is still alive.
-    final pgrepResult =
-        Process.runSync('pgrep', ['-x', bundleName]);
-    final processAlive = pgrepResult.exitCode == 0;
+    final processAlive = !exited;
     print('Process alive: $processAlive');
 
-    // Quit the app.
-    await _quitApp(bundleName);
+    await _quitApp(pid);
 
     // Evaluate results.
     final sizeOk = width > 100 && height > 100;
@@ -120,10 +135,74 @@ Future<void> main() async {
   }
 }
 
-Future<void> _quitApp(String bundleName) async {
-  await Process.run('osascript', [
+/// Fails the run if System Events cannot enumerate windows at all.
+///
+/// It reports success and a count of zero in two very different situations:
+/// the process genuinely has no window, and the accessibility path is wedged —
+/// after which *every* process on the machine reports zero, Finder included.
+/// Without this probe the second case is indistinguishable from a Flutter app
+/// that came up blank, and the test spends 30 seconds before blaming the app.
+/// A desktop with a window server running always has some windowed process, so
+/// a total of zero is the harness failing, not an answer.
+Future<void> _assertWindowEnumerationWorks() async {
+  final result = await Process.run('osascript', [
     '-e',
-    'tell application "$bundleName" to quit',
+    'tell application "System Events"\n'
+        '  set total to 0\n'
+        '  repeat with p in (processes whose background only is false)\n'
+        '    set total to total + (count of windows of p)\n'
+        '  end repeat\n'
+        '  return total\n'
+        'end tell',
+  ]).timeout(
+    const Duration(seconds: 20),
+    onTimeout: () => ProcessResult(0, 1, '', 'System Events did not respond'),
+  );
+  final total = result.exitCode == 0
+      ? int.tryParse(result.stdout.toString().trim()) ?? 0
+      : 0;
+  if (total > 0) return;
+
+  stderr.writeln('FAIL: System Events reports no windows for any process, so '
+      'it cannot answer for ours either.');
+  if (result.exitCode != 0) {
+    stderr.writeln('osascript: ${result.stderr.toString().trim()}');
+  }
+  stderr.writeln('This is a harness failure, not an app failure. Grant '
+      'accessibility access to the test runner in System Settings > Privacy & '
+      'Security > Accessibility, then `killall "System Events"` and re-run.');
+  exit(1);
+}
+
+/// Windows belonging to [pid], or 0 when the process has none.
+///
+/// A nonzero exit from osascript is not "no windows" — it is "the question was
+/// not answered", most often because the accessibility grant for window
+/// enumeration is missing or System Events is wedged. Reporting 0 there turns
+/// a broken harness into a 30-second wait ending in a verdict about the app,
+/// so the error is surfaced instead.
+Future<int> _windowCount(int pid) async {
+  final result = await Process.run('osascript', [
+    '-e',
+    'tell application "System Events" to get (count of windows of (first '
+        'process whose unix id is $pid))',
   ]);
+  if (result.exitCode != 0) {
+    final message = result.stderr.toString().trim();
+    // The process may not have registered with the window server yet; that
+    // shows up as "can't get process" and is a legitimate not-yet.
+    if (message.contains('-1719') || message.contains("Can’t get")) return 0;
+    stderr.writeln('FAIL: cannot query windows via System Events: $message');
+    stderr.writeln(
+        'Grant accessibility access to the test runner, or restart System '
+        'Events, and re-run. This is a harness failure, not an app failure.');
+    exit(1);
+  }
+  return int.tryParse(result.stdout.toString().trim()) ?? 0;
+}
+
+Future<void> _quitApp(int pid) async {
+  Process.killPid(pid, ProcessSignal.sigterm);
   await Future<void>.delayed(const Duration(seconds: 2));
+  Process.killPid(pid, ProcessSignal.sigkill);
 }
