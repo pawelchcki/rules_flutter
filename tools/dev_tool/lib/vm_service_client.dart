@@ -281,10 +281,15 @@ class VmServiceClient {
   }
 
   /// Wait until the Flutter framework has rendered its first frame.
-  Future<void> waitForFirstFrame({
+  ///
+  /// Returns whether it did, within [timeout]. The answer doubles as "is this
+  /// app drivable yet": the RPC it polls is a Flutter service extension, so a
+  /// true means the framework is up and the app's extensions — the
+  /// `ext.rules_flutter.*` agent surface among them — are registered.
+  Future<bool> waitForFirstFrame({
     Duration timeout = const Duration(seconds: 15),
   }) async {
-    if (_service == null || _mainIsolateId == null) return;
+    if (_service == null || _mainIsolateId == null) return false;
 
     final deadline = DateTime.now().add(timeout);
     while (DateTime.now().isBefore(deadline)) {
@@ -293,10 +298,11 @@ class VmServiceClient {
               'ext.flutter.didSendFirstFrameRasterizedEvent',
               isolateId: _mainIsolateId,
             ));
-        if (resp.json?['enabled'] == 'true') return;
+        if (resp.json?['enabled'] == 'true') return true;
       } catch (_) {}
       await Future<void>.delayed(const Duration(milliseconds: 250));
     }
+    return false;
   }
 
   /// Capture a Flutter widget tree screenshot as raw PNG bytes.

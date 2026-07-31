@@ -119,6 +119,83 @@ void main() {
       session.devToolsProcess = fakeProcess;
       expect(session.devToolsProcess, fakeProcess);
     });
+
+    test('terminated completes when the running app process exits', () async {
+      final process = FakeProcess();
+      final session = DeviceSession(
+        device: MacOSDevice(),
+        appInstance: AppInstance(process: process),
+        vmClient: null,
+        appId: 'test',
+      );
+
+      var terminated = false;
+      unawaited(session.terminated.then((_) => terminated = true));
+      await pumpEventQueue();
+      expect(terminated, isFalse);
+
+      process.complete(0);
+      await session.terminated.timeout(const Duration(seconds: 5));
+    });
+
+    // The exact shape of the bug: a restart that finds changed native
+    // libraries kills the running process on purpose and installs a
+    // replacement. Reading that kill as "the app exited" ended the run's
+    // session loop, which closed the HTTP control channel — so a driver got
+    // `{"relaunched":true}` and then connection-refused, with the relaunched
+    // app alive and no second banner to find it by.
+    test('a relaunch is not the session ending', () async {
+      final first = FakeProcess();
+      final second = FakeProcess();
+      final session = DeviceSession(
+        device: MacOSDevice(),
+        appInstance: AppInstance(process: first),
+        vmClient: null,
+        appId: 'test',
+      );
+
+      var terminated = false;
+      unawaited(session.terminated.then((_) => terminated = true));
+
+      await session.relaunch(() async {
+        // What `device.stop()` does to the outgoing process.
+        first.complete(0);
+        return AppInstance(process: second);
+      });
+      await pumpEventQueue();
+
+      expect(terminated, isFalse,
+          reason: 'the replaced process exiting must not end the session');
+      expect(session.appInstance.process, second);
+      expect(session.launch, 2, reason: 'second launch of this app');
+
+      // The replacement's exit does end it.
+      second.complete(0);
+      await session.terminated.timeout(const Duration(seconds: 5));
+    });
+
+    test('a relaunch that fails to launch ends the session', () async {
+      final first = FakeProcess();
+      final session = DeviceSession(
+        device: MacOSDevice(),
+        appInstance: AppInstance(process: first),
+        vmClient: null,
+        appId: 'test',
+      );
+
+      await expectLater(
+        session.relaunch(() async {
+          first.complete(0);
+          throw StateError('launch failed');
+        }),
+        throwsStateError,
+      );
+
+      // Nothing replaced the process the relaunch killed, so the app really
+      // is gone — the suppressed exit must not swallow that.
+      await session.terminated.timeout(const Duration(seconds: 5));
+      expect(session.launch, 1);
+    });
   });
 
   group('runInteractiveSession', () {
@@ -215,6 +292,46 @@ void main() {
         reason: 'machine mode owns stdin via JSON-RPC; key hints mislead and '
             'pollute the protocol stdout stream',
       );
+    });
+
+    test('machine mode outlives a relaunch of the app process',
+        timeout: Timeout(Duration(seconds: 10)), () async {
+      // The loop's return is what closes the run's transports — the HTTP
+      // control channel included. A restart that relaunches the process
+      // (native libraries changed) must therefore not end it: the driver that
+      // issued the restart is still holding the channel it issued it over.
+      final first = FakeProcess();
+      final second = FakeProcess();
+      final session = DeviceSession(
+        device: MacOSDevice(),
+        appInstance: AppInstance(process: first),
+        vmClient: null,
+        appId: 'app_1',
+      );
+
+      var loopReturned = false;
+      final loop = runInteractiveSession(
+        sessions: [session],
+        frontendServer: null,
+        entrypoint: '/fake/main.dart',
+        workspace: Directory.systemTemp.path,
+        protocol: MachineProtocol(enabled: true),
+        devToolsEnabled: false,
+        dartExecutable: 'dart',
+        watchEnabled: false,
+      )..then((_) => loopReturned = true);
+
+      await session.relaunch(() async {
+        first.complete(0);
+        return AppInstance(process: second);
+      });
+      await pumpEventQueue();
+
+      expect(loopReturned, isFalse,
+          reason: 'the relaunched app is running; the session has not ended');
+
+      second.complete(0);
+      await loop;
     });
   });
 }

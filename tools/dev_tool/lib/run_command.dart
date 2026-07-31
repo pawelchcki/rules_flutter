@@ -1234,23 +1234,39 @@ class RunCommand {
                           'Native libraries changed (${changed.join(', ')}); relaunching.',
                       'libs': changed,
                     });
+                    final relaunched = <DeviceSession>[];
+                    // Every relaunched app reported a first frame, i.e. is
+                    // ready to take `app.*` commands. Reported rather than
+                    // assumed: a caller that gets `ready: false` knows to wait
+                    // instead of reading a `Method not found` as a broken
+                    // agent surface.
+                    var allReady = true;
                     for (final s in sessions) {
                       if (s.appInstance.vmServiceUri == null) continue;
-                      await s.vmClient?.disconnect();
-                      // Stopping closes the old instance's log stream, so the
-                      // sink attached below is the only live one — the
-                      // relaunched app's output never doubles up with the
-                      // previous instance's.
-                      await s.device.stop(s.appInstance);
-                      final inst = await s.device.launch(
-                        appFile,
-                        onLog: appLogSinkFor(
-                          protocol: protocol,
-                          appId: s.appId,
-                          deviceName: s.device.name,
-                          multiDevice: sessions.length > 1,
-                        ),
-                      );
+                      // The session owns the swap: between the old process's
+                      // death and the replacement's arrival it must not look
+                      // like the app ended, or the run's transports (the HTTP
+                      // control channel included) would be torn down under a
+                      // driver that is mid-restart.
+                      await s.relaunch(() async {
+                        await s.vmClient?.disconnect();
+                        // Stopping closes the old instance's log stream, so
+                        // the sink attached below is the only live one — the
+                        // relaunched app's output never doubles up with the
+                        // previous instance's.
+                        await s.device.stop(s.appInstance);
+                        return s.device.launch(
+                          appFile,
+                          onLog: appLogSinkFor(
+                            protocol: protocol,
+                            appId: s.appId,
+                            deviceName: s.device.name,
+                            multiDevice: sessions.length > 1,
+                          ),
+                        );
+                      });
+                      relaunched.add(s);
+                      final inst = s.appInstance;
                       VmServiceClient? client;
                       if (inst.vmServiceUri != null) {
                         for (var attempt = 0; attempt < 5; attempt++) {
@@ -1267,7 +1283,6 @@ class RunCommand {
                           }
                         }
                       }
-                      s.appInstance = inst;
                       s.vmClient = client;
                       if (client != null && inst.vmServiceUri != null) {
                         final uri = inst.vmServiceUri!;
@@ -1281,6 +1296,16 @@ class RunCommand {
                         if (assetsDir.isNotEmpty) {
                           client.assetDirectory = assetsDir;
                         }
+                        // Connecting to the VM service only proves the process
+                        // is up. The caller's next move is an `app.*` command,
+                        // which needs the app's service extensions registered
+                        // — so wait for the first rasterized frame, which is
+                        // the observable that says the framework got that far.
+                        // Answering before it turned the driver's first call
+                        // after a relaunch into `-32601 Method not found`.
+                        allReady &= await client.waitForFirstFrame();
+                      } else {
+                        allReady = false;
                       }
                       protocol.appStarted(s.appId);
                     }
@@ -1303,9 +1328,22 @@ class RunCommand {
                     liveNativeLibsFp = fp;
                     return {
                       'message':
-                          'Restart relaunched the app: native libraries changed (${changed.join(', ')}).',
+                          'Restart relaunched the app: native libraries changed (${changed.join(', ')}). '
+                              'The control channel keeps its port and token; '
+                              '/logs cursors do not survive — re-tail.',
                       'relaunched': true,
                       'nativeLibsChanged': changed,
+                      // Whether the relaunched app rendered its first frame
+                      // before this response — i.e. whether it can take an
+                      // `app.*` command now.
+                      'ready': allReady,
+                      // Each launch buffers its own output from zero, so a
+                      // cursor only means anything within one launch. A driver
+                      // compares this with the `launch` in its last /logs page
+                      // to know the cursor it holds is stale.
+                      'launch': {
+                        for (final s in relaunched) s.appId: s.launch,
+                      },
                     };
                   };
                 }
@@ -1416,9 +1454,10 @@ class RunCommand {
           shutdownSignal: shutdownRequested.future,
         );
       } else {
-        // No hot reload possible — wait for first device to exit.
+        // No hot reload possible — wait for the first device's app to end
+        // (`terminated`, so a relaunch is not read as the app exiting).
         if (sessions.isNotEmpty) {
-          await sessions.first.appInstance.process.exitCode;
+          await sessions.first.terminated;
         }
       }
     } finally {

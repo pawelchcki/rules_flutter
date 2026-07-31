@@ -23,9 +23,14 @@ import 'vm_service_client.dart';
 class DeviceSession {
   final Device device;
 
-  /// Mutable: a restart that finds changed native libraries relaunches the
-  /// process, replacing the instance and its VM service connection.
-  AppInstance appInstance;
+  /// The app process this session currently owns.
+  ///
+  /// Not fixed for the life of the session: a restart that finds changed
+  /// native libraries relaunches the process (see [relaunch]), replacing the
+  /// instance and its VM service connection.
+  AppInstance get appInstance => _appInstance;
+  AppInstance _appInstance;
+
   VmServiceClient? vmClient;
   final String appId;
   String? devToolsUrl;
@@ -57,14 +62,75 @@ class DeviceSession {
     if (!_debugReady.isCompleted) _debugReady.complete();
   }
 
+  /// How many times this session's app has been launched: 1 for the original
+  /// launch, one more for every [relaunch].
+  ///
+  /// Each [AppInstance] carries its own log buffer, numbered from zero, so a
+  /// `/logs` cursor only means anything within one launch. This counter is
+  /// what tells a poller its cursor belongs to a process that is gone.
+  int get launch => _launch;
+  int _launch = 1;
+
+  final Completer<void> _terminated = Completer<void>();
+
+  /// True only for the window inside [relaunch] where the outgoing process has
+  /// been killed and its replacement has not arrived yet.
+  bool _relaunching = false;
+
+  /// Completes when this session's app is gone for good.
+  ///
+  /// Deliberately not `appInstance.process.exitCode`: [relaunch] kills the
+  /// running process on purpose to install a replacement, and that exit does
+  /// not end the session. A caller that watches the process directly sees a
+  /// relaunch as a dead app and tears the run's transports down — the HTTP
+  /// control channel included — while the relaunched app is alive and
+  /// answering.
+  Future<void> get terminated => _terminated.future;
+
   DeviceSession({
     required this.device,
-    required this.appInstance,
+    required AppInstance appInstance,
     required this.vmClient,
     required this.appId,
     this.dds,
-  }) {
+  }) : _appInstance = appInstance {
     if (vmClient != null && dds != null) markDebugReady();
+    _watchForExit(appInstance);
+  }
+
+  void _watchForExit(AppInstance instance) {
+    unawaited(instance.process.exitCode.then((_) {
+      // Ignore the exit of a process this session no longer owns, and the
+      // exit of the one currently being replaced.
+      if (_relaunching || !identical(instance, _appInstance)) return;
+      _markTerminated();
+    }));
+  }
+
+  void _markTerminated() {
+    if (!_terminated.isCompleted) _terminated.complete();
+  }
+
+  /// Replace the running app process with a freshly launched one.
+  ///
+  /// [launchReplacement] owns the entire swap — stopping the outgoing process
+  /// and starting its replacement — because the window between the two is
+  /// exactly what must not read as the session ending. If it throws, the
+  /// session really is over: the old process is gone and nothing replaced it,
+  /// so [terminated] completes.
+  Future<void> relaunch(
+      Future<AppInstance> Function() launchReplacement) async {
+    _relaunching = true;
+    try {
+      _appInstance = await launchReplacement();
+      _launch++;
+      _watchForExit(_appInstance);
+    } catch (_) {
+      _markTerminated();
+      rethrow;
+    } finally {
+      _relaunching = false;
+    }
   }
 }
 
@@ -327,14 +393,21 @@ Future<void> runInteractiveSession({
   // In machine mode, stdin is consumed by MachineProtocol — skip the
   // keyboard loop and wait for sessions to end via machine commands.
   if (protocol.enabled) {
-    // Wait until a device process exits or session teardown is signalled
+    // Wait until a session's app is gone for good or teardown is signalled
     // (`app.stop` / `daemon.shutdown`). The explicit signal matters for
     // sessions whose processes never exit on their own (attach mode's
     // pseudo-process) and lets the caller regain control to close its
     // transports AFTER the command that requested the teardown has sent
     // its response.
+    //
+    // `DeviceSession.terminated`, not `appInstance.process.exitCode`: the
+    // latter is sampled once, so a restart that relaunches the process (its
+    // native libraries changed) resolved it with the exit of the process it
+    // had just deliberately replaced. The run then closed its transports —
+    // the HTTP control channel included — leaving a driver with a healthy
+    // relaunched app it could no longer talk to.
     final exitFutures = <Future<void>>[
-      for (final s in sessions) s.appInstance.process.exitCode,
+      for (final s in sessions) s.terminated,
       if (shutdownSignal != null) shutdownSignal,
     ];
     if (exitFutures.isNotEmpty) {

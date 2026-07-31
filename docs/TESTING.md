@@ -56,6 +56,7 @@ fully green.
 | `attach_e2e_test.dart` | macOS | Launch app externally → attach → VM service connects |
 | `dart_defines_e2e_test.dart` | macOS | `--dart-define` reaches the app (comma-in-value intact) and survives a hot reload (frontend_server -D replay) |
 | `agent_e2e_test.dart` | macOS | Full `app.*` agent surface (tap/enterText/getText/…), and that it still works **after `app.restart`** (engine-hook registrant re-registers extensions) |
+| `relaunch_e2e_test.dart` | macOS | `app.restart`'s **relaunch** branch: edits `ffi_example/native/mul.c` so the rebuilt dylib differs, then asserts the HTTP control channel survives the process swap and the relaunched app answers on it. The only test that reaches this branch — it needs a real native-library change |
 | `plugin_example_e2e_test.dart` | macOS/iOS-sim/Android/Chrome | Plugin apps render non-blank frames; Dart plugin registration survives `app.restart` (macOS); web plugins register in both DDC and `--wasm` dev mode (Chrome) |
 
 ### Dev tool screenshot mechanisms
@@ -67,9 +68,12 @@ fully green.
 | Windows | `_flutter.screenshot` via VM service | PowerShell `CopyFromScreen` |
 | Android | `_flutter.screenshot` via VM service | `adb screencap` |
 | iOS Simulator | `simctl io screenshot` (always) | `simctl io screenshot` (always) |
+| iOS device | pymobiledevice3 DVT (always) | pymobiledevice3 DVT (always) |
 | Chrome/Web | CDP `Page.captureScreenshot` (always) | N/A (web is always debug) |
 
 Note: `_flutter.screenshot` captures only the Flutter widget tree (no OS chrome). OS-level tools capture the full screen/window.
+
+The devices whose cell says "always" cannot do `_flutter.screenshot` at all — Impeller (the only iOS renderer) cannot encode a compressed screenshot, and there is no engine screenshot on web. They declare `supportsFlutterScreenshot => false`, so the control channel's `screenshot/flutter` endpoint answers `501` naming `screenshot/native` instead of passing back an engine error that reads as transient. macOS was measured on Flutter 3.44.1 and does still serve `_flutter.screenshot`; when a platform stops being able to, the endpoint attaches the same pointer to the engine's own error.
 
 ## 3. E2E workspaces (automated)
 
