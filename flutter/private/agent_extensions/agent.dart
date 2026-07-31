@@ -328,16 +328,60 @@ Future<ServiceExtensionResponse> _handleScrollIntoView(
       'ValueKey($scrollableKey) by ($dx, $dy)');
 }
 
+/// Type [text] into a field.
+///
+/// With a selector, the field is the first `EditableText` under the matched
+/// widget — so the key can sit where a human would put it, on the
+/// `TextField`, rather than on the `EditableText` it builds — and it is
+/// focused first, the way a tap would. With no selector, the currently
+/// focused field is used (`flutter_driver`'s model), which is what an
+/// autofocused form or a tap-with-side-effects flow wants.
+///
+/// `text` is this method's payload, so it cannot double as the `text`
+/// selector it is on every other method; the other four selectors apply.
 Future<ServiceExtensionResponse> _handleEnterText(
   String method,
   Map<String, String> params,
 ) async {
   final text = params['text'];
-  if (text == null) return _err('missing required param: text');
-  final focused = FocusManager.instance.primaryFocus?.context
-      ?.findAncestorStateOfType<EditableTextState>();
-  if (focused == null) return _err('no focused EditableText');
-  focused.userUpdateTextEditingValue(
+  if (text == null) {
+    return _err('missing required param: text (the string to type)');
+  }
+
+  final EditableTextState field;
+  final String target;
+  if (_selectorNames.any(params.containsKey)) {
+    final _Selector sel;
+    try {
+      sel = _selector(params, textIsSelector: false);
+    } on _SelectorError catch (e) {
+      return _err(e.message);
+    }
+    final el = _findElementWhere(sel.test);
+    if (el == null) return _err('no widget matching ${sel.label} found');
+    final state = _editableTextUnder(el);
+    if (state == null) {
+      return _err('no EditableText in the subtree of ${sel.label}; put the '
+          'selector on a TextField/TextFormField, or on a widget containing '
+          'one');
+    }
+    field = state;
+    target = sel.label;
+    field.requestKeyboard();
+    await _settle(params);
+  } else {
+    final focused = FocusManager.instance.primaryFocus?.context
+        ?.findAncestorStateOfType<EditableTextState>();
+    if (focused == null) {
+      return _err('no selector given and no text field is focused; pass one '
+          'of key, tooltip, type, semanticsLabel to target a field, or tap '
+          'it first');
+    }
+    field = focused;
+    target = 'focused';
+  }
+
+  field.userUpdateTextEditingValue(
     TextEditingValue(
       text: text,
       selection: TextSelection.collapsed(offset: text.length),
@@ -345,7 +389,7 @@ Future<ServiceExtensionResponse> _handleEnterText(
     SelectionChangedCause.keyboard,
   );
   await _settle(params);
-  return _ok({'enteredText': text});
+  return _ok({'enteredText': text, 'into': target});
 }
 
 Future<ServiceExtensionResponse> _handleGetText(
@@ -360,9 +404,16 @@ Future<ServiceExtensionResponse> _handleGetText(
   }
   final el = _findElementWhere(sel.test);
   if (el == null) return _err('no widget matching ${sel.label} found');
-  final text = _textOf(el);
-  if (text == null) return _err('no Text widget under ${sel.label}');
-  return _ok({'text': text});
+  final texts = _textsUnder(el);
+  if (texts.isEmpty) {
+    return _err('no text-bearing widget (Text, RichText, EditableText) in the '
+        'subtree of ${sel.label}');
+  }
+  // `text` is the first in pre-order — the reading order of the subtree —
+  // and `texts` is always present, so a caller can see that a container held
+  // more than one string (a ListTile's title and subtitle, say) instead of
+  // silently getting whichever came first.
+  return _ok({'text': texts.first, 'texts': texts});
 }
 
 Future<ServiceExtensionResponse> _handleGetRect(
@@ -478,15 +529,27 @@ class _SelectorError implements Exception {
 _ElementPredicate _valueKeyTest(String value) =>
     (el) => el.widget.key is ValueKey && (el.widget.key as ValueKey).value == value;
 
+/// Selector params that are never anything but a selector.
+///
+/// `text` is deliberately absent: it is also `enterText`'s payload, which is
+/// why that method opts out of it via [_selector]'s `textIsSelector`.
+const _selectorNames = <String>['key', 'tooltip', 'type', 'semanticsLabel'];
+
 /// Resolve the finder from exactly one of `key`, `text`, `tooltip`, `type`,
 /// or `semanticsLabel`. Throws [_SelectorError] if none or more than one is
 /// provided (no silent precedence).
-_Selector _selector(Map<String, String> params) {
+///
+/// [textIsSelector] is false for `enterText`, where `text` is the string to
+/// type; the error messages then offer only the selectors that method has.
+_Selector _selector(Map<String, String> params, {bool textIsSelector = true}) {
   final key = params['key'];
-  final text = params['text'];
+  final text = textIsSelector ? params['text'] : null;
   final tooltip = params['tooltip'];
   final type = params['type'];
   final semanticsLabel = params['semanticsLabel'];
+  final names = textIsSelector
+      ? 'key, text, tooltip, type, semanticsLabel'
+      : _selectorNames.join(', ');
 
   final provided = <String>[
     if (key != null) 'key',
@@ -496,12 +559,11 @@ _Selector _selector(Map<String, String> params) {
     if (semanticsLabel != null) 'semanticsLabel',
   ];
   if (provided.isEmpty) {
-    throw _SelectorError('missing selector: provide one of '
-        'key, text, tooltip, type, semanticsLabel');
+    throw _SelectorError('missing selector: provide one of $names');
   }
   if (provided.length > 1) {
     throw _SelectorError('ambiguous selector: provide exactly one of '
-        'key, text, tooltip, type, semanticsLabel (got ${provided.join(", ")})');
+        '$names (got ${provided.join(", ")})');
   }
 
   if (key != null) {
@@ -550,16 +612,59 @@ Rect? _rectOf(Element? el) {
   return ro.localToGlobal(Offset.zero) & ro.size;
 }
 
-/// Text content of [el] if it (or its first Text descendant) is a Text widget.
-String? _textOf(Element el) {
-  final w = el.widget;
-  if (w is Text) return w.data;
-  String? out;
-  el.visitChildren((child) {
-    if (out != null) return;
-    if (child.widget is Text) out = (child.widget as Text).data;
-  });
+/// Every string displayed under [el], in depth-first pre-order.
+///
+/// The whole subtree is searched, not one level of it: a selector names the
+/// widget an app author hangs a `Key` on — a `Chip`, a `ListTile`, a button —
+/// and the `Text` that widget displays sits several elements below the one
+/// that carries the key. A shallower search made a key that `tap` and
+/// `waitFor` accept fail for `getText` alone.
+///
+/// Descendants of a match are pruned, because Flutter builds text out of more
+/// text: a `Text` builds a `RichText`, a `TextField` builds an `EditableText`
+/// that builds another `RichText`. Without pruning one visible string would be
+/// reported two or three times.
+List<String> _textsUnder(Element el) {
+  final out = <String>[];
+  void visit(Element e) {
+    final text = _displayedText(e.widget);
+    if (text != null) {
+      out.add(text);
+      return;
+    }
+    e.visitChildren(visit);
+  }
+
+  visit(el);
   return out;
+}
+
+/// The string [w] puts on screen, or null if it is not a text-bearing widget.
+String? _displayedText(Widget w) {
+  // `Text.rich` leaves `data` null and carries its content as a span.
+  if (w is Text) return w.data ?? w.textSpan?.toPlainText();
+  if (w is EditableText) return w.controller.text;
+  if (w is RichText) return w.text.toPlainText();
+  return null;
+}
+
+/// The state of the first `EditableText` at or under [el].
+///
+/// A `TextField`'s key sits well above the `EditableText` it builds, so
+/// resolving a selector to a field means descending.
+EditableTextState? _editableTextUnder(Element el) {
+  EditableTextState? found;
+  void visit(Element e) {
+    if (found != null) return;
+    if (e is StatefulElement && e.state is EditableTextState) {
+      found = e.state as EditableTextState;
+      return;
+    }
+    e.visitChildren(visit);
+  }
+
+  visit(el);
+  return found;
 }
 
 NavigatorState? _findNavigator() {

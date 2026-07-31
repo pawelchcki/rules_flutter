@@ -132,6 +132,49 @@ void main() {
             reason: 'echo label should reflect the entered text',
           );
 
+          // getText reaches the whole subtree, not one level of it. The key
+          // here is on the ElevatedButton — where an app author puts it — and
+          // its label sits several elements below, which a one-level scan
+          // reported as "no Text widget under ValueKey(agent_test_button)"
+          // even though tap/waitFor/getRect all accept the same key.
+          final nested = await dt.httpCommand('app.getText', {
+            'appId': appId,
+            'key': 'agent_test_button',
+          });
+          expect(nested['error'], isNull,
+              reason: 'getText on a container: ${nested['error']}');
+          expect(nested['result']?['text'], 'Increment (agent)');
+          expect(nested['result']?['texts'], ['Increment (agent)'],
+              reason: 'every match reports the full list, not just the first');
+
+          // enterText acts on its selector: no tap first, and the response
+          // says which field it typed into.
+          final typed = await dt.httpCommand('app.enterText', {
+            'appId': appId,
+            'key': 'agent_test_field',
+            'text': 'selected without tapping',
+          });
+          expect(typed['error'], isNull,
+              reason: 'app.enterText by key: ${typed['error']}');
+          expect(typed['result']?['into'], 'ValueKey(agent_test_field)');
+          final typedEcho = await dt.httpCommand('app.getText', {
+            'appId': appId,
+            'key': 'agent_test_echo',
+          });
+          expect(typedEcho['result']?['text'],
+              'echo: selected without tapping');
+
+          // A selector that matches something that is not a field says so,
+          // naming the selector the caller passed.
+          final notAField = await dt.httpCommand('app.enterText', {
+            'appId': appId,
+            'key': 'agent_test_label',
+            'text': 'nowhere',
+          });
+          expect(notAField['error']?.toString(),
+              contains('no EditableText in the subtree of '
+                  'ValueKey(agent_test_label)'));
+
           final rect = await dt.httpCommand('app.getRect', {
             'appId': appId,
             'key': 'agent_test_button',
