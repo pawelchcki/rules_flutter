@@ -285,7 +285,12 @@ def flutter_macos_app(
             absence indicates a misconfigured runner). Pass a label to
             override, or a `select()` literal to control per-config
             selection yourself.
-        resources: Extra resources (merged with MainMenu.xib).
+        resources: Extra resources. MainMenu.xib is wired separately, through
+            the runner library, so that ibtool resolves its Swift classes
+            against the runner's module. Resources passed here are compiled
+            against the app target's name instead — so a XIB listed here
+            cannot reference the runner's Swift classes (an `@objc` class name
+            works regardless).
         **kwargs: Passed through to macos_application.
     """
     display_name = app_name or name
@@ -386,46 +391,46 @@ def flutter_macos_app(
         tags = tags,
     )
 
-    swift_library(
-        name = "__%s_runner" % name,
-        srcs = runner_srcs + ["__%s_registrant" % name],
-        module_name = "Runner",
-        tags = tags,
-        deps = [
-            "__%s_engine" % name,
-            "__%s_apple_plugins" % name,
-        ],
-    )
-
-    # 6. XIB — substitute APP_NAME and fix Swift module resolution.
+    # 6. XIB — substitute APP_NAME and let the NIB's module follow the runner.
     #
-    #    Flutter's XIB templates (from `flutter create`) set
-    #    customModuleProvider="target" on custom classes like MainFlutterWindow
-    #    and AppDelegate. This tells ibtool to embed the build target's module
-    #    name in the compiled NIB's Swift class mangling (e.g.
-    #    _TtC17hello_world_macos17MainFlutterWindow).
+    #    The runner's Swift classes (MainFlutterWindow, AppDelegate) carry no
+    #    @objc annotation in `flutter create` output, so their Objective-C
+    #    runtime names are Swift-mangled and module-qualified
+    #    (_TtC<n><module>17MainFlutterWindow). The XIB names them via
+    #    customClass plus customModuleProvider="target", which tells ibtool to
+    #    use the module of the target being built. If the module baked into
+    #    the NIB does not match the module the classes were compiled into,
+    #    AppKit silently instantiates a plain NSWindow — blank window, no
+    #    error.
     #
-    #    rules_apple passes `--module <target_name>` to ibtool, where the
-    #    module name is always derived from the macos_application rule's label
-    #    name (via resources_support.bzl: `swift_module = swift_module or
-    #    rule_label.name`). There is no public attribute to override this.
-    #
-    #    Since the runner swift_library uses module_name = "Runner" (matching
-    #    Xcode convention), the ibtool module ("hello_world_macos") won't
-    #    match, and the NIB's class lookup silently falls back to NSWindow —
-    #    no FlutterViewController is created, and the UI is blank.
-    #
-    #    Fix: strip customModuleProvider="target" so ibtool uses the explicit
-    #    customModule="Runner" already present in the XIB.
+    #    rules_apple derives that module from the resource's owner: a XIB
+    #    reached through a swift_library's `data` is bucketed with that
+    #    library's own module_name (resource_aspect.bzl), while one passed to
+    #    macos_application(resources = ...) falls back to the app target's
+    #    name (resources_support.bzl: `swift_module or rule_label.name`).
+    #    Attaching the XIB to __<name>_runner therefore makes ibtool's
+    #    --module track the runner structurally, with no name to keep in sync
+    #    by hand.
     expand_template(
         name = "__%s_menu_xib" % name,
         template = "macos/Runner/Base.lproj/MainMenu.xib",
         out = "__%s/Base.lproj/MainMenu.xib" % name,
         substitutions = {
             "APP_NAME": display_name,
-            " customModuleProvider=\"target\"": "",
         },
         tags = tags,
+    )
+
+    swift_library(
+        name = "__%s_runner" % name,
+        srcs = runner_srcs + ["__%s_registrant" % name],
+        data = ["__%s_menu_xib" % name],
+        module_name = "Runner",
+        tags = tags,
+        deps = [
+            "__%s_engine" % name,
+            "__%s_apple_plugins" % name,
+        ],
     )
 
     # 7. Info.plist — preprocess to resolve Xcode variables that rules_apple
@@ -471,7 +476,7 @@ def flutter_macos_app(
         minimum_os_version = minimum_os_version,
         infoplists = [actual_info_plist],
         version = version,
-        resources = ["__%s_menu_xib" % name] + resources,
+        resources = resources,
         additional_contents = flutter_contents,
         entitlements = entitlements,
         deps = ["__%s_runner" % name],
