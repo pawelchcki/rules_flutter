@@ -59,6 +59,7 @@ def _flutter_material_icons_impl(ctx):
             lib_root = "",
             transitive_srcs = depset(),
             transitive_packages = depset(),
+            transitive_code_asset_files = depset(),
         ),
         FlutterInfo(
             asset_dirs = depset(),
