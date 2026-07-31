@@ -40,7 +40,6 @@ dart_binary(
         # returns null in an AOT binary with no `.dart_tool/package_config.json`
         # above it — so DWDS threw and the browser got a `text/plain` 500.
         # Declared as a runtime input and served from runfiles instead.
-        "@dev_tool_deps__dwds//:lib/src/injected/client.js",
     ] + select({
         "@platforms//os:macos": [
             "//tools/macos_screenshot:screenshot",
@@ -89,7 +88,6 @@ _UNIT_TESTS = {
     "command_runner_test": {},
     "compiler_test": {"fakes": True},
     "device_integration_test": {"fakes": True},
-    "dwds_injected_client_test": {"deps": ["@dev_tool_deps//:shelf"]},
     "device_test": {"fakes": True},
     "frontend_server_integration_test": {"fakes": True},
     "frontend_server_test": {"fakes": True},
