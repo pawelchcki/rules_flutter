@@ -98,6 +98,21 @@ flutter_ios_app(
     bundle_id = "com.rulesflutter.ios.example.second",
 )
 
+# The same app, signed for a physical device: `provisioning_profile` is the
+# only difference, so the device bundle is the identical construction rather
+# than a second one hand-assembled out of Tier-2 `_gen` rules.
+#
+# `//device` is git-ignored and absent from a fresh clone. That is fine:
+# flutter_ios_app defaults to `tags = ["manual"]`, so `bazel build //...`
+# never expands this target and therefore never loads the missing package.
+# Create it from device.example/ — see README.md "Device builds".
+flutter_ios_app(
+    name = "app_device",
+    application = ":app_flutter",
+    bundle_id = "com.rulesflutter.ios.example",
+    provisioning_profile = "//device:profile",
+)
+
 # =============================================================================
 # Approach 2: Bazel-generated runner (flutter_ios_runner_lib_gen)
 #

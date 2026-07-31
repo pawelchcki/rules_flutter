@@ -320,6 +320,7 @@ def flutter_ios_app(
         launch_storyboard = None,
         entitlements = None,
         additional_entitlements = [],
+        provisioning_profile = None,
         resources = [],
         **kwargs):
     """Builds a Flutter iOS .app bundle from a flutter_application target.
@@ -331,6 +332,12 @@ def flutter_ios_app(
     Prerequisites — the package must contain:
         - `ios/Runner/*.swift` (AppDelegate, SceneDelegate, etc.)
     Generate these with: `flutter create --platforms=ios .`
+
+    Simulator builds need no code signing. Device builds require
+    `provisioning_profile`; without it `ios_application` fails at analysis
+    with "The provisioning_profile attribute must be set for device builds
+    on this platform (ios)". See the README's "Running an iOS example on a
+    physical device" for how to obtain one without an Xcode project.
 
     Non-release builds carry two extra `Info.plist` keys —
     `NSBonjourServices` and `NSLocalNetworkUsageDescription` — so the engine
@@ -375,6 +382,10 @@ def flutter_ios_app(
             different value is a hard error naming the key and both files.
             Works when the app ships no entitlements file at all, in which
             case the additions become the entitlements.
+        provisioning_profile: A `.mobileprovision` file (usually a
+            `local_provisioning_profile` target) to sign a device build
+            with. Required for device builds (`--ios_multi_cpus=arm64`) and
+            unused by simulator builds.
         resources: Extra resources. Main.storyboard is wired separately,
             through the runner library, so that ibtool resolves its classes
             against the runner's module. Resources passed here are compiled
@@ -384,9 +395,9 @@ def flutter_ios_app(
         **kwargs: Passed through to ios_application. The macro sets
             `bundle_id`, `bundle_name`, `entitlements`, `families`,
             `minimum_os_version`, `infoplists`, `version`,
-            `launch_storyboard`, `resources`, `deps` and `tags` itself, so
-            passing any of those here is a duplicate-keyword error — use the
-            named parameter instead.
+            `launch_storyboard`, `resources`, `provisioning_profile`,
+            `deps` and `tags` itself, so passing any of those here is a
+            duplicate-keyword error — use the named parameter instead.
     """
     display_name = app_name or name
     tags = kwargs.pop("tags", ["manual"])
@@ -585,6 +596,7 @@ def flutter_ios_app(
         }),
         version = version,
         launch_storyboard = actual_launch_storyboard,
+        provisioning_profile = provisioning_profile,
         resources = resources + ["__%s_privacy_manifests" % name],
         deps = [
             "__%s_runner" % name,

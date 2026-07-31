@@ -1,46 +1,33 @@
-# Device build targets — per-developer signing configuration.
+# Per-developer iOS signing configuration — NOT checked into version control.
+#
+# This whole `device/` directory is git-ignored so your Apple Team ID and
+# provisioning profile never land in version control. It holds nothing but
+# the credential: the device app itself is `//:app_device` in the root
+# BUILD.bazel, which is the same `flutter_ios_app` as the simulator's
+# `//:app` plus `provisioning_profile`.
 #
 # Setup (see README.md "Device builds" for the full walkthrough):
 #   1. cp -r device.example device
 #   2. mv device/BUILD.bazel.example device/BUILD.bazel
-#   3. Mint a provisioning profile (headless — no Xcode GUI needed):
-#        xcodebuild -project ios/Runner.xcodeproj -scheme Runner \
-#          -configuration Debug -destination generic/platform=iOS \
-#          -allowProvisioningUpdates -allowProvisioningDeviceRegistration build
-#      Re-run the same command whenever the profile expires (free-team
-#      profiles last ~7 days).
-#   4. Edit BUNDLE_ID below to match the project's PRODUCT_BUNDLE_IDENTIFIER
-#   5. Build:  bazel build //device:app -c opt --ios_multi_cpus=arm64
+#   3. Obtain a development provisioning profile whose App ID is
+#      com.rulesflutter.ios.example (or edit //:app_device's bundle_id to one
+#      you control), installed into
+#      ~/Library/Developer/Xcode/UserData/Provisioning Profiles/ — either
+#      from the Apple Developer portal, or with `xcodebuild
+#      -allowProvisioningUpdates` against any Xcode project whose
+#      PRODUCT_BUNDLE_IDENTIFIER is that id. flutter_ios_app itself never
+#      reads an Xcode project, so it need not be this repository's; see the
+#      README. Free-team profiles expire after ~7 days — mint a fresh one
+#      the same way.
+#   4. Build:  bazel build //:app_device -c opt --ios_multi_cpus=arm64
+#      Or run: flutter_bazel run -t //:app_device -d ios
 
 load("@rules_apple//apple:apple.bzl", "local_provisioning_profile")
-load("@rules_apple//apple:ios.bzl", "ios_application")
-load("@rules_flutter//flutter:ios.bzl", "IOS_DEFAULT_LAUNCH_STORYBOARD", "IOS_MINIMUM_OS_VERSION")
 
-BUNDLE_ID = "com.rulesflutter.ios.example"  # Must match the Xcode project
+package(default_visibility = ["//visibility:public"])
 
 local_provisioning_profile(
     name = "profile",
-    profile_name = "iOS Team Provisioning Profile: " + BUNDLE_ID,
+    profile_name = "iOS Team Provisioning Profile: com.rulesflutter.ios.example",
     tags = ["manual"],
-)
-
-ios_application(
-    name = "app",
-    bundle_id = BUNDLE_ID,
-    families = ["iphone"],
-    infoplists = ["//:bazel_runner_info_plist"],
-    launch_storyboard = IOS_DEFAULT_LAUNCH_STORYBOARD,
-    minimum_os_version = IOS_MINIMUM_OS_VERSION,
-    provisioning_profile = ":profile",
-    tags = ["manual"],
-    version = "//:app_version",
-    deps = [
-        "//:app_framework",
-        # Native-asset frameworks, matching //:app_bazel_runner. Declared in
-        # the root BUILD but easy to leave unwired: it still builds and renders,
-        # then fails every native-asset call at runtime because dyld cannot
-        # resolve the framework-relative path the manifest records.
-        "//:app_native_frameworks",
-        "//:bazel_runner_lib",
-    ],
 )
