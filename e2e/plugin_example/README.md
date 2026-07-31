@@ -16,4 +16,10 @@ Per-platform bundle targets: `:plugin_macos`, `:plugin_ios`, `:plugin_android`, 
 
 ## Adding more pub plugins
 
-Drop them into `pubspec.yaml`, regenerate `pubspec.lock` with `flutter pub get`, add the `@deps//:<pkg>` to your `flutter_application.deps`. Auto-detection handles the common SwiftPM / `linux/` / `windows/` / `android/src/main/` layouts. When a plugin's layout is non-standard, supply an `ext/` overlay (see `flutter.plugin_overlays(...)` in `MODULE.bazel` for user roots).
+Drop them into `pubspec.yaml`, regenerate `pubspec.lock` with
+
+```sh
+bazel run @rules_flutter//flutter:pub -- get
+```
+
+then add the `@deps//:<pkg>` to your `flutter_application.deps`. Use that target rather than a `flutter pub get` from `PATH`: pub's solver takes the running SDK's version as a constraint, so a Flutter older than the pinned toolchain silently pins older packages into a lock that still looks valid (see the README's "Regenerating `pubspec.lock`"). Auto-detection handles the common SwiftPM / `linux/` / `windows/` / `android/src/main/` layouts. When a plugin's layout is non-standard, supply an `ext/` overlay (see `flutter.plugin_overlays(...)` in `MODULE.bazel` for user roots).

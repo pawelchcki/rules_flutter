@@ -10,6 +10,7 @@ load("//flutter/private:flutter_android_engine_repo.bzl", "flutter_android_engin
 load("//flutter/private:flutter_cross_repo.bzl", "flutter_cross_compilation_repo")
 load("//flutter/private:flutter_desktop_cross_repo.bzl", "flutter_desktop_cross_repo")
 load("//flutter/private:flutter_desktop_engine_repo.bzl", "flutter_desktop_engine_repo")
+load("//flutter/private:flutter_dev_root_repo.bzl", "flutter_dev_root_repo")
 load("//flutter/private:flutter_ios_engine_repo.bzl", "flutter_ios_engine_repo")
 load("//flutter/private:flutter_linux_sysroot_repo.bzl", "flutter_linux_sysroot_repo")
 load("//flutter/private:flutter_macos_engine_repo.bzl", "flutter_macos_engine_repo")
@@ -276,6 +277,14 @@ def flutter_register_toolchains(name, **kwargs):
     flutter_version = kwargs["flutter_version"]
     meta = FLUTTER_VERSIONS[flutter_version]
     checksums = ARTIFACT_CHECKSUMS.get(flutter_version, {})
+
+    # FLUTTER_ROOT-shaped tree behind `@rules_flutter//flutter:pub`. Lazily
+    # fetched: nothing in a normal build references it.
+    flutter_dev_root_repo(
+        name = name + "_dev_root",
+        flutter_version = flutter_version,
+        engine_revision = meta.engine_revision,
+    )
 
     # Host platform repos.
     for platform, host_meta in HOST_PLATFORMS.items():

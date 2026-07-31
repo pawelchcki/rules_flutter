@@ -58,6 +58,19 @@ bzl_library(
 )
 
 bzl_library(
+    name = "flutter_dev_root_repo",
+    srcs = ["flutter_dev_root_repo.bzl"],
+    visibility = ["//flutter:__subpackages__"],
+)
+
+bzl_library(
+    name = "flutter_pub",
+    srcs = ["flutter_pub.bzl"],
+    visibility = ["//flutter:__subpackages__"],
+    deps = ["@rules_dart//dart:utils"],
+)
+
+bzl_library(
     name = "flutter_android_application",
     srcs = ["flutter_android_application.bzl"],
     visibility = ["//flutter:__subpackages__"],
