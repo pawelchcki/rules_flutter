@@ -978,9 +978,11 @@ Once the channel is up:
 | Endpoint | Verb | Purpose |
 | --- | --- | --- |
 | `/command?token=<token>` | `POST` | Run a machine-protocol method against a running session. Body: `{"method":"app.<X>", "params":{"appId":"...", ...}}`. |
-| `/sessions/{appId}/screenshot/flutter?token=<token>` | `GET` | PNG of the Flutter widget tree (`_flutter.screenshot` via VM service). |
-| `/sessions/{appId}/screenshot/native?token=<token>` | `GET` | PNG of the native window (`screencapture` / `scrot` / `adb screencap` / etc.). |
+| `/sessions/{appId}/screenshot/flutter?token=<token>` | `GET` | PNG of the Flutter widget tree (`_flutter.screenshot` via VM service). **Not available on iOS or web** — see below. |
+| `/sessions/{appId}/screenshot/native?token=<token>` | `GET` | PNG of the app as the platform sees it (`screencapture` / `scrot` / `simctl io screenshot` / `adb screencap` / CDP). Works on every device. |
 | `/sessions/{appId}/logs?token=<token>` | `GET` | The app's console output, from a bounded ring buffer. See below. |
+
+**Which screenshot.** `screenshot/flutter` captures only the widget tree, with no OS chrome, by asking the engine — but the engine cannot encode a compressed screenshot under **Impeller**, and there is no engine screenshot on web at all. iOS (always Impeller) and web therefore answer `501` naming `screenshot/native`, rather than a `500` that reads as transient; elsewhere, an app that renders with Impeller gets the same pointer attached to the engine's own error. `screenshot/native` is the one that works everywhere.
 
 **Reading logs.** `/logs` is a cursor-polling endpoint rather than a stream: there is no long-lived connection, and a caller reads exactly as much as it asks for.
 
@@ -997,12 +999,16 @@ Once the channel is up:
 # Tail, then poll forward.
 curl -s "$URI/sessions/$APP/logs?token=$T"
 # {"lines":[{"i":812,"t":"flutter: meter -18dB","err":false}],
-#  "nextCursor":813,"missed":0,"dropped":0,"closed":false}
+#  "nextCursor":813,"launch":1,"missed":0,"dropped":0,"closed":false}
 
 curl -s "$URI/sessions/$APP/logs?token=$T&since=813"
 ```
 
-`err` marks lines from an error channel. `missed` is non-zero when the requested cursor had already been evicted, so a poller learns it has a gap instead of reading a short page as though it were complete; `dropped` is the total evicted over the run. `closed` turns true once the app's output source has ended — no further lines can arrive, so a poll loop can stop. The buffer survives the app's exit, so a crashed app's final output is still readable.
+`err` marks lines that arrived on an error channel — the process's stderr, a VM-service `Stderr` event, `console.error`. It is a *channel*, not a severity: platforms that hand the whole device log over one stream (iOS via `devicectl`/`simctl`, Android via `logcat`) deliver engine `[ERROR:…]` lines with `err:false`, so match on the text when you care about engine errors there.
+
+`missed` is non-zero when the requested cursor had already been evicted, so a poller learns it has a gap instead of reading a short page as though it were complete; `dropped` is the total evicted over the run. `closed` turns true once the app's output source has ended — no further lines can arrive, so a poll loop can stop. The buffer survives the app's exit, so a crashed app's final output is still readable.
+
+`launch` is which launch of the app the page came from: `1` for the original, one more for each relaunch (see `app.restart` below). Each launch buffers its own output from zero, so a cursor only means anything within one launch — when `launch` changes, drop your cursor and re-tail.
 
 App-driving methods (proxied to the agent extensions registered from the generated plugin registrant, which the engine invokes before `main()` on every launch — so they survive hot restart):
 
@@ -1012,7 +1018,17 @@ App-driving methods (proxied to the agent extensions registered from the generat
 
 Lifecycle methods: `app.hotReload`, `app.restart`, `app.stop`, `daemon.shutdown`.
 
-**Selecting a widget.** Methods that target a widget (`tap`, `longPress`, `doubleTap`, `drag`, `getRect`, `getText`, `scrollIntoView`, `waitFor`, `waitForAbsent`) take **exactly one** selector — mirroring `flutter_driver`'s finder vocabulary:
+**Restarts that relaunch.** A hot restart swaps Dart code into the running process, which cannot replace a native library it has already `dlopen`ed. So `app.restart` first rebuilds the app and, when the bundle's loose native libraries (`native_deps`) changed, relaunches the process instead of restarting the isolate:
+
+```json
+{"message":"Restart relaunched the app: native libraries changed (…). …",
+ "relaunched":true,"nativeLibsChanged":["…/libmul.dylib"],
+ "launch":{"<appId>":2},"ready":true}
+```
+
+The channel is a property of the *run*, not of the app process: the port, the token and the `appId` are unchanged, and there is no second banner because none is needed — keep using the ones you started with. The machine protocol re-emits `app.debugPort` and `app.started` for the replacement process. `ready` says the relaunched app rendered a first frame before the response returned, so its service extensions are registered and the next `app.*` call will land; a `false` means that wait timed out, not that the app is broken. The one thing that does not carry over is `/logs`: the new process buffers its output from zero, so compare `launch` and re-tail. Only `app.stop` and `daemon.shutdown` end a session.
+
+**Selecting a widget.** Methods that target a widget (`tap`, `longPress`, `doubleTap`, `drag`, `getRect`, `getText`, `enterText`, `scrollIntoView`, `waitFor`, `waitForAbsent`) take **exactly one** selector — mirroring `flutter_driver`'s finder vocabulary:
 
 | param | matches |
 | --- | --- |
@@ -1022,7 +1038,12 @@ Lifecycle methods: `app.hotReload`, `app.restart`, `app.stop`, `daemon.shutdown`
 | `type` | a widget whose runtime type name equals the string (e.g. `ElevatedButton`) |
 | `semanticsLabel` | a widget whose semantics label equals the string |
 
-Passing zero or more than one selector returns a clear error. Other params: `durationMs` (longPress/drag/scrollIntoView), `dx`/`dy` (drag/scrollIntoView), `scrollableKey` (scrollIntoView, `ValueKey` only), `text` (enterText), `timeoutMs`.
+Passing zero or more than one selector returns a clear error. Other params: `durationMs` (longPress/drag/scrollIntoView), `dx`/`dy` (drag/scrollIntoView), `scrollableKey` (scrollIntoView, `ValueKey` only), `timeoutMs`.
+
+A selector reaches the same distance for every method: put the `Key` on the widget you would point at — the `Chip`, the `ListTile`, the button — not on the `Text` or `EditableText` it happens to build.
+
+- **`getText`** returns the text of the first text-bearing descendant of the match in pre-order (`Text`, including `Text.rich`; `RichText`; `EditableText`), and lists every one of them in `texts` — so a container holding two strings is visible as two rather than silently reported as its first. `{"text":"Increment (agent)","texts":["Increment (agent)"]}`.
+- **`enterText`** takes `text` as the string to type, which is why it is the one method whose selector vocabulary excludes the `text` selector: `key`, `tooltip`, `type` and `semanticsLabel` apply. With a selector it focuses the first `EditableText` under the match and types into it — no preceding `tap` needed — and echoes what it typed into: `{"enteredText":"hi","into":"ValueKey(emailField)"}`. With no selector it types into whatever is focused (`flutter_driver`'s model), reporting `"into":"focused"`.
 
 **Settling and timeouts.** After dispatching input, interaction methods wait until the app is idle (no animations in flight) before returning, so a follow-up `getRect`/`getText` sees post-action layout — the same model as `flutter_driver`. The wait is bounded by `timeoutMs` (default 10000); if the app can't settle within it — e.g. the window is minimized/occluded so the embedder has paused vsync — the method returns a `TimeoutException` error rather than blocking forever. The input is still delivered.
 

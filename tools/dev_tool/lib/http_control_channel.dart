@@ -199,6 +199,25 @@ class HttpControlChannel {
       return;
     }
 
+    final native = '/sessions/${Uri.encodeComponent(appId)}/screenshot/native';
+
+    // Refuse up front where the capture can never work, rather than passing
+    // an engine error back as a 500 that reads as transient. `_flutter.
+    // screenshot` cannot encode under Impeller — every iOS run — and has no
+    // web implementation at all.
+    if (!session.device.supportsFlutterScreenshot) {
+      request.response.statusCode = HttpStatus.notImplemented;
+      request.response.headers.contentType = ContentType.json;
+      request.response.write(json.encode({
+        'error': '_flutter.screenshot cannot capture on ${session.device.name} '
+            '(the renderer there cannot encode a compressed screenshot); this '
+            'will not succeed on a retry. Use GET $native, which captures the '
+            'same app through the platform.',
+      }));
+      await request.response.close();
+      return;
+    }
+
     if (session.vmClient == null) {
       request.response.statusCode = HttpStatus.serviceUnavailable;
       request.response.headers.contentType = ContentType.json;
@@ -208,7 +227,24 @@ class HttpControlChannel {
       return;
     }
 
-    final bytes = await session.vmClient!.screenshotBytes();
+    final List<int> bytes;
+    try {
+      bytes = await session.vmClient!.screenshotBytes();
+    } catch (e) {
+      // A device we believe can do this still failed. The overwhelmingly
+      // common cause is an app rendering with Impeller, so say so and name
+      // the endpoint that works instead of leaving the engine's bare
+      // "Could not capture image screenshot" to be read as a retryable fault.
+      request.response.statusCode = HttpStatus.internalServerError;
+      request.response.headers.contentType = ContentType.json;
+      request.response.write(json.encode({
+        'error': '$e (an app rendering with Impeller cannot produce a '
+            'compressed screenshot; GET $native captures it through the '
+            'platform instead)',
+      }));
+      await request.response.close();
+      return;
+    }
     request.response.statusCode = HttpStatus.ok;
     request.response.headers.contentType = ContentType('image', 'png');
     request.response.add(bytes);
@@ -322,6 +358,12 @@ class HttpControlChannel {
           {'i': line.index, 't': line.text, 'err': line.isError},
       ],
       'nextCursor': page.nextCursor,
+      // Which launch of this app the page came from: 1 for the original, one
+      // more for each relaunch (a restart whose native libraries changed
+      // replaces the process). Every launch buffers its own output from zero,
+      // so a cursor is only meaningful within one launch — a poller that sees
+      // this change must drop its cursor and re-tail.
+      'launch': session.launch,
       // Lines lost between the requested cursor and this page…
       'missed': page.missed,
       // …versus lines evicted over the whole run.

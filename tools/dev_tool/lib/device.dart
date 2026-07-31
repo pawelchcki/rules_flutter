@@ -156,6 +156,17 @@ abstract class Device {
         'Screenshot not supported on $name without VM service');
   }
 
+  /// Whether `_flutter.screenshot` — the VM-service capture of just the
+  /// widget tree — can ever succeed on this device.
+  ///
+  /// The engine cannot encode a compressed screenshot under Impeller, so the
+  /// RPC fails with a bare "Could not capture image screenshot" wherever
+  /// Impeller renders; on iOS and on web there is no other renderer to fall
+  /// back to. Declared per device rather than inferred from a failure, so a
+  /// caller is told the request can never work — and which endpoint does —
+  /// instead of getting a 500 that reads as transient and invites a retry.
+  bool get supportsFlutterScreenshot => true;
+
   /// Display name for this device.
   String get name;
 
@@ -1194,6 +1205,11 @@ class IOSSimulatorDevice extends Device {
     await instance.logs.close();
   }
 
+  /// iOS renders with Impeller, which cannot encode a compressed screenshot,
+  /// so `_flutter.screenshot` never succeeds here.
+  @override
+  bool get supportsFlutterScreenshot => false;
+
   /// iOS Simulator uses `simctl io screenshot` because `_flutter.screenshot`
   /// returns "Could not capture image screenshot" on the Simulator rendering
   /// pipeline. Waits for the first frame via VM service before capturing.
@@ -2007,6 +2023,11 @@ return False
     await instance.logs.close();
   }
 
+  /// Impeller is always the renderer on iOS, and it cannot encode a
+  /// compressed screenshot, so `_flutter.screenshot` never succeeds here.
+  @override
+  bool get supportsFlutterScreenshot => false;
+
   /// iOS physical device screenshot via pymobiledevice3 DVT service.
   ///
   /// `_flutter.screenshot` does not work on iOS because the Impeller renderer
@@ -2365,6 +2386,12 @@ class WebDevice extends Device {
     instance.process.kill();
     await instance.logs.close();
   }
+
+  /// `_flutter.screenshot` is an engine RPC with no web implementation — the
+  /// browser is the compositor. CDP's `Page.captureScreenshot` (the `native`
+  /// endpoint) is the capture that exists here.
+  @override
+  bool get supportsFlutterScreenshot => false;
 
   @override
   Future<void> screenshot(AppInstance instance, String outputPath,

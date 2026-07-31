@@ -172,6 +172,29 @@ void main() {
         expect(response.statusCode, HttpStatus.notFound);
         await response.drain<void>();
       });
+
+      // On iOS and web this capture can never succeed — Impeller cannot
+      // encode a compressed screenshot, and there is no engine screenshot on
+      // web at all. Answering with a 500 carrying the engine's bare "Could
+      // not capture image screenshot" made a permanent condition read as a
+      // transient one, and the endpoint that does work was named nowhere.
+      test('refuses where the capture can never work, naming the alternative',
+          () async {
+        sessions['app1'] = DeviceSession(
+          device: _NoFlutterScreenshotDevice(),
+          appInstance: AppInstance(process: _StubProcess()),
+          vmClient: null,
+          appId: 'app1',
+        );
+
+        final response = await _get('/sessions/app1/screenshot/flutter');
+        final body = await utf8.decoder.bind(response).join();
+
+        expect(response.statusCode, HttpStatus.notImplemented,
+            reason: 'not a server fault and not worth retrying');
+        expect(body, contains('/sessions/app1/screenshot/native'));
+        expect(body, contains('will not succeed on a retry'));
+      });
     });
 
     group('GET /sessions/{appId}/screenshot/native', () {
@@ -389,6 +412,25 @@ void main() {
         expect((lines[1] as Map)['err'], isTrue);
       });
 
+      test('reports which launch of the app the page came from', () async {
+        seedSession('app1', count: 2);
+        final before = await getLogs('since=0');
+        expect(before['launch'], 1);
+
+        // A relaunch (restart with changed native libraries) starts a fresh
+        // buffer numbered from zero, so the cursor a poller is holding now
+        // points into a process that no longer exists. `launch` is how it
+        // learns that instead of silently re-reading unrelated lines.
+        final session = sessions['app1']!;
+        final relaunchedLogs = AppLogStream()..add('after relaunch');
+        await session.relaunch(() async =>
+            AppInstance(process: _StubProcess(), logs: relaunchedLogs));
+
+        final after = await getLogs('since=${before['nextCursor']}');
+        expect(after['launch'], 2);
+        expect(textsOf(await getLogs('since=0')), ['after relaunch']);
+      });
+
       test('reports closed once the app output source has ended', () async {
         seedSession('app1', count: 1);
         expect((await getLogs('since=0'))['closed'], isFalse);
@@ -451,6 +493,16 @@ class _StubDevice extends Device {
 
   @override
   Future<void> stop(AppInstance instance) async {}
+}
+
+/// A device that declares `_flutter.screenshot` unavailable — what iOS and
+/// web do.
+class _NoFlutterScreenshotDevice extends _StubDevice {
+  @override
+  String get name => 'iOS Simulator';
+
+  @override
+  bool get supportsFlutterScreenshot => false;
 }
 
 class _StubProcess implements Process {
