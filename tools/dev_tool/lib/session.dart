@@ -209,7 +209,6 @@ Future<void> runInteractiveSession({
   KeyboardReader? keyboardReader,
   void Function(bool echoMode)? setEchoMode,
   void Function(bool lineMode)? setLineMode,
-  Future<void> Function(String url)? openBrowser,
   Future<void>? shutdownSignal,
 }) async {
   log ??= (msg) => stdout.writeln(msg);
@@ -223,23 +222,22 @@ Future<void> runInteractiveSession({
     for (final session in sessions) {
       unawaited(session.debugReady.then((_) async {
         try {
-          // Point DevTools at the DDS endpoint, not the raw VM service: DDS
-          // multiplexes clients, so DevTools attaching does not evict our own
-          // vmClient.
-          final dds = session.dds!;
-          final devtools = await _launchDevTools(dartExecutable, dds.uri!);
-          session.devToolsProcess = devtools.process;
-          if (devtools.serverUrl == null) return;
-          final url =
-              devToolsConnectUri(devtools.serverUrl!, dds.wsUri!).toString();
-          session.devToolsUrl = url;
+          // Web arrives with a URL already: DWDS runs the DDS that serves
+          // DevTools, and hands it over on the debug connection. Native owns
+          // its DDS but not a DevTools server, so it spawns one and points it
+          // at the DDS endpoint — never at the raw VM service, because DDS
+          // multiplexing is what stops DevTools evicting our own vmClient.
+          var url = session.devToolsUrl;
+          if (url == null) {
+            final dds = session.dds!;
+            final devtools = await _launchDevTools(dartExecutable, dds.uri!);
+            session.devToolsProcess = devtools.process;
+            if (devtools.serverUrl == null) return;
+            url = devToolsConnectUri(devtools.serverUrl!, dds.wsUri!).toString();
+            session.devToolsUrl = url;
+          }
 
           logDevTools('DevTools at $url (${session.device.name})');
-          if (openBrowser != null) {
-            await openBrowser(url);
-          } else {
-            await _openInBrowser(url);
-          }
         } catch (e) {
           // Non-fatal: DevTools is optional.
           stderr.writeln('Warning: Could not launch DevTools for ${session.device.name}: $e');
@@ -560,16 +558,5 @@ Future<({Process process, String? serverUrl})> _launchDevTools(
 
   final serverUrl = await completer.future;
   return (process: process, serverUrl: serverUrl);
-}
-
-/// Open a URL in the default browser.
-Future<void> _openInBrowser(String url) async {
-  if (Platform.isMacOS) {
-    await Process.run('open', [url]);
-  } else if (Platform.isLinux) {
-    await Process.run('xdg-open', [url]);
-  } else if (Platform.isWindows) {
-    await Process.run('cmd', ['/c', 'start', url]);
-  }
 }
 
