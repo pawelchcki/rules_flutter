@@ -85,6 +85,7 @@ bzl_library(
     deps = [
         "//flutter/private:flutter_ios_application",
         "//flutter/private:flutter_ios_registrant",
+        "//flutter/private:flutter_plist_merge",
         "//flutter/private:runner_module",
     ],
 )

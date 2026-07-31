@@ -66,12 +66,24 @@ load("//flutter/private:flutter_apple_plugin_library.bzl", _flutter_apple_plugin
 load("//flutter/private:flutter_apple_plugins_aggregator.bzl", _flutter_apple_plugins_aggregator = "flutter_apple_plugins_aggregator")
 load("//flutter/private:flutter_ios_application.bzl", _flutter_ios_application = "flutter_ios_application", _flutter_ios_framework_rule = "flutter_ios_framework", _flutter_ios_native_frameworks_rule = "flutter_ios_native_frameworks", _flutter_ios_privacy_manifests_rule = "flutter_ios_privacy_manifests")
 load("//flutter/private:flutter_ios_registrant.bzl", _flutter_ios_registrant_rule = "flutter_ios_registrant")
+load("//flutter/private:flutter_plist_merge.bzl", _flutter_entitlements_merge = "flutter_entitlements_merge", _flutter_plist_merge = "flutter_plist_merge")
 load("//flutter/private:runner_module.bzl", "runner_module_name")
 
 # Re-export constants for user BUILD files.
 IOS_MINIMUM_OS_VERSION = _IOS_MINIMUM_OS_VERSION
 IOS_DEFAULT_LAUNCH_STORYBOARD = "@rules_flutter//flutter/private/runners/ios:Base.lproj/LaunchScreen.storyboard"
 IOS_DEFAULT_MAIN_STORYBOARD = "@rules_flutter//flutter/private/runners/ios:Base.lproj/Main.storyboard"
+
+# Merges entitlement additions into a base entitlements file — the additive
+# seam rules_apple's single-file `entitlements` attribute does not provide.
+# Wired into flutter_ios_app as `additional_entitlements`; exposed for Tier 2
+# users assembling an ios_application themselves.
+flutter_entitlements_merge = _flutter_entitlements_merge
+
+# The Dart VM service's Info.plist keys, merged into non-release builds so
+# the engine can advertise the service over mDNS. Matches flutter_tools'
+# xcode_backend.dart, which only adds them for non-release configurations.
+_DART_VM_SERVICE_PLIST = "@rules_flutter//flutter/private/runners/ios:DartVmServiceMdns.plist"
 
 def _engine_xcframework_select():
     """Selects the Flutter.xcframework engine for the active compilation mode.
@@ -307,6 +319,7 @@ def flutter_ios_app(
         version = None,
         launch_storyboard = None,
         entitlements = None,
+        additional_entitlements = [],
         resources = [],
         **kwargs):
     """Builds a Flutter iOS .app bundle from a flutter_application target.
@@ -318,6 +331,17 @@ def flutter_ios_app(
     Prerequisites — the package must contain:
         - `ios/Runner/*.swift` (AppDelegate, SceneDelegate, etc.)
     Generate these with: `flutter create --platforms=ios .`
+
+    Non-release builds carry two extra `Info.plist` keys —
+    `NSBonjourServices` and `NSLocalNetworkUsageDescription` — so the engine
+    can advertise the Dart VM service over mDNS, matching flutter_tools'
+    `xcode_backend.dart`. Release builds drop them, which is correct: they
+    exist for the debugger, not for the app. An app that needs iOS 14+ Local
+    Network Privacy for *itself* must declare `NSLocalNetworkUsageDescription`
+    (and its own `NSBonjourServices`) in `ios/Runner/Info.plist`, where it
+    survives into release; the macro merges the VM service keys into that
+    plist rather than beside it, so the app's own values win and its Bonjour
+    service list is preserved.
 
     Args:
         name: Target name (Bazel identifier). The runner's Swift module name
@@ -343,13 +367,26 @@ def flutter_ios_app(
             Runner.entitlements when capabilities are enabled in Xcode;
             its absence is a valid, capability-less app and the macro
             ships nothing rather than synthesizing a default.
+        additional_entitlements: Entitlement plist files merged into the
+            base entitlements in **every** compilation mode — the additive
+            seam for an app that needs one more `com.apple.security.*` key
+            without taking over `ios/Runner/Runner.entitlements`. A key the
+            base already declares with the same value is deduped; a
+            different value is a hard error naming the key and both files.
+            Works when the app ships no entitlements file at all, in which
+            case the additions become the entitlements.
         resources: Extra resources. Main.storyboard is wired separately,
             through the runner library, so that ibtool resolves its classes
             against the runner's module. Resources passed here are compiled
             against the app target's name instead, which is not a module any
             target produces — so a storyboard listed here cannot reference the
             runner's Swift classes (an `@objc` class name works regardless).
-        **kwargs: Passed through to ios_application.
+        **kwargs: Passed through to ios_application. The macro sets
+            `bundle_id`, `bundle_name`, `entitlements`, `families`,
+            `minimum_os_version`, `infoplists`, `version`,
+            `launch_storyboard`, `resources`, `deps` and `tags` itself, so
+            passing any of those here is a duplicate-keyword error — use the
+            named parameter instead.
     """
     display_name = app_name or name
     tags = kwargs.pop("tags", ["manual"])
@@ -372,6 +409,18 @@ def flutter_ios_app(
         )
         if runner_entitlements:
             entitlements = "ios/Runner/Runner.entitlements"
+
+    # Fold the app's own entitlement additions in. `base` may legitimately be
+    # None here: an iOS app without Xcode capabilities ships no entitlements
+    # file, and then the additions are the entitlements.
+    if additional_entitlements:
+        _flutter_entitlements_merge(
+            name = "__%s_entitlements" % name,
+            base = entitlements,
+            additions = additional_entitlements,
+            tags = tags,
+        )
+        entitlements = "__%s_entitlements" % name
 
     # -- Internal targets (all __{name}_ prefixed) --
 
@@ -500,10 +549,29 @@ def flutter_ios_app(
         else:
             actual_launch_storyboard = IOS_DEFAULT_LAUNCH_STORYBOARD
 
+    # 10b. Dart VM service keys for debug/profile builds — required for the
+    #      Flutter engine to register the VM service via mDNS. Matches
+    #      flutter_tools' xcode_backend.dart, which only adds them for
+    #      non-release configurations.
+    #
+    #      These are *merged into* the app's Info.plist rather than passed
+    #      beside it. rules_apple's plisttool hard-fails when two plists
+    #      declare the same key with different values, so an app declaring
+    #      its own NSLocalNetworkUsageDescription — the documented way to
+    #      request iOS 14+ Local Network Privacy, and the key a LAN app
+    #      needs in release — could not build in `-c dbg` at all. The
+    #      supplement merge keeps the app's own values and unions its
+    #      NSBonjourServices with `_dartVmService._tcp`.
+    _flutter_plist_merge(
+        name = "__%s_info_plist_dev" % name,
+        base = actual_info_plist,
+        additions = [_DART_VM_SERVICE_PLIST],
+        mode = "supplement",
+        output_basename = "Info.plist",
+        tags = tags,
+    )
+
     # 11. Final ios_application.
-    # Include supplementary plist for NSBonjourServices in debug/profile builds —
-    # required for the Flutter engine to register the Dart VM service via mDNS.
-    # Matches flutter_tools xcode_backend.dart which only adds this for non-release.
     ios_application(
         name = name,
         bundle_id = bundle_id,
@@ -511,11 +579,9 @@ def flutter_ios_app(
         entitlements = entitlements,
         families = families,
         minimum_os_version = minimum_os_version,
-        infoplists = [actual_info_plist] + select({
-            "@rules_flutter//flutter:release": [],
-            "//conditions:default": [
-                "@rules_flutter//flutter/private/runners/ios:DartVmServiceMdns.plist",
-            ],
+        infoplists = select({
+            "@rules_flutter//flutter:release": [actual_info_plist],
+            "//conditions:default": ["__%s_info_plist_dev" % name],
         }),
         version = version,
         launch_storyboard = actual_launch_storyboard,

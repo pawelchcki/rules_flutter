@@ -1,6 +1,7 @@
 load("@bazel_skylib//rules:build_test.bzl", "build_test")
 load("@rules_apple//apple:ios.bzl", "ios_application")
 load("@rules_apple//apple:versioning.bzl", "apple_bundle_version")
+load("@rules_dart//dart:defs.bzl", "dart_test")
 load("@rules_flutter//flutter:defs.bzl", "flutter_application")
 load(
     "@rules_flutter//flutter:ios.bzl",
@@ -206,6 +207,17 @@ build_test(
         ":app",
         ":app_second",
     ],
+)
+
+# Reads the Info.plist out of the built .ipa. Bazel's default fastbuild is
+# not `-c opt`, so this bundle carries the Dart VM service keys *and* the
+# app's own Local Network Privacy keys — the combination that used to fail
+# the build outright in rules_apple's plisttool.
+dart_test(
+    name = "verify_ios_info_plist_test",
+    data = [":app"],
+    main = "test/verify_ios_info_plist_test.dart",
+    target_compatible_with = ["@platforms//os:macos"],
 )
 
 build_test(
