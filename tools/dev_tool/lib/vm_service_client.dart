@@ -274,8 +274,12 @@ class VmServiceClient {
         );
         return true;
       });
-    } catch (e) {
-      stderr.writeln('Hot reload failed: $e');
+    } catch (e, stack) {
+      // With the stack: the interesting failures here are unchecked nulls and
+      // RPC shape mismatches, and "Null check operator used on a null value"
+      // alone names neither the call nor the field.
+      _lastReloadError = '$e';
+      stderr.writeln('Hot reload failed: $e\n$stack');
       return false;
     }
   }
@@ -373,8 +377,9 @@ class VmServiceClient {
       // reloads/screenshots target the new live isolate.
       await _refreshMainIsolate();
       return ok;
-    } catch (e) {
-      stderr.writeln('Hot restart failed: $e');
+    } catch (e, stack) {
+      _lastReloadError = '$e';
+      stderr.writeln('Hot restart failed: $e\n$stack');
       return false;
     }
   }
