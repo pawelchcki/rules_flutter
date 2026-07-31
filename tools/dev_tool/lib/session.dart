@@ -197,6 +197,10 @@ Future<void> runInteractiveSession({
   required MachineProtocol protocol,
   CommandRunner? commandRunner,
   required bool devToolsEnabled,
+  /// Dart binary from the Flutter toolchain, used to serve DevTools. Required
+  /// even when [devToolsEnabled] is false so the caller resolves it once,
+  /// rather than each launch site re-deriving it.
+  required String dartExecutable,
   bool hotReloadEnabled = true,
   bool watchEnabled = true,
   ReloadStrategy? reloadStrategy,
@@ -219,19 +223,22 @@ Future<void> runInteractiveSession({
     for (final session in sessions) {
       unawaited(session.debugReady.then((_) async {
         try {
-          // Point DevTools at the DDS endpoint, not the raw VM service. DDS
-          // multiplexes clients, so DevTools connecting here does NOT evict
-          // our own vmClient (the bug that used to force --no-devtools).
-          final devtools = await _launchDevTools(session.dds!.uri!);
+          // Point DevTools at the DDS endpoint, not the raw VM service: DDS
+          // multiplexes clients, so DevTools attaching does not evict our own
+          // vmClient.
+          final dds = session.dds!;
+          final devtools = await _launchDevTools(dartExecutable, dds.uri!);
           session.devToolsProcess = devtools.process;
-          if (devtools.url != null) {
-            session.devToolsUrl = devtools.url;
-            logDevTools('DevTools at ${devtools.url} (${session.device.name})');
-            if (openBrowser != null) {
-              await openBrowser(devtools.url!);
-            } else {
-              await _openInBrowser(devtools.url!);
-            }
+          if (devtools.serverUrl == null) return;
+          final url =
+              devToolsConnectUri(devtools.serverUrl!, dds.wsUri!).toString();
+          session.devToolsUrl = url;
+
+          logDevTools('DevTools at $url (${session.device.name})');
+          if (openBrowser != null) {
+            await openBrowser(url);
+          } else {
+            await _openInBrowser(url);
           }
         } catch (e) {
           // Non-fatal: DevTools is optional.
@@ -495,10 +502,41 @@ Future<void> _performHotReloadAll({
   }
 }
 
-/// Launch dart devtools and return the process and serving URL.
-Future<({Process process, String? url})> _launchDevTools(Uri vmServiceUri) async {
+/// The DevTools server root announced by `dart devtools`, or null for a line
+/// that is not that announcement.
+///
+/// The announcement ends a sentence — `Serving DevTools at
+/// http://127.0.0.1:9100.` — so the match is anchored to end of line and the
+/// period is left outside the capture. Including it produces a URL that
+/// `Uri.parse` rejects with `FormatException: Invalid port`.
+String? parseDevToolsUrl(String line) =>
+    RegExp(r'Serving DevTools at (http\S+?)\.?\s*$').firstMatch(line)?.group(1);
+
+/// The URL that opens DevTools already attached to [vmServiceWsUri].
+///
+/// `dart devtools` announces only its own server root; opening that lands on
+/// the "Connect to a Running App" form with nothing connected. DevTools reads
+/// the target VM service from the `uri` query parameter, which is the same
+/// shape DDS itself hands out (`…/devtools/?uri=ws://…/ws`).
+///
+/// Must be the **ws** URI: DevTools dials it as a WebSocket.
+Uri devToolsConnectUri(String serverUrl, Uri vmServiceWsUri) =>
+    Uri.parse(serverUrl).replace(
+      queryParameters: {'uri': vmServiceWsUri.toString()},
+    );
+
+/// Start `dart devtools` and return the process plus its announced server root.
+///
+/// [dartExecutable] is the Dart binary from the Flutter toolchain. Resolving it
+/// rather than spawning a bare `dart` keeps the DevTools we launch tied to the
+/// SDK the app was built with, and fails loudly when the toolchain is missing
+/// instead of picking up whatever happens to be on `PATH`.
+Future<({Process process, String? serverUrl})> _launchDevTools(
+  String dartExecutable,
+  Uri vmServiceUri,
+) async {
   final process = await Process.start(
-    'dart',
+    dartExecutable,
     ['devtools', '--no-launch-browser', '--vm-uri=$vmServiceUri'],
   );
 
@@ -513,15 +551,15 @@ Future<({Process process, String? url})> _launchDevTools(Uri vmServiceUri) async
       .transform(const SystemEncoding().decoder)
       .transform(const LineSplitter())
       .listen((line) {
-    final match = RegExp(r'Serving DevTools at (http\S+)').firstMatch(line);
-    if (match != null && !completer.isCompleted) {
+    final url = parseDevToolsUrl(line);
+    if (url != null && !completer.isCompleted) {
       timeout?.cancel();
-      completer.complete(match.group(1));
+      completer.complete(url);
     }
   });
 
-  final url = await completer.future;
-  return (process: process, url: url);
+  final serverUrl = await completer.future;
+  return (process: process, serverUrl: serverUrl);
 }
 
 /// Open a URL in the default browser.

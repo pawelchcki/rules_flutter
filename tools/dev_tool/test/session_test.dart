@@ -12,6 +12,69 @@ import 'package:test/test.dart';
 import 'fakes.dart';
 
 void main() {
+  group('parseDevToolsUrl', () {
+    // The line `dart devtools` actually prints. The period ends the sentence;
+    // capturing it yields a URL Uri.parse rejects, and that value is what gets
+    // opened in a browser.
+    test('leaves the sentence-ending period out of the URL', () {
+      const line = 'Serving DevTools at http://127.0.0.1:9100.';
+      expect(parseDevToolsUrl(line), 'http://127.0.0.1:9100');
+      expect(() => Uri.parse(parseDevToolsUrl(line)!), returnsNormally);
+    });
+
+    test('accepts the announcement without a trailing period', () {
+      expect(parseDevToolsUrl('Serving DevTools at http://127.0.0.1:9100'),
+          'http://127.0.0.1:9100');
+    });
+
+    test('keeps a path intact', () {
+      expect(parseDevToolsUrl('Serving DevTools at http://127.0.0.1:9100/abc/.'),
+          'http://127.0.0.1:9100/abc/');
+    });
+
+    test('declines lines that are not the announcement', () {
+      for (final line in const [
+        '',
+        'Hit ctrl-c to terminate the server.',
+        'Serving the Dart Tooling Daemon at ws://127.0.0.1:1234/abc.',
+      ]) {
+        expect(parseDevToolsUrl(line), isNull, reason: 'should decline "$line"');
+      }
+    });
+  });
+
+  group('devToolsConnectUri', () {
+    // Opening the bare server root lands on DevTools' "Connect to a Running
+    // App" form — it has no idea which VM service to attach to. The target is
+    // carried in the `uri` query parameter.
+    final ws = Uri.parse('ws://127.0.0.1:51231/DoJ9hE44ZWc=/ws');
+
+    test('carries the VM service ws URI in the uri query parameter', () {
+      final connect = devToolsConnectUri('http://127.0.0.1:9100', ws);
+
+      expect(connect.queryParameters['uri'], ws.toString());
+      expect(connect.host, '127.0.0.1');
+      expect(connect.port, 9100);
+    });
+
+    test('percent-encodes the nested URI so it survives as one parameter', () {
+      final connect = devToolsConnectUri('http://127.0.0.1:9100', ws);
+
+      // The `:` and `/` of the inner URI must not be readable as structure of
+      // the outer one; round-tripping is what proves it.
+      expect(connect.toString(), contains('uri=ws%3A%2F%2F'));
+      expect(Uri.parse(connect.toString()).queryParameters['uri'],
+          ws.toString());
+    });
+
+    test('preserves a served path prefix', () {
+      final connect = devToolsConnectUri('http://127.0.0.1:9100/devtools/', ws);
+
+      expect(connect.path, '/devtools/');
+      expect(connect.queryParameters['uri'], ws.toString());
+    });
+  });
+
   group('DeviceSession', () {
     test('stores device, appInstance, vmClient, and appId', () {
       final device = MacOSDevice();
@@ -109,6 +172,7 @@ void main() {
           workspace: tmpDir.path,
           protocol: protocol,
           devToolsEnabled: false,
+        dartExecutable: 'dart',
           log: (msg) => logs.add(msg),
           keyboardReader: () => keyboardController.stream,
           setEchoMode: (_) {},
@@ -139,6 +203,7 @@ void main() {
         workspace: Directory.systemTemp.path,
         protocol: protocol,
         devToolsEnabled: false,
+        dartExecutable: 'dart',
         hotReloadEnabled: true,
         watchEnabled: false,
         log: (msg) => logs.add(msg),

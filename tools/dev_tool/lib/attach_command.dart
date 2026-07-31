@@ -224,10 +224,12 @@ class AttachCommand {
       });
     }
 
-    // Resolve toolchain and start frontend server.
+    // Resolved before the try so the interactive session below can serve
+    // DevTools from the toolchain's Dart, not whatever is on PATH.
+    final toolchain = await resolveToolchainPaths(target, workspace: workspace);
+
+    // Start the frontend server.
     try {
-      final toolchain =
-          await resolveToolchainPaths(target, workspace: workspace);
       if (packageConfigPath == null || packageConfigPath.isEmpty) {
         throw StateError(
             'Could not find package_config.json in build outputs for $target.');
@@ -293,6 +295,7 @@ class AttachCommand {
           protocol: protocol,
           commandRunner: commandRunner,
           devToolsEnabled: devToolsEnabled,
+          dartExecutable: toolchain.dart,
           shutdownSignal: shutdownRequested.future,
         );
       } else {

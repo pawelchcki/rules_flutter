@@ -151,6 +151,12 @@ class RunCommand {
     // spawns per `flutter_bazel run`.
     final workspace = await findWorkspaceRoot();
 
+    // Resolved once for the whole run. The native block below needs the
+    // frontend server and dartaotruntime out of it, and DevTools needs the
+    // toolchain's `dart` on every platform — including web, which otherwise
+    // never resolves a toolchain at all.
+    final toolchain = await resolveToolchainPaths(target, workspace: workspace);
+
     // Shared state for cleanup.
     final sessions = <DeviceSession>[];
     FrontendServer? frontendServer;
@@ -1041,8 +1047,6 @@ class RunCommand {
             'text': 'Resolving toolchain paths for $target...',
             'target': target,
           });
-          final toolchain =
-              await resolveToolchainPaths(target, workspace: workspace);
           // Build the flutter_application target directly to materialize its
           // DefaultInfo — the hot-reload `_dev_config.json` + dev
           // `package_config.json`. The platform wrapper (`:app_macos`) consumes
@@ -1360,6 +1364,7 @@ class RunCommand {
             protocol: protocol,
             commandRunner: commandRunner,
             devToolsEnabled: devToolsEnabled,
+            dartExecutable: toolchain.dart,
             hotReloadEnabled: false,
             watchEnabled: false,
             shutdownSignal: shutdownRequested.future,
@@ -1383,6 +1388,7 @@ class RunCommand {
           protocol: protocol,
           commandRunner: commandRunner,
           devToolsEnabled: devToolsEnabled && !profileMode,
+          dartExecutable: toolchain.dart,
           watchEnabled: watchEnabled,
           reloadStrategy: reloadStrategy,
           resolver: reloadResolver,
