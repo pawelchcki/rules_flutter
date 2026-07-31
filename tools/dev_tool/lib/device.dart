@@ -406,10 +406,17 @@ class LinuxDevice extends Device {
 /// Windows desktop device.
 class WindowsDevice extends Device {
   final ProcessStarter _startProcess;
+  final Directory Function() _makeStagingDir;
+  Directory? _staged;
 
   WindowsDevice({
     ProcessStarter? startProcess,
-  }) : _startProcess = startProcess ?? _defaultStart;
+    Directory Function()? makeStagingDir,
+  })  : _startProcess = startProcess ?? _defaultStart,
+        _makeStagingDir = makeStagingDir ?? _defaultStagingDir;
+
+  static Directory _defaultStagingDir() =>
+      Directory.systemTemp.createTempSync('flutter_bazel_win_app');
 
   static Future<Process> _defaultStart(String exe, List<String> args) {
     return Process.start(exe, args, environment: {
@@ -428,11 +435,24 @@ class WindowsDevice extends Device {
 
   @override
   Future<AppInstance> launch(String appPath, {AppLogListener? onLog}) async {
+    // Run from a copy, never from `bazel-out` itself.
+    //
+    // Windows holds an exclusive lock on a running executable image, so while
+    // the app is up, bazel cannot replace `bin/app/app.exe` — and the bundling
+    // action does exactly that on any rebuild. `app.restart` rebuilds before
+    // it swaps the kernel in, so every restart that follows a real source edit
+    // died at "failed to delete output files before executing action:
+    // ...app.exe (Permission denied)" and never reached the VM service. A
+    // restart with nothing to rebuild succeeded, which is what made this look
+    // intermittent. macOS and Linux let a running image be unlinked and
+    // replaced, so only Windows needs the copy.
+    final launchPath = _stage(appPath);
+
     // Bundle directories contain the executable at <dir>/<name>.exe.
-    String executable = appPath;
-    if (FileSystemEntity.isDirectorySync(appPath)) {
-      final dirName = p.basename(appPath);
-      executable = p.join(appPath, '$dirName.exe');
+    String executable = launchPath;
+    if (FileSystemEntity.isDirectorySync(launchPath)) {
+      final dirName = p.basename(launchPath);
+      executable = p.join(launchPath, '$dirName.exe');
     }
 
     final process = await _startProcess(executable, []);
@@ -440,6 +460,47 @@ class WindowsDevice extends Device {
     final vmServiceUri = await discoverVmServiceUri(logs);
     return AppInstance(
         process: process, vmServiceUri: vmServiceUri, logs: logs);
+  }
+
+  /// Copies the built bundle out of `bazel-out` and returns the copy's path.
+  ///
+  /// A bundle is a directory whose layout the runner depends on — it resolves
+  /// `data/flutter_assets` relative to its own executable — so the whole tree
+  /// is copied, not just the `.exe`. Each launch gets a fresh directory and
+  /// the previous one is removed, so a relaunch never runs yesterday's assets.
+  String _stage(String appPath) {
+    _clearStaging();
+    final staging = _makeStagingDir();
+    _staged = staging;
+
+    final source = FileSystemEntity.typeSync(appPath);
+    if (source != FileSystemEntityType.directory) {
+      final dest = p.join(staging.path, p.basename(appPath));
+      File(appPath).copySync(dest);
+      return dest;
+    }
+
+    final dest = Directory(p.join(staging.path, p.basename(appPath)))
+      ..createSync(recursive: true);
+    for (final entity in Directory(appPath).listSync(recursive: true)) {
+      final relative = p.relative(entity.path, from: appPath);
+      final target = p.join(dest.path, relative);
+      if (entity is Directory) {
+        Directory(target).createSync(recursive: true);
+      } else if (entity is File) {
+        Directory(p.dirname(target)).createSync(recursive: true);
+        entity.copySync(target);
+      }
+    }
+    return dest.path;
+  }
+
+  void _clearStaging() {
+    final staged = _staged;
+    _staged = null;
+    if (staged != null && staged.existsSync()) {
+      staged.deleteSync(recursive: true);
+    }
   }
 
   @override
@@ -450,6 +511,7 @@ class WindowsDevice extends Device {
     }
     await instance.process.exitCode;
     await instance.logs.close();
+    _clearStaging();
   }
 
   @override

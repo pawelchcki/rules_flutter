@@ -5,6 +5,7 @@ import 'dart:io';
 import 'package:flutter_bazel_dev_tool/device.dart';
 import 'package:flutter_bazel_dev_tool/mdns_vm_service_discovery.dart';
 import 'package:flutter_bazel_dev_tool/runfiles_helper.dart';
+import 'package:path/path.dart' as p;
 import 'package:test/test.dart';
 
 import 'fakes.dart';
@@ -959,6 +960,18 @@ void main() {
   // Parameterised over the three desktop devices because they share the launch
   // path and each one regressed identically.
   group('desktop app output forwarding', () {
+    // A real bundle on disk: WindowsDevice copies it out of bazel-out before
+    // launching, so a made-up path would fail there for reasons that have
+    // nothing to do with log forwarding.
+    late Directory bundleRoot;
+    setUp(() {
+      bundleRoot = Directory.systemTemp.createTempSync('desktop_launch_test');
+      Directory(p.join(bundleRoot.path, 'MyApp.app')).createSync();
+      File(p.join(bundleRoot.path, 'MyApp.app', 'MyApp.app.exe'))
+          .writeAsStringSync('exe');
+    });
+    tearDown(() => bundleRoot.deleteSync(recursive: true));
+
     /// Builds [device] with an injected [FakeProcess], drives it through a
     /// launch, and hands the test the live instance.
     Future<(AppInstance, FakeProcess)> launchWith(
@@ -968,7 +981,7 @@ void main() {
       final proc = FakeProcess();
       final device = build((exe, args) async => proc);
       final pending = device.launch(
-        '/path/to/MyApp.app',
+        p.join(bundleRoot.path, 'MyApp.app'),
         onLog: sink == null ? null : sink.add,
       );
       // The launch must be listening before the announcement is emitted;
@@ -1027,7 +1040,9 @@ void main() {
           final sink = <AppLogLine>[];
           final proc = FakeProcess();
           final device = build((exe, args) async => proc);
-          final pending = device.launch('/path/to/MyApp.app', onLog: sink.add);
+          final pending = device.launch(
+              p.join(bundleRoot.path, 'MyApp.app'),
+              onLog: sink.add);
           await proc.outputAttached;
 
           // A startup print that lands before the announcement — the case that
@@ -1358,6 +1373,101 @@ void main() {
       expect(calls, hasLength(1));
       expect(calls[0].$1, 'scrot');
       expect(calls[0].$2, ['/tmp/linux.png']);
+    });
+  });
+
+  group('WindowsDevice.launch staging', () {
+    // Windows keeps an exclusive lock on a running executable image, so an app
+    // launched straight out of `bazel-out` makes the next bundling action fail
+    // with "failed to delete output files ... app.exe (Permission denied)" —
+    // which is every `app.restart` that follows a real source edit. The launch
+    // must therefore come from a copy.
+    late Directory sandbox;
+    late Directory bundle;
+
+    setUp(() {
+      sandbox = Directory.systemTemp.createTempSync('win_stage_test');
+      bundle = Directory(p.join(sandbox.path, 'bazel-out', 'app'))
+        ..createSync(recursive: true);
+      File(p.join(bundle.path, 'app.exe')).writeAsStringSync('exe');
+      Directory(p.join(bundle.path, 'data', 'flutter_assets'))
+          .createSync(recursive: true);
+      File(p.join(bundle.path, 'data', 'flutter_assets', 'AssetManifest.json'))
+          .writeAsStringSync('{}');
+    });
+
+    tearDown(() => sandbox.deleteSync(recursive: true));
+
+    /// A device whose staging directories are numbered, so a relaunch is
+    /// distinguishable from a reuse.
+    ({WindowsDevice device, List<String> launched, List<FakeProcess> procs})
+        makeDevice() {
+      final launched = <String>[];
+      final procs = <FakeProcess>[];
+      var n = 0;
+      final device = WindowsDevice(
+        makeStagingDir: () =>
+            Directory(p.join(sandbox.path, 'staged${n++}'))..createSync(),
+        startProcess: (exe, args) async {
+          launched.add(exe);
+          final proc = FakeProcess();
+          procs.add(proc);
+          Future<void>(() => proc.emitStdout(_vmServiceLine));
+          return proc;
+        },
+      );
+      return (device: device, launched: launched, procs: procs);
+    }
+
+    test('launches a copy, never the path bazel will rewrite', () async {
+      final h = makeDevice();
+      await h.device.launch(bundle.path);
+
+      expect(p.isWithin(bundle.path, h.launched.single), isFalse,
+          reason: 'must not run from bazel-out: ${h.launched.single}');
+      expect(File(h.launched.single).existsSync(), isTrue);
+    });
+
+    test('copies the whole bundle, not just the executable', () async {
+      // The runner resolves `data/flutter_assets` relative to its own
+      // executable, so a lone .exe copy renders nothing.
+      final h = makeDevice();
+      await h.device.launch(bundle.path);
+
+      final asset = p.join(p.dirname(h.launched.single), 'data',
+          'flutter_assets', 'AssetManifest.json');
+      expect(File(asset).existsSync(), isTrue);
+    });
+
+    test('a relaunch stages afresh and drops the previous copy', () async {
+      // `app.restart` relaunches when native libraries changed. Reusing the
+      // old directory would run the previous build's assets.
+      final h = makeDevice();
+      await h.device.launch(bundle.path);
+      final first = h.launched.single;
+
+      File(p.join(bundle.path, 'data', 'flutter_assets', 'AssetManifest.json'))
+          .writeAsStringSync('{"new":true}');
+      await h.device.launch(bundle.path);
+      final second = h.launched.last;
+
+      expect(second, isNot(first));
+      expect(File(first).existsSync(), isFalse,
+          reason: 'the superseded copy must not be left behind');
+      final asset = p.join(
+          p.dirname(second), 'data', 'flutter_assets', 'AssetManifest.json');
+      expect(File(asset).readAsStringSync(), '{"new":true}');
+    });
+
+    test('stop removes the copy it made', () async {
+      final h = makeDevice();
+      await h.device.launch(bundle.path);
+      final launched = h.launched.single;
+
+      h.procs.single.complete(0);
+      await h.device.stop(AppInstance(process: h.procs.single));
+
+      expect(File(launched).existsSync(), isFalse);
     });
   });
 
