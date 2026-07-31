@@ -8,6 +8,7 @@ def compile_and_link_runner(
         srcs,
         engine_library_file,
         engine_import_library = None,
+        system_libraries = [],
         engine_header_files = [],
         engine_include_dir = None,
         extra_compile_flags = [],
@@ -26,6 +27,10 @@ def compile_and_link_runner(
         srcs: List of C++ source Files.
         engine_library_file: The engine .so or .dll File.
         engine_import_library: Windows-only: the .dll.lib import library File.
+        system_libraries: Additional shared library Files to link against (e.g.
+            GTK3 from the Chromium sysroot). Passed as explicit inputs rather
+            than `-L<dir> -l<name>` so that no directory outside the cc
+            toolchain's own sysroot ever joins the `-l` search path.
         engine_header_files: Header Files from the engine (for inputs).
         engine_include_dir: Directory string for engine headers (-I path).
         extra_compile_flags: Additional compiler flags.
@@ -74,18 +79,29 @@ def compile_and_link_runner(
         additional_inputs = all_additional_inputs,
     )
 
-    # Build a linking context for the engine shared library so the
-    # toolchain's linker knows how to find and link against it.
-    engine_lib_to_link = cc_common.create_library_to_link(
+    # Build a linking context for the engine shared library (and any system
+    # libraries) so the toolchain's linker knows how to find and link against
+    # them. Bazel stages each one into a private `_solib_*` directory holding
+    # only these libraries, so the search path it adds cannot shadow anything
+    # the cc toolchain resolves for itself.
+    libs_to_link = [cc_common.create_library_to_link(
         actions = ctx.actions,
         feature_configuration = feature_configuration,
         cc_toolchain = cc_toolchain,
         dynamic_library = engine_library_file,
         interface_library = engine_import_library,
-    )
+    )] + [
+        cc_common.create_library_to_link(
+            actions = ctx.actions,
+            feature_configuration = feature_configuration,
+            cc_toolchain = cc_toolchain,
+            dynamic_library = lib,
+        )
+        for lib in system_libraries
+    ]
     engine_linker_input = cc_common.create_linker_input(
         owner = ctx.label,
-        libraries = depset([engine_lib_to_link]),
+        libraries = depset(libs_to_link),
     )
     engine_linking_context = cc_common.create_linking_context(
         linker_inputs = depset([engine_linker_input]),

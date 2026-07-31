@@ -26,7 +26,14 @@ flutter_application(
 # Shared Tier 2 targets (used by approaches 2 & 3)
 # =============================================================================
 
-flutter_linux_engine(name = "flutter_engine")
+# Marked Linux-only like every other target here: on a non-Linux host the
+# resolved toolchain has no libflutter_linux_gtk.so and the rule hard-fails
+# during analysis, which turned `bazel test //...` on macOS into an error
+# rather than a skip.
+flutter_linux_engine(
+    name = "flutter_engine",
+    target_compatible_with = ["@platforms//os:linux"],
+)
 
 flutter_linux_registrant_gen(
     name = "app_registrant",

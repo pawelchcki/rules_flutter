@@ -47,21 +47,73 @@ _GTK3_INCLUDE_SUBDIRS = [
     "usr/include/blkid",
 ]
 
-# GTK3 libraries to link against.
-_GTK3_LINK_LIBS = [
-    "-lgtk-3",
-    "-lgdk-3",
-    "-lpangocairo-1.0",
-    "-lpango-1.0",
-    "-lharfbuzz",
-    "-latk-1.0",
-    "-lcairo-gobject",
-    "-lcairo",
-    "-lgdk_pixbuf-2.0",
-    "-lgio-2.0",
-    "-lgobject-2.0",
-    "-lglib-2.0",
+# GTK3 shared libraries the runner links against, by file name within the
+# sysroot's `usr/lib/<triple>/` directory.
+#
+# These are passed to the linker as explicit files, never as `-L<dir> -l<name>`.
+# The Chromium sysroot's `usr/lib/<triple>/` also contains the C runtime's
+# development entries, three of which (`libc.so`, `libm.so`, `libtermcap.so`)
+# are GNU ld scripts holding *absolute* paths:
+#
+#     GROUP ( /lib/x86_64-linux-gnu/libm.so.6 AS_NEEDED ( ... ) )
+#
+# lld rewrites those paths against `--sysroot` only when the script itself was
+# found underneath that sysroot. Putting this directory on the `-l` search path
+# therefore hijacks the *cc toolchain's* `-lm`/`-lc` — every `-L` precedes every
+# `-l` on a clang command line, and a toolchain that supplies its C library
+# through `--sysroot` (rather than through an earlier explicit `-L`) loses the
+# race. The link then fails with `cannot open /lib/x86_64-linux-gnu/libm.so.6`
+# for a file that plainly exists inside the toolchain's own sysroot.
+#
+# Linking these libraries as files keeps the sysroot off the `-l` search path
+# entirely: the cc toolchain owns libc/libm, rules_flutter owns GTK3, and the
+# two never see each other's directories.
+_GTK3_LIB_FILES = [
+    "libgtk-3.so",
+    "libgdk-3.so",
+    "libpangocairo-1.0.so",
+    "libpango-1.0.so",
+    "libharfbuzz.so",
+    "libatk-1.0.so",
+    "libcairo-gobject.so",
+    "libcairo.so",
+    "libgdk_pixbuf-2.0.so",
+    "libgio-2.0.so",
+    "libgobject-2.0.so",
+    "libglib-2.0.so",
 ]
+
+def gtk3_sysroot_link_inputs(sysroot_files, lib_dir):
+    """Selects the GTK3 libraries to link and the sysroot's link flags.
+
+    Args:
+        sysroot_files: The Chromium sysroot filegroup's Files.
+        lib_dir: The sysroot's `usr/lib/<triple>` directory path.
+
+    Returns:
+        A struct with `libs` (GTK3 library Files, in `_GTK3_LIB_FILES` order)
+        and `link_flags`. `link_flags` never contains `-L`: adding this
+        directory to the `-l` search path would let its GNU ld scripts answer
+        the cc toolchain's own `-lm`/`-lc` (see `_GTK3_LIB_FILES`).
+    """
+    by_name = {}
+    for f in sysroot_files:
+        if f.dirname == lib_dir and f.basename in _GTK3_LIB_FILES:
+            by_name[f.basename] = f
+
+    missing = [n for n in _GTK3_LIB_FILES if n not in by_name]
+    if missing:
+        fail("Chromium sysroot is missing GTK3 libraries {} under {}. The " +
+             "sysroot archive may have changed its layout.".format(missing, lib_dir))
+
+    return struct(
+        libs = [by_name[n] for n in _GTK3_LIB_FILES],
+        # `-rpath-link` lets the linker resolve the GTK libraries' own
+        # DT_NEEDED entries (libX11, libfreetype, ...) inside the sysroot.
+        # Unlike `-L` it is consulted *only* for dependencies of shared
+        # libraries, never for `-l`, so it cannot shadow the C runtime.
+        link_flags = ["-Wl,-rpath-link," + lib_dir],
+    )
 
 # =============================================================================
 # Runner compilation rule
@@ -204,8 +256,11 @@ def _compile_linux_runner(ctx, runner_srcs, engine_files, gtk_app_id, linux_sysr
     system_include_dirs.append(sysroot_root + "/usr/lib/" + triple + "/glib-2.0/include")
     system_include_dirs.append(sysroot_root + "/usr/lib/" + triple + "/dbus-1.0/include")
 
-    # Link flags: library search path + GTK3 libraries.
-    sysroot_link_flags = ["-L" + sysroot_root + "/usr/lib/" + triple] + _GTK3_LINK_LIBS
+    # GTK3 libraries, selected as files from the sysroot filegroup and handed to
+    # the linker as explicit inputs (see _GTK3_LIB_FILES for why not `-L`/`-l`).
+    gtk3 = gtk3_sysroot_link_inputs(sysroot_files, sysroot_root + "/usr/lib/" + triple)
+    gtk_libs = gtk3.libs
+    sysroot_link_flags = gtk3.link_flags
 
     # Include registrant headers and runner headers as additional inputs so
     # #include directives resolve.  Also add their directories to the include
@@ -263,6 +318,7 @@ def _compile_linux_runner(ctx, runner_srcs, engine_files, gtk_app_id, linux_sysr
         name = ctx.label.name + "_linux_runner",
         srcs = runner_srcs,
         engine_library_file = engine_so,
+        system_libraries = gtk_libs,
         engine_header_files = all_header_files,
         engine_include_dir = header_dir,
         extra_compile_flags = extra_compile,
