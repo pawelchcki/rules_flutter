@@ -5,7 +5,9 @@
 /// The VM is created with:
 /// - Ubuntu 22.04 LTS
 /// - Preemptible (low cost, auto-deleted after 24h)
-/// - GTK3, Xvfb, xdotool, scrot installed
+/// - GTK3 runtime (`libgtk-3-0` — the cloud image has none, and without it a
+///   Flutter runner dies with `libgtk-3.so.0: cannot open shared object file`),
+///   Xvfb, xdotool, x11-utils, scrot installed
 /// - Dart SDK installed (for running verification scripts)
 ///
 /// After creation, use deploy_bundle.dart to SCP a bundle and verify it.
@@ -33,6 +35,8 @@ apt-get install -y -qq \
   libegl1 \
   libgles2 \
   libgl1-mesa-dri \
+  libgtk-3-0 \
+  x11-utils \
   xvfb \
   xdotool \
   scrot \
