@@ -60,6 +60,15 @@ flutter_android_app(
     name = "app",
     package_name = "com.example.flutterapp",
     application = ":app_flutter",
+    # `flutter create` grants INTERNET in the debug variant manifest only —
+    # a *debugging* requirement for the Dart VM service, not the app's
+    # network grant. A release APK built from the untouched scaffold cannot
+    # open a socket at all (Android enforces INTERNET via AID_INET group
+    # membership; every connect fails with EACCES, with no build error).
+    # An app that networks declares it here, and gets it in every
+    # compilation mode. Verified from inside the built APK by
+    # :verify_android_permissions_test.
+    permissions = ["android.permission.INTERNET"],
 )
 
 # =============================================================================
@@ -205,6 +214,17 @@ dart_test(
     name = "verify_android_apk_test",
     data = [":app"],
     main = "test/verify_android_apk_test.dart",
+)
+
+# Reads the permissions out of the compiled binary AndroidManifest.xml inside
+# the built APK. Bazel's default fastbuild is not `-c dbg`, so this APK takes
+# the non-debug manifest arm — finding INTERNET proves it came from
+# flutter_android_app(permissions = ...) rather than from flutter create's
+# debug variant overlay.
+dart_test(
+    name = "verify_android_permissions_test",
+    data = [":app"],
+    main = "test/verify_android_permissions_test.dart",
 )
 
 dart_test(

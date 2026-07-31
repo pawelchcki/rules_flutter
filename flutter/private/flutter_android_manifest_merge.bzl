@@ -1,10 +1,16 @@
-"""Debug variant AndroidManifest.xml merging.
+"""AndroidManifest.xml permission merging.
 
-`flutter create` declares `android.permission.INTERNET` only in the debug
-(and profile) variant manifests under `android/app/src/debug/`; Gradle's
-manifest merger folds them into debug APKs. This rule reproduces that fold
-for Bazel builds by running the strict rules_flutter merger tool
-(`merge_android_manifests.dart`) over a base manifest and a variant overlay.
+Two callers, one mechanism. `flutter create` declares
+`android.permission.INTERNET` only in the debug (and profile) variant
+manifests under `android/app/src/debug/`; Gradle's manifest merger folds
+them into debug APKs, and `flutter_android_app` reproduces that fold here.
+The same rule also backs `flutter_android_app(permissions = [...])`, which
+folds the app's *own* permissions in for every compilation mode — the seam a
+networked app needs, since the debug variant's INTERNET belongs to the Dart
+VM service and never reaches release.
+
+Either way this runs the strict rules_flutter merger tool
+(`merge_android_manifests.dart`) over a base manifest and an overlay.
 
 The merger accepts only `<uses-permission>` / `<uses-permission-sdk-23>`
 elements in the overlay and hard-fails on anything else, so it can never
@@ -52,9 +58,10 @@ flutter_android_manifest_merge = rule(
             mandatory = True,
         ),
         "overlay": attr.label(
-            doc = "The variant manifest (e.g. android/app/src/debug/" +
-                  "AndroidManifest.xml) whose <uses-permission> elements " +
-                  "merge into the base.",
+            doc = "A manifest whose <uses-permission> elements merge into " +
+                  "the base — either a variant manifest (e.g. " +
+                  "android/app/src/debug/AndroidManifest.xml) or one " +
+                  "written by flutter_android_permissions_manifest.",
             allow_single_file = True,
             mandatory = True,
         ),

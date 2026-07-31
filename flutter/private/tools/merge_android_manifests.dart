@@ -1,6 +1,13 @@
-/// Merges a `flutter create` debug variant AndroidManifest.xml into a main
-/// (base) manifest, the way Gradle's manifest merger folds
-/// `android/app/src/debug/AndroidManifest.xml` into debug APKs.
+/// Merges an overlay AndroidManifest.xml's permissions into a main (base)
+/// manifest. Two callers, one mechanism:
+///
+///   * `flutter_android_app`'s debug variant handling, folding
+///     `android/app/src/debug/AndroidManifest.xml` into `-c dbg` APKs the
+///     way Gradle's manifest merger does;
+///   * `flutter_android_app(permissions = [...])`, folding the app's own
+///     permissions in for **every** compilation mode — the seam a networked
+///     app needs, since the debug variant's INTERNET is the Dart VM
+///     service's and never reaches release.
 ///
 /// This tool implements deliberately narrow, never-wrong semantics: the
 /// overlay may contain ONLY `<uses-permission>` / `<uses-permission-sdk-23>`
@@ -303,7 +310,7 @@ String mergeManifests({
 
   final seen = <String>{};
   final inserted = StringBuffer()
-    ..write('\n    <!-- Debug variant permissions merged by rules_flutter '
+    ..write('\n    <!-- Permissions merged by rules_flutter '
         'from $overlayPath into $basePath. -->');
   for (final permission in overlayPermissions) {
     if (existing.contains(permission.name)) continue;

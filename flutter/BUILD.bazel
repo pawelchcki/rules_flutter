@@ -61,6 +61,7 @@ bzl_library(
         "//flutter/private:flutter_android_application",
         "//flutter/private:flutter_android_manifest_merge",
         "@bazel_skylib//rules:expand_template",
+        "@bazel_skylib//rules:write_file",
     ],
 )
 
