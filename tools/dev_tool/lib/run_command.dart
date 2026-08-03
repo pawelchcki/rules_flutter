@@ -132,9 +132,12 @@ class RunCommand {
         defaultsTo: false,
         negatable: false,
         help: 'Keep the session running even when no VM service connection '
-            'could be established on a native device. Without this flag '
-            'that is a fatal error, because hot reload, DevTools, and '
-            'agent control all depend on the VM service.')
+            'could be established. Without this flag that is a fatal error, '
+            'because hot reload, DevTools, and agent control all depend on '
+            'the VM service. On a native device that means no connection to '
+            'the app\'s own VM service; on Chrome it means no DWDS, which is '
+            'what serves the VM service there — the run then falls back to '
+            'serving the last build statically.')
     ..addFlag('help',
         abbr: 'h', negatable: false, help: 'Show help for this command.');
 
@@ -753,20 +756,35 @@ class RunCommand {
         // reload answered `No frontend server available` — naming the wrong
         // thing entirely.
         hotReloadReady.signalReady();
-      } catch (_) {
-        // Cleanup, then out. There is no fallback here any more: a debug web
-        // run whose DDC/DWDS setup failed has no VM service, no hot reload, no
-        // DevTools and no app console. Serving the stale bazel bundle
-        // statically instead used to hide all of that behind two `Warning:`
-        // lines and a Chrome window that looked healthy — and it swallowed
-        // four DevToolExceptions this block raises deliberately (no
-        // `_dev_config.json`, no `package_config.json`, a failed initial
-        // compile, and DWDS's own).
+      } catch (e) {
+        // Cleanup, then out. A debug web run whose DDC/DWDS setup failed has
+        // no VM service, no hot reload, no DevTools and no app console.
+        // Serving the stale bazel bundle statically instead used to hide all
+        // of that behind two `Warning:` lines and a Chrome window that looked
+        // healthy — and it swallowed four DevToolExceptions this block raises
+        // deliberately (no `_dev_config.json`, no `package_config.json`, a
+        // failed initial compile, and DWDS's own).
+        //
+        // --allow-no-vm-service is the one way through, the same flag and the
+        // same shape as the native abort below: say which flag is keeping the
+        // run alive, record why the pipeline is unavailable, carry on. On web
+        // that fallback is the static serving this block used to pick by
+        // itself.
         await webModuleServer?.stop();
         webModuleServer = null;
         await frontendServer?.shutdown();
         frontendServer = null;
-        rethrow;
+        if (!allowNoVmService) rethrow;
+        logger.warning({
+          'message': 'web_dev_server_failed',
+          'text': 'Continuing without a DDC dev server on Chrome '
+              '(--allow-no-vm-service): $e\n'
+              'Serving the last build statically — no hot reload, no '
+              'DevTools, no app console.',
+          'error': '$e',
+        });
+        hotReloadReady.signalUnavailable(
+            'DDC dev server failed; hot reload unavailable: $e');
       }
     }
 

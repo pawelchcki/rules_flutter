@@ -102,6 +102,36 @@ void main() {
       final results = RunCommand.parser.parse(['-t', '//:app']);
       expect(results['dart-define'], isEmpty);
     });
+
+    test('defaults --allow-no-vm-service to false', () {
+      final results = RunCommand.parser.parse(['-t', '//:app']);
+      expect(results['allow-no-vm-service'], isFalse);
+    });
+
+    test('accepts --allow-no-vm-service', () {
+      final results =
+          RunCommand.parser.parse(['-t', '//:app', '--allow-no-vm-service']);
+      expect(results['allow-no-vm-service'], isTrue);
+    });
+
+    test('rejects --no-allow-no-vm-service', () {
+      // The single opt-in into a run with no debugging connection, on native
+      // and on Chrome alike. Non-negatable on purpose: "off" is the default
+      // and the only safe state, so there is nothing to negate.
+      expect(
+        () => RunCommand.parser
+            .parse(['-t', '//:app', '--no-allow-no-vm-service']),
+        throwsFormatException,
+      );
+    });
+
+    test('--allow-no-vm-service help covers Chrome as well as native', () {
+      // The help text is the contract for a flag whose whole job is telling
+      // the user what they are giving up.
+      final help = RunCommand.parser.options['allow-no-vm-service']!.help!;
+      expect(help, contains('Chrome'));
+      expect(help, contains('DWDS'));
+    });
   });
 
   group('DevToolException', () {
