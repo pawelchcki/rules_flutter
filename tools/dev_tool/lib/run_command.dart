@@ -21,6 +21,7 @@ import 'app_log_sink.dart';
 import 'bazel.dart';
 import 'command_runner.dart';
 import 'compiler_config.dart';
+import 'dev_tool_exception.dart';
 import 'device.dart';
 import 'frontend_server.dart';
 import 'hot_reload/app_instance.dart' as hr;
@@ -42,18 +43,7 @@ import 'vm_service_logs.dart';
 import 'web_bootstrap.dart';
 import 'web_module_server.dart';
 
-/// Exception thrown by dev tool commands to indicate failure with an exit code.
-///
-/// Replaces direct `exit()` calls so callers can catch and handle gracefully.
-class DevToolException implements Exception {
-  final String message;
-  final int exitCode;
-
-  DevToolException(this.message, {this.exitCode = 1});
-
-  @override
-  String toString() => message;
-}
+export 'dev_tool_exception.dart' show DevToolException;
 
 /// Refuses a compilation mode no device in [devices] can actually run.
 ///
