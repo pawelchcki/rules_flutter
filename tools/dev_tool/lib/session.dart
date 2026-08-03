@@ -36,25 +36,31 @@ class DeviceSession {
   String? devToolsUrl;
   Process? devToolsProcess;
 
-  /// The Dart Development Service we started on the app's VM service — the
-  /// app's own on native, DWDS's debug service on web. Our [vmClient] and
-  /// DevTools both connect through it (DDS multiplexes), so they no longer
-  /// evict each other.
+  /// The Dart Development Service **we** started on the app's raw VM service.
+  /// Our [vmClient] and DevTools both connect through it (DDS multiplexes), so
+  /// they no longer evict each other.
   ///
-  /// Mutable: a web hot restart reloads the page and replaces the debug
-  /// service, so the session re-owns a fresh DDS on every browser connection.
-  /// Null only when DDS could not be started.
+  /// Always null on web. A DDS does exist there, but DWDS owns it: the session
+  /// only ever receives what DWDS hands over on a debug connection — the VM
+  /// service URI [vmClient] dials, and [devToolsUrl]. Code that needs "the DDS
+  /// this session's DevTools comes from" must therefore handle null, not
+  /// assume debug-ready implies a DDS of our own.
+  ///
+  /// Mutable because a session can be re-wired: a native relaunch and a web
+  /// page reload both replace the debug connection.
   DartDevelopmentService? dds;
 
   final Completer<void> _debugReady = Completer<void>();
 
-  /// Completes once [vmClient] and [dds] are both populated.
+  /// Completes once this session has a working debug connection.
   ///
-  /// Native devices are debug-ready the moment the session exists. Web is not:
-  /// DWDS only hands over a debug service when the browser connects, which is
-  /// after the session is constructed and `app.started` has been emitted.
-  /// Consumers that need the VM service — DevTools, chiefly — wait on this
-  /// instead of sampling the fields once and finding them null on web.
+  /// Native devices are debug-ready the moment the session exists — [vmClient]
+  /// and [dds] are both populated by then. Web is not: DWDS only hands over a
+  /// debug connection when the browser connects, which is after the session is
+  /// constructed and `app.started` has been emitted, and what it hands over is
+  /// a [vmClient] and a [devToolsUrl] rather than a [dds]. Consumers that need
+  /// the VM service — DevTools, chiefly — wait on this instead of sampling the
+  /// fields once and finding them null on web.
   Future<void> get debugReady => _debugReady.future;
 
   /// Idempotent: a web hot restart re-runs the connect path.
@@ -204,15 +210,19 @@ Map<String, dynamic> reloadResultToMap(ReloadResult result, String verb) {
 /// applies the result via [reloadStrategy]. On compile failure, calls [reject]
 /// so the frontend server stays in a clean state.
 ///
-/// If no [reloadStrategy] is provided, falls back to [VmServiceReloadStrategy].
+/// [reloadStrategy] is required, and deliberately has no default. It used to
+/// fall back to [VmServiceReloadStrategy] — the *native* strategy — so a web
+/// session whose DWDS setup had failed silently went looking for a VM service
+/// connection the browser never has, and blamed the VM service for the
+/// absence. Which strategy applies is a fact about the platform, known only to
+/// the caller.
 Future<ReloadResult> recompileAndReload({
   required FrontendServer frontendServer,
   required String entrypoint,
   required List<String> invalidatedFiles,
   required List<DeviceSession> sessions,
-  ReloadStrategy? reloadStrategy,
+  required ReloadStrategy reloadStrategy,
 }) async {
-  final strategy = reloadStrategy ?? VmServiceReloadStrategy();
   final stopwatch = Stopwatch()..start();
   try {
     final result =
@@ -227,7 +237,7 @@ Future<ReloadResult> recompileAndReload({
       );
     }
     frontendServer.accept();
-    final outcome = await strategy.applyReload(result, sessions);
+    final outcome = await reloadStrategy.applyReload(result, sessions);
     stopwatch.stop();
     return ReloadResult(
       compileSuccess: true,
@@ -249,14 +259,14 @@ Future<ReloadResult> recompileAndReload({
 /// Calls [FrontendServer.compile] to rebuild from scratch, then applies
 /// the result via [reloadStrategy].
 ///
-/// If no [reloadStrategy] is provided, falls back to [VmServiceReloadStrategy].
+/// [reloadStrategy] is required for the same reason as in
+/// [recompileAndReload]: there is no strategy that is right by default.
 Future<ReloadResult> recompileAndRestart({
   required FrontendServer frontendServer,
   required String entrypoint,
   required List<DeviceSession> sessions,
-  ReloadStrategy? reloadStrategy,
+  required ReloadStrategy reloadStrategy,
 }) async {
-  final strategy = reloadStrategy ?? VmServiceReloadStrategy();
   final stopwatch = Stopwatch()..start();
   try {
     final result = await frontendServer.compile(entrypoint);
@@ -269,7 +279,7 @@ Future<ReloadResult> recompileAndRestart({
       );
     }
     frontendServer.accept();
-    final outcome = await strategy.applyRestart(result, sessions);
+    final outcome = await reloadStrategy.applyRestart(result, sessions);
     stopwatch.stop();
     return ReloadResult(
       compileSuccess: true,
@@ -366,7 +376,19 @@ Future<void> runInteractiveSession({
           // multiplexing is what stops DevTools evicting our own vmClient.
           var url = session.devToolsUrl;
           if (url == null) {
-            final dds = session.dds!;
+            // `session.dds!` used to be enough here, on the assumption that
+            // anything debug-ready owns a DDS. Web never does — DWDS owns it
+            // and hands over a URL — so a web connection that arrived without
+            // one threw `Null check operator used on a null value`, which the
+            // catch below printed as the reason DevTools could not launch.
+            final dds = session.dds;
+            if (dds == null) {
+              throw StateError(
+                  'No DevTools URL and no Dart Development Service on '
+                  '${session.device.name}, so there is nothing to serve '
+                  'DevTools from. On web the debug connection carries the '
+                  'URL; this one did not.');
+            }
             final devtools = await _launchDevTools(dartExecutable, dds.uri!);
             session.devToolsProcess = devtools.process;
             if (devtools.serverUrl == null) return;
@@ -488,7 +510,7 @@ Future<void> runInteractiveSession({
           if (commandRunner != null && commandRunner.hasCommand('app.hotReload')) {
             reportReloadCommand(
                 'Hot reload', await commandRunner.run('app.hotReload', {}), log);
-          } else if (frontendServer != null) {
+          } else if (frontendServer != null && reloadStrategy != null) {
             await _performHotReloadAll(
               frontendServer: frontendServer,
               sessions: sessions,
@@ -496,6 +518,8 @@ Future<void> runInteractiveSession({
               invalidated: [entrypoint],
               reloadStrategy: reloadStrategy,
             );
+          } else {
+            stderr.writeln('Hot reload is unavailable for this session.');
           }
         }
       case 'R':
@@ -504,7 +528,7 @@ Future<void> runInteractiveSession({
             stdout.writeln('Performing hot restart...');
             reportReloadCommand(
                 'Hot restart', await commandRunner.run('app.restart', {}), log);
-          } else if (frontendServer != null) {
+          } else if (frontendServer != null && reloadStrategy != null) {
             stdout.writeln('Performing hot restart...');
             final result = await recompileAndRestart(
               frontendServer: frontendServer,
@@ -522,6 +546,8 @@ Future<void> runInteractiveSession({
             } else {
               stdout.writeln('Hot restart done in ${result.elapsedMs}ms.');
             }
+          } else {
+            stderr.writeln('Hot restart is unavailable for this session.');
           }
         }
       case 'p':
@@ -607,7 +633,7 @@ Future<void> runInteractiveSession({
               'invalidatedFiles': invalidated,
             }),
             log);
-      } else {
+      } else if (reloadStrategy != null) {
         await _performHotReloadAll(
           frontendServer: frontendServer,
           sessions: sessions,
@@ -615,6 +641,8 @@ Future<void> runInteractiveSession({
           invalidated: invalidated,
           reloadStrategy: reloadStrategy,
         );
+      } else {
+        stderr.writeln('Hot reload is unavailable for this session.');
       }
     });
   });
@@ -629,7 +657,7 @@ Future<void> _performHotReloadAll({
   required List<DeviceSession> sessions,
   required String entrypoint,
   required List<String> invalidated,
-  ReloadStrategy? reloadStrategy,
+  required ReloadStrategy reloadStrategy,
 }) async {
   stdout.writeln('Recompiling...');
   final result = await recompileAndReload(

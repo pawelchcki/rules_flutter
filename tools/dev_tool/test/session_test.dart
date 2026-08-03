@@ -95,6 +95,27 @@ void main() {
       expect(session.devToolsProcess, isNull);
     });
 
+    test('a web session is debug-ready without a DDS of its own', () async {
+      // What a browser connection leaves behind: DWDS owns the Dart
+      // Development Service and hands over URLs, so `dds` stays null here even
+      // once the session is fully wired. The DevTools launcher used to read it
+      // as `session.dds!`, which on any web session that arrived without a
+      // DevTools URL threw `Null check operator used on a null value` — and
+      // that string, naming nothing, was printed as the reason DevTools would
+      // not start.
+      final session = DeviceSession(
+        device: WebDevice(),
+        appInstance: AppInstance(process: FakeProcess()),
+        vmClient: null,
+        appId: 'app_web',
+      );
+      session.markDebugReady();
+
+      await expectLater(session.debugReady, completes);
+      expect(session.dds, isNull);
+      expect(session.devToolsUrl, isNull);
+    });
+
     test('devToolsUrl is mutable', () {
       final session = DeviceSession(
         device: MacOSDevice(),

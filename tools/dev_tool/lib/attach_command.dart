@@ -17,6 +17,7 @@ import 'frontend_server.dart';
 import 'http_control_channel.dart';
 import 'logging.dart';
 import 'machine_protocol.dart';
+import 'reload_strategy.dart';
 import 'run_command.dart';
 import 'session.dart';
 import 'toolchain_info.dart';
@@ -296,6 +297,11 @@ class AttachCommand {
           commandRunner: commandRunner,
           devToolsEnabled: devToolsEnabled,
           dartExecutable: toolchain.dart,
+          // Attach reaches an app through a Dart VM service URI, so the VM
+          // service is the reload mechanism by construction. Said here rather
+          // than left to a default inside `recompileAndReload`, where the same
+          // default was silently wrong for web.
+          reloadStrategy: VmServiceReloadStrategy(),
           shutdownSignal: shutdownRequested.future,
         );
       } else {

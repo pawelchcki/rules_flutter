@@ -384,6 +384,13 @@ class RunCommand {
       if (fs == null || entrypoint == null) {
         return {'error': 'No frontend server available'};
       }
+      // Named, rather than defaulted to the native strategy: that default sent
+      // web restarts looking for a VM service connection the browser does not
+      // have, and reported its absence as the failure.
+      final strategy = reloadStrategy;
+      if (strategy == null) {
+        return {'error': 'No reload strategy for this session.'};
+      }
       final targets = targetSessions(params);
       if (targets.isEmpty && params.containsKey('appId')) {
         return {'error': 'Unknown appId: ${params['appId']}'};
@@ -396,7 +403,7 @@ class RunCommand {
         frontendServer: fs,
         entrypoint: entrypoint,
         sessions: targets,
-        reloadStrategy: reloadStrategy,
+        reloadStrategy: strategy,
       );
       if (result.success && workspaceView != null) {
         // After a restart, every disk file is now live.
@@ -433,6 +440,10 @@ class RunCommand {
       if (fs == null || entrypoint == null || ws == null) {
         return {'error': 'No frontend server available'};
       }
+      final strategy = reloadStrategy;
+      if (strategy == null) {
+        return {'error': 'No reload strategy for this session.'};
+      }
       final targets = targetSessions(params);
       if (targets.isEmpty && params.containsKey('appId')) {
         return {'error': 'Unknown appId: ${params['appId']}'};
@@ -456,7 +467,7 @@ class RunCommand {
         entrypoint: entrypoint,
         invalidatedFiles: invalidated.toList(),
         sessions: targets,
-        reloadStrategy: reloadStrategy,
+        reloadStrategy: strategy,
       );
       if (result.success) {
         appliedVersions.markApplied(snap, files: invalidated);
