@@ -216,6 +216,11 @@ class RunCommand {
 
     // Shared state for cleanup.
     final sessions = <DeviceSession>[];
+    // The browser's session, once the launch loop has built it. The DWDS
+    // `connectedApps` listener is attached before Chrome launches (a broadcast
+    // stream drops what it emits with no listener), so it can fire before this
+    // list has anything in it.
+    final webSession = Completer<DeviceSession>();
     FrontendServer? frontendServer;
     HttpControlChannel? httpChannel;
     ReloadStrategy? reloadStrategy;
@@ -707,8 +712,10 @@ class RunCommand {
         _resolvedEntrypoint = 'org-dartlang-app:/web_entrypoint.dart';
 
         // Create the module server with workspace root and package config
-        // for DWDS source resolution.
-        webModuleServer = WebModuleServer(
+        // for DWDS source resolution. Held in a non-null local as well: the
+        // browser-connection listener wired below outlives this block, and the
+        // captured field is nulled on the failure path.
+        final moduleServer = WebModuleServer(
           webToolchain: webToolchain,
           buildOutputDir: webOutputDir,
           entrypointFilename: 'web_entrypoint.dart',
@@ -717,20 +724,21 @@ class RunCommand {
           workspaceRoot: workspace,
           packageConfigPath: packageConfig,
         );
+        webModuleServer = moduleServer;
 
         // Write first-upload bootstrap files to in-memory server.
-        webModuleServer.writeFile(
+        moduleServer.writeFile(
             'manifest.json', '{"info":"manifest not generated in run mode."}');
-        webModuleServer.writeFile('flutter_service_worker.js',
+        moduleServer.writeFile('flutter_service_worker.js',
             '// Service worker not loaded in run mode.');
 
         // Start HTTP server first (without DWDS) to get the server URI.
-        final serverUri = await webModuleServer.start();
+        final serverUri = await moduleServer.start();
 
         // Now init DWDS with the server URI for reloadedSourcesUri.
         // Chrome hasn't launched yet — the connection callback is lazy.
         final webDevice = devices.first as WebDevice;
-        await webModuleServer.initDwds(
+        await moduleServer.initDwds(
           chromeConnection: () async {
             final cdpPort = webDevice.cdpPort;
             if (cdpPort == null) {
@@ -775,7 +783,7 @@ class RunCommand {
               'Initial DDC compile failed.\n${initialResult.diagnostics}');
         }
         frontendServer.accept();
-        webModuleServer.updateModules(initialResult.dillPath);
+        moduleServer.updateModules(initialResult.dillPath);
         // Seed AppliedVersions so the next reload only sees post-startup
         // edits as changed (not every file as "newly applied"). The resolver
         // keys every source file (app + deps) by its `package:` URI — which is
@@ -807,15 +815,134 @@ class RunCommand {
         logger.info({
           'message': 'frontend_server_ready',
           'text':
-              'DDC frontend server ready. Module server at ${webModuleServer.uri}',
+              'DDC frontend server ready. Module server at ${moduleServer.uri}',
           // Structured as well as prose: this is the base URL every web
           // asset is served from, so a client driving the tool (or a test)
           // can address the server without parsing the sentence above.
-          'uri': webModuleServer.uri.toString(),
+          'uri': moduleServer.uri.toString(),
         });
 
         // Set module server on WebDevice before launch.
-        webDevice.setModuleServer(webModuleServer);
+        webDevice.setModuleServer(moduleServer);
+
+        // Wire the browser connection BEFORE Chrome launches. `connectedApps`
+        // is a broadcast stream, so anything it emits with no listener
+        // attached is dropped on the floor — and a browser that connects fast
+        // used to do exactly that, losing the AppConnection, never sending
+        // `runMain()`, and leaving DWDS holding `main()` back: a blank page
+        // forever with no diagnostics. Nothing here needs Chrome to exist yet.
+        final connectedApps = moduleServer.connectedApps;
+        if (connectedApps == null) {
+          // `initDwds` now either wires DWDS up or throws, so a live module
+          // server always has this stream. Reaching here means that invariant
+          // broke; the old code just skipped the whole block, which is how a run
+          // ended up with no reload strategy, no VM service, no `markDebugReady`
+          // — and not one line of output about any of it.
+          throw StateError(
+              'The web module server is running but DWDS exposes no '
+              'connectedApps stream: DWDS initialization did not complete.');
+        }
+        // Set up the VM service on EVERY browser connection — not just the
+        // first. Hot restart preserves the page, but a genuine navigation (the
+        // user hitting reload, a crash) still tears down the page's isolate and
+        // VM service; re-attaching on each (re)connection lets the next hot
+        // reload use the live connection instead of a dead one. Matches
+        // Flutter's resident_web_runner, which re-attaches per connection.
+        final dwdsReload = DwdsReloadStrategy(moduleServer: moduleServer);
+        reloadStrategy = dwdsReload;
+        VmServiceLogForwarder? webLogForwarder;
+
+        connectedApps.listen((appConnection) async {
+          logger.info({
+            'message': 'dwds_connected',
+            'text':
+                'DWDS: Browser connected (app: ${appConnection.request.appId})',
+          });
+          try {
+            final debugConnection =
+                await moduleServer.debugConnection(appConnection);
+            // Awaited, not searched for: the listener is attached before the
+            // launch loop runs, so on a fast connection the session may not
+            // exist yet and `sessions.firstWhere` would throw.
+            final session = await webSession.future;
+
+            // DWDS runs the DDS, so `debugConnection.uri` already *is* the DDS
+            // websocket. Everything — our client, DevTools, DWDS's own client —
+            // attaches there, and DDS multiplexes them.
+            final wsUri = Uri.parse(debugConnection.uri);
+            final webClient = VmServiceClient();
+            await webClient.connect(
+              _httpUriFromWebSocketUri(wsUri),
+              createDevFS: false,
+            );
+            session.vmClient = webClient;
+            final webVmService = webClient.service!;
+            await dwdsReload.attachVmService(webVmService);
+
+            // Claim hot reload on the DDS, as flutter_tools does. Without it a
+            // DevTools-initiated reload bypasses us and calls DWDS's raw
+            // `reloadSources` directly — no recompile from our frontend
+            // server, and a second concurrent reload that DWDS does not
+            // serialise. Registering does not capture our own raw call: DDS
+            // resolves only namespaced (`sN.`) names against registrations.
+            await webVmService.registerService(
+              'reloadSources',
+              'rules_flutter dev_tool',
+            );
+
+            // DevTools comes from the DDS that DWDS started, already carrying
+            // the VM service URI — no separate `dart devtools` process, and no
+            // URL for the user to wire up by hand. Setting it before
+            // `markDebugReady` is what tells the session not to launch one.
+            session.devToolsUrl = debugConnection.devToolsUri;
+            session.markDebugReady();
+
+            // A browser page has no process pipes, so the VM service is the
+            // app's log source here. Re-attached on every connection because a
+            // page that navigates replaces the isolate and its VM service;
+            // without this, output stops after the first such reload.
+            await webLogForwarder?.dispose();
+            webLogForwarder = await forwardVmServiceLogs(
+                webVmService, session.appInstance.logs);
+
+            logger.info({
+              'message': 'dwds_vm_service',
+              'text': 'DWDS VM service ready — hot reload enabled.',
+            });
+          } catch (e) {
+            // The same rule as the native abort in the launch loop below,
+            // applied where web can apply it. `!isWebDevice` guards that check
+            // because a browser's VM service arrives asynchronously, so the
+            // decision cannot be made inline at launch — it belongs here, at
+            // the one moment web knows the answer.
+            //
+            // A browser that has not connected *yet* never reaches this: the
+            // listener only fires on a connection that arrived. Upstream makes
+            // the same distinction deliberately — an unconnected client is
+            // `Recompile complete. No client connected.`, not an error —
+            // and so does this. What is fatal is a connection that arrived and
+            // then failed to wire: no VM service, no hot reload, no DevTools,
+            // no app console, and until now a `logger.fine` that was invisible
+            // without --verbose.
+            if (allowNoVmService) {
+              logger.warning({
+                'message': 'dwds_vm_service_error',
+                'text': 'Continuing without a DWDS VM service connection '
+                    '(--allow-no-vm-service): $e',
+                'error': '$e',
+              });
+            } else {
+              failRun(DevToolException(
+                  'No VM service connection for the browser session: $e\n'
+                  'Hot reload, DevTools, and the app console would all be '
+                  'unavailable. Pass --allow-no-vm-service to run anyway.'));
+              return;
+            }
+          }
+          // Tell the browser to run main() — sends RunRequest via SSE. Must
+          // happen after debug setup so DWDS can set breakpoints.
+          appConnection.runMain();
+        });
 
         // Last statement in the block on purpose. `signalReady` used to fire
         // above, with six statements still to run: a throw in between left the
@@ -1017,127 +1144,17 @@ class RunCommand {
       }
 
       protocol.appStarted(appId);
-      sessions.add(DeviceSession(
+      final deviceSession = DeviceSession(
         device: device,
         appInstance: appInstance,
         vmClient: vmClient,
         appId: appId,
         dds: dds,
-      ));
-    }
-
-    // For web DDC: now that Chrome is launched, set up DWDS connection + reload strategy.
-    if (isWebDevice && webModuleServer != null && !wasmMode) {
-      final connectedApps = webModuleServer.connectedApps;
-      if (connectedApps == null) {
-        // `initDwds` now either wires DWDS up or throws, so a live module
-        // server always has this stream. Reaching here means that invariant
-        // broke; the old code just skipped the whole block, which is how a run
-        // ended up with no reload strategy, no VM service, no `markDebugReady`
-        // — and not one line of output about any of it.
-        throw StateError(
-            'The web module server is running but DWDS exposes no '
-            'connectedApps stream: DWDS initialization did not complete.');
+      );
+      sessions.add(deviceSession);
+      if (device is WebDevice && !webSession.isCompleted) {
+        webSession.complete(deviceSession);
       }
-      // Set up the VM service on EVERY browser connection — not just the
-      // first. Hot restart preserves the page, but a genuine navigation (the
-      // user hitting reload, a crash) still tears down the page's isolate and
-      // VM service; re-attaching on each (re)connection lets the next hot
-      // reload use the live connection instead of a dead one. Matches
-      // Flutter's resident_web_runner, which re-attaches per connection.
-      final dwdsReload = DwdsReloadStrategy(moduleServer: webModuleServer);
-      reloadStrategy = dwdsReload;
-      VmServiceLogForwarder? webLogForwarder;
-
-      connectedApps.listen((appConnection) async {
-        logger.info({
-          'message': 'dwds_connected',
-          'text':
-              'DWDS: Browser connected (app: ${appConnection.request.appId})',
-        });
-        try {
-          final debugConnection =
-              await webModuleServer!.debugConnection(appConnection);
-          final session = sessions.firstWhere((s) => s.device is WebDevice);
-
-          // DWDS runs the DDS, so `debugConnection.uri` already *is* the DDS
-          // websocket. Everything — our client, DevTools, DWDS's own client —
-          // attaches there, and DDS multiplexes them.
-          final wsUri = Uri.parse(debugConnection.uri);
-          final webClient = VmServiceClient();
-          await webClient.connect(
-            _httpUriFromWebSocketUri(wsUri),
-            createDevFS: false,
-          );
-          session.vmClient = webClient;
-          final webVmService = webClient.service!;
-          await dwdsReload.attachVmService(webVmService);
-
-          // Claim hot reload on the DDS, as flutter_tools does. Without it a
-          // DevTools-initiated reload bypasses us and calls DWDS's raw
-          // `reloadSources` directly — no recompile from our frontend
-          // server, and a second concurrent reload that DWDS does not
-          // serialise. Registering does not capture our own raw call: DDS
-          // resolves only namespaced (`sN.`) names against registrations.
-          await webVmService.registerService(
-            'reloadSources',
-            'rules_flutter dev_tool',
-          );
-
-          // DevTools comes from the DDS that DWDS started, already carrying
-          // the VM service URI — no separate `dart devtools` process, and no
-          // URL for the user to wire up by hand. Setting it before
-          // `markDebugReady` is what tells the session not to launch one.
-          session.devToolsUrl = debugConnection.devToolsUri;
-          session.markDebugReady();
-
-          // A browser page has no process pipes, so the VM service is the
-          // app's log source here. Re-attached on every connection because a
-          // web hot restart is a page reload, which replaces the isolate and
-          // its VM service; without this, output stops after the first
-          // restart.
-          await webLogForwarder?.dispose();
-          webLogForwarder = await forwardVmServiceLogs(
-              webVmService, session.appInstance.logs);
-
-          logger.info({
-            'message': 'dwds_vm_service',
-            'text': 'DWDS VM service ready — hot reload enabled.',
-          });
-        } catch (e) {
-          // The same rule as the native abort above, applied where web can
-          // apply it. `!isWebDevice` guards that check because a browser's
-          // VM service arrives asynchronously, so the decision cannot be
-          // made inline at launch — it belongs here, at the one moment web
-          // knows the answer.
-          //
-          // A browser that has not connected *yet* never reaches this: the
-          // listener only fires on a connection that arrived. Upstream makes
-          // the same distinction deliberately — an unconnected client is
-          // `Recompile complete. No client connected.`, not an error —
-          // and so does this. What is fatal is a connection that arrived and
-          // then failed to wire: no VM service, no hot reload, no DevTools,
-          // no app console, and until now a `logger.fine` that was invisible
-          // without --verbose.
-          if (allowNoVmService) {
-            logger.warning({
-              'message': 'dwds_vm_service_error',
-              'text': 'Continuing without a DWDS VM service connection '
-                  '(--allow-no-vm-service): $e',
-              'error': '$e',
-            });
-          } else {
-            failRun(DevToolException(
-                'No VM service connection for the browser session: $e\n'
-                'Hot reload, DevTools, and the app console would all be '
-                'unavailable. Pass --allow-no-vm-service to run anyway.'));
-            return;
-          }
-        }
-        // Tell the browser to run main() — sends RunRequest via SSE. Must
-        // happen after debug setup so DWDS can set breakpoints.
-        appConnection.runMain();
-      });
     }
 
     // For web WASM: set up bazel rebuild + CDP page reload strategy.
