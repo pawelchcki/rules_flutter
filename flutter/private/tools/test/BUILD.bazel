@@ -1,0 +1,30 @@
+load("@rules_dart//dart:defs.bzl", "dart_test")
+
+# Unit tests for the Dart tools that build actions run.
+#
+# Each test imports its tool by relative path (`../merge_plists.dart`), so the
+# tool is a `srcs` entry rather than a dep: these tools are plain scripts with
+# no pub dependencies, deliberately, since a build action runs them straight
+# from the toolchain's Dart.
+#
+# Adding an entry here is the whole cost of a new test file, and the list is
+# the reason a file cannot quietly go unrun — all four of these shipped without
+# targets and were never covered by `bazel test //...`, the canonical runner.
+#
+# `@dev_tool_deps//:test` is `package:test` from the one pub hub this workspace
+# declares (MODULE.bazel `flutter.pub(name = "dev_tool_deps")`). These tools are
+# not part of the dev tool; they share its hub because a second hub would mean a
+# second pubspec to resolve and keep pinned for a single test-only dependency.
+_UNIT_TESTS = {
+    "bundle_app_test": "bundle_app.dart",
+    "generate_asset_manifest_test": "generate_asset_manifest.dart",
+    "merge_android_manifests_test": "merge_android_manifests.dart",
+    "merge_plists_test": "merge_plists.dart",
+}
+
+[dart_test(
+    name = name,
+    srcs = ["//flutter/private/tools:%s" % tool],
+    main = "%s.dart" % name,
+    deps = ["@dev_tool_deps//:test"],
+) for name, tool in _UNIT_TESTS.items()]
