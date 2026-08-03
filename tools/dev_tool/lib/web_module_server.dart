@@ -17,6 +17,7 @@ import 'package:path/path.dart' as p;
 import 'package:shelf/shelf.dart' as shelf;
 import 'package:shelf/shelf_io.dart' as shelf_io;
 
+import 'dev_tool_exception.dart';
 import 'toolchain_info.dart';
 import 'web_bootstrap.dart';
 
@@ -323,27 +324,36 @@ class WebModuleServer implements AssetReader {
   ///
   /// Must be called before [start] or after [start] with [chromeConnection]
   /// callback that will lazily connect to Chrome when DWDS needs it.
+  ///
+  /// Throws [DevToolException] when [packageConfigPath] is absent or cannot be
+  /// read. DWDS resolves every `package:` URI through that config, so without
+  /// it there is no VM service, no hot reload, no DevTools and no app console —
+  /// the run is broken, not degraded. Returning with DWDS disabled instead is
+  /// what produced a Chrome window that rendered, reported `app.started`, and
+  /// could not be debugged or reloaded at all. `flutter run` has no code path
+  /// that continues a debug web run with DWDS off either.
   Future<void> initDwds({
     required ConnectionProvider chromeConnection,
     Uri? serverUri,
   }) async {
     // Build the package URI mapper for DWDS module resolution.
-    PackageUriMapper? mapper;
-    if (packageConfigPath != null) {
-      try {
-        final config =
-            await pkg.loadPackageConfig(File(packageConfigPath!));
-        mapper = PackageUriMapper(config);
-      } catch (e) {
-        // Can't create mapper — DWDS will have limited functionality.
-        stderr.writeln('Warning: Could not load package config for DWDS: $e');
-      }
+    final configPath = packageConfigPath;
+    if (configPath == null) {
+      throw DevToolException(
+          'Cannot start the web debugger: this run resolved no '
+          'package_config.json, so DWDS has no way to map package: URIs to '
+          'sources. Hot reload, DevTools and the app console all depend on '
+          'it.');
     }
-
-    if (mapper == null) {
-      stderr.writeln('Warning: No PackageUriMapper available — '
-          'DWDS integration disabled.');
-      return;
+    final PackageUriMapper mapper;
+    try {
+      mapper = PackageUriMapper(await pkg.loadPackageConfig(File(configPath)));
+    } catch (e) {
+      throw DevToolException(
+          'Cannot start the web debugger: could not load the package config '
+          'at $configPath: $e\n'
+          'DWDS resolves every package: URI through it, so hot reload, '
+          'DevTools and the app console would all be unavailable.');
     }
 
     final strategyProvider = FrontendServerDdcLibraryBundleStrategyProvider(

@@ -113,6 +113,7 @@ _UNIT_TESTS = {
     "toolchain_info_test": {"deps": _PATH_DEP},
     "vm_service_client_test": {"fakes": True},
     "vm_service_logs_test": {"fakes": True},
+    "web_module_server_test": {},
 }
 
 [dart_test(

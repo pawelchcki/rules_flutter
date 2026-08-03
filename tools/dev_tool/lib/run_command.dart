@@ -700,62 +700,73 @@ class RunCommand {
         // Compile the synthetic entrypoint.
         final initialResult =
             await frontendServer.compile(_resolvedEntrypoint);
-        if (initialResult.success) {
-          frontendServer.accept();
-          webModuleServer.updateModules(initialResult.dillPath);
-          // Seed AppliedVersions so the next reload only sees post-startup
-          // edits as changed (not every file as "newly applied"). The resolver
-          // keys every source file (app + deps) by its `package:` URI — which is
-          // how the frontend_server keys those libraries (the synthetic web
-          // entrypoint imports them via `package:` through the dev
-          // package_config), so an invalidation actually hits them.
-          reloadResolver = PackageUriResolver(
-            workspaceRoot: workspace,
-            sourcePackages: devConfig.sourcePackages,
-          );
-          workspaceView = Workspace(
-            resolver: reloadResolver,
-            generatedFiles: devConfig.generatedFileUris,
-          );
-          final initialSnap = workspaceView.snapshot();
-          appliedVersions.markApplied(initialSnap,
-              files: initialSnap.fileUris.toSet());
-          // Codegen apps: rebuild generated sources via bazel before each web
-          // reload (regenerates `.g.dart`, keeps the execroot forest intact).
-          if (devConfig.generatedSourceUris.isNotEmpty) {
-            refreshGenerated = () async {
-              final r = await bazelBuild(target,
-                  workspace: workspace,
-                  compilationMode: 'dbg',
-                  extraArgs: [...devices.first.buildArgs, ...defineFlags]);
-              return r.success;
-            };
-          }
-          hotReloadReady.signalReady();
-          logger.info({
-            'message': 'frontend_server_ready',
-            'text':
-                'DDC frontend server ready. Module server at ${webModuleServer.uri}',
-            // Structured as well as prose: this is the base URL every web
-            // asset is served from, so a client driving the tool (or a test)
-            // can address the server without parsing the sentence above.
-            'uri': webModuleServer.uri.toString(),
-          });
-        } else {
+        if (!initialResult.success) {
           throw DevToolException(
               'Initial DDC compile failed.\n${initialResult.diagnostics}');
         }
+        frontendServer.accept();
+        webModuleServer.updateModules(initialResult.dillPath);
+        // Seed AppliedVersions so the next reload only sees post-startup
+        // edits as changed (not every file as "newly applied"). The resolver
+        // keys every source file (app + deps) by its `package:` URI — which is
+        // how the frontend_server keys those libraries (the synthetic web
+        // entrypoint imports them via `package:` through the dev
+        // package_config), so an invalidation actually hits them.
+        reloadResolver = PackageUriResolver(
+          workspaceRoot: workspace,
+          sourcePackages: devConfig.sourcePackages,
+        );
+        workspaceView = Workspace(
+          resolver: reloadResolver,
+          generatedFiles: devConfig.generatedFileUris,
+        );
+        final initialSnap = workspaceView.snapshot();
+        appliedVersions.markApplied(initialSnap,
+            files: initialSnap.fileUris.toSet());
+        // Codegen apps: rebuild generated sources via bazel before each web
+        // reload (regenerates `.g.dart`, keeps the execroot forest intact).
+        if (devConfig.generatedSourceUris.isNotEmpty) {
+          refreshGenerated = () async {
+            final r = await bazelBuild(target,
+                workspace: workspace,
+                compilationMode: 'dbg',
+                extraArgs: [...devices.first.buildArgs, ...defineFlags]);
+            return r.success;
+          };
+        }
+        logger.info({
+          'message': 'frontend_server_ready',
+          'text':
+              'DDC frontend server ready. Module server at ${webModuleServer.uri}',
+          // Structured as well as prose: this is the base URL every web
+          // asset is served from, so a client driving the tool (or a test)
+          // can address the server without parsing the sentence above.
+          'uri': webModuleServer.uri.toString(),
+        });
 
         // Set module server on WebDevice before launch.
         webDevice.setModuleServer(webModuleServer);
-      } catch (e) {
-        stderr.writeln('Warning: Could not start DDC dev server: $e');
-        stderr.writeln('Falling back to static file serving (no hot restart).');
+
+        // Last statement in the block on purpose. `signalReady` used to fire
+        // above, with six statements still to run: a throw in between left the
+        // gate open while `frontendServer` was reset to null, and the next
+        // reload answered `No frontend server available` — naming the wrong
+        // thing entirely.
+        hotReloadReady.signalReady();
+      } catch (_) {
+        // Cleanup, then out. There is no fallback here any more: a debug web
+        // run whose DDC/DWDS setup failed has no VM service, no hot reload, no
+        // DevTools and no app console. Serving the stale bazel bundle
+        // statically instead used to hide all of that behind two `Warning:`
+        // lines and a Chrome window that looked healthy — and it swallowed
+        // four DevToolExceptions this block raises deliberately (no
+        // `_dev_config.json`, no `package_config.json`, a failed initial
+        // compile, and DWDS's own).
         await webModuleServer?.stop();
         webModuleServer = null;
+        await frontendServer?.shutdown();
         frontendServer = null;
-        hotReloadReady.signalUnavailable(
-            'DDC dev server failed; hot reload unavailable: $e');
+        rethrow;
       }
     }
 
