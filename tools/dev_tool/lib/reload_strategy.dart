@@ -18,6 +18,20 @@ import 'web_module_server.dart';
 /// rebuilds the tree).
 const int _rpcMethodNotFound = -32601;
 
+/// `kIsolateCannotReload`. DWDS raises it when no browser client is attached.
+const int _rpcIsolateCannotReload = 109;
+
+/// `kServerError`. Reached by the same "no client" condition on the Chrome
+/// path, which fails with a `StateError` that `package:vm_service` re-encodes
+/// rather than preserving code 109. Upstream accepts both for this reason
+/// (`resident_web_runner.dart:544-546`).
+const int _rpcServerError = -32000;
+
+/// Said whenever the recompiled code has nowhere to go. Not a failure: the
+/// modules are served, so the next client to connect loads them.
+const String _noClientMessage = 'no browser client connected — the recompiled '
+    'code will load when one connects';
+
 /// What applying compiled output to the running app(s) achieved.
 ///
 /// Sits below `ReloadOutcome` in `hot_reload/reload_orchestrator.dart`, which
@@ -125,8 +139,7 @@ class VmServiceReloadStrategy implements ReloadStrategy {
 
 /// Reload strategy for web DDC via DWDS VM service protocol.
 ///
-/// Uses DWDS's VM service to trigger `$dartReloadModifiedModules` (reload)
-/// or page restart via the DWDS-injected client.
+/// Uses DWDS's VM service for both operations, so neither navigates the page.
 ///
 /// Flow for hot reload:
 ///   1. Update module server with new DDC output
@@ -135,55 +148,88 @@ class VmServiceReloadStrategy implements ReloadStrategy {
 ///
 /// Flow for hot restart:
 ///   1. Update module server with new DDC output
-///   2. CDP Page.reload → page reloads with new modules
+///   2. DWDS's `hotRestart` service → `$dartHotRestartDwds` in the browser,
+///      which swaps the new modules in and starts a fresh isolate
+///
+/// The page survives both. That is what separates this from [CdpReloadStrategy]
+/// and [WasmReloadStrategy], which navigate — upstream reserves `Page.reload`
+/// for non-debug builds too (`resident_web_runner.dart:612-617`).
 class DwdsReloadStrategy implements ReloadStrategy {
   final WebModuleServer moduleServer;
 
-  /// CDP port for page reload (hot restart fallback).
-  final int? cdpPort;
+  /// How long to wait for a `hotRestart` before giving up on it.
+  ///
+  /// Purely a hang-guard: DWDS awaits its new isolate's `IsolateStart` with no
+  /// timeout of its own (`dwds_vm_client.dart:530`), so a page that never
+  /// reports one would wedge the session for good. Not a latency budget — a
+  /// restart that takes this long has gone wrong.
+  final Duration restartTimeout;
 
-  /// App URL for finding the correct CDP tab.
-  final String? appUrl;
-
-  /// The DWDS VM service instance. (Re-)attached on every browser connection
-  /// via [attachVmService] — a web hot restart is a CDP page reload, which
-  /// replaces the page's isolate and VM service, so the prior connection dies.
+  /// The DWDS VM service instance, or null before a browser has connected.
+  ///
+  /// (Re-)attached via [attachVmService] on every browser connection: a
+  /// genuine page navigation (the user hitting reload, a crash) replaces the
+  /// page's isolate and VM service, so the prior connection dies.
   vm.VmService? get vmService => _vmService;
   vm.VmService? _vmService;
 
   /// The main isolate ID from the DWDS VM service.
   String? _isolateId;
 
-  /// Completed by [attachVmService] when a new browser connection re-attaches
-  /// the VM service. [applyRestart] arms this before triggering the page reload
-  /// so it can wait for the reconnect before returning.
-  Completer<void>? _reattachCompleter;
+  /// Service name → the method name to actually call, as announced by
+  /// `ServiceRegistered` events. See [_hotRestartMethod].
+  final Map<String, String> _registeredServices = {};
+
+  StreamSubscription<vm.Event>? _serviceSub;
 
   DwdsReloadStrategy({
     required this.moduleServer,
-    this.cdpPort,
-    this.appUrl,
+    this.restartTimeout = const Duration(seconds: 60),
   });
 
   /// Attach (or replace) the DWDS VM service after a browser (re)connection.
   ///
-  /// Disposes any prior connection (dead after a page reload) and clears the
-  /// cached isolate id so the next reload re-discovers the new page's isolate.
-  void attachVmService(vm.VmService service) {
+  /// Disposes any prior connection (dead after a navigation), clears the cached
+  /// isolate id so the next reload re-discovers the new page's isolate, and
+  /// re-subscribes to the `Service` stream to learn this connection's service
+  /// names — registrations do not survive the connection that made them.
+  Future<void> attachVmService(vm.VmService service) async {
+    await _serviceSub?.cancel();
     unawaited(_vmService?.dispose());
     _vmService = service;
     _isolateId = null;
-    if (_reattachCompleter case final c? when !c.isCompleted) {
-      c.complete();
+    _registeredServices.clear();
+    // Listen before subscribing: DDS replays every existing registration when
+    // a client subscribes to the stream (dds `stream_manager.dart:252-269`),
+    // and those replayed events would otherwise land before we were looking.
+    _serviceSub = service.onServiceEvent.listen(_onServiceEvent);
+    await service.streamListen(vm.EventStreams.kService);
+  }
+
+  void _onServiceEvent(vm.Event event) {
+    final service = event.service;
+    if (service == null) return;
+    switch (event.kind) {
+      case vm.EventKind.kServiceRegistered:
+        if (event.method case final method?) {
+          _registeredServices[service] = method;
+        }
+      case vm.EventKind.kServiceUnregistered:
+        _registeredServices.remove(service);
     }
   }
 
-  /// Arm a one-shot future that completes on the next [attachVmService].
-  Future<void> _awaitReattach() {
-    final completer = Completer<void>();
-    _reattachCompleter = completer;
-    return completer.future;
-  }
+  /// The method name for DWDS's hot restart.
+  ///
+  /// DWDS registers it as a *client-provided* service named `hotRestart`
+  /// (`dwds_vm_client.dart:333`). With DWDS owning the DDS, DDS exposes it to
+  /// other clients under that client's namespace — `s0.hotRestart` — so the
+  /// bare name gets `kMethodNotFound`. The registered name is therefore read
+  /// off a `ServiceRegistered` event rather than assumed.
+  ///
+  /// The bare name is the correct name when nothing was registered: that is a
+  /// DWDS with no DDS in front of it, not a degraded state.
+  String get _hotRestartMethod => _registeredServices['hotRestart'] ?? 'hotRestart';
 
   /// Discover the main isolate ID from the VM service.
   Future<String?> _getIsolateId() async {
@@ -203,14 +249,10 @@ class DwdsReloadStrategy implements ReloadStrategy {
     moduleServer.updateModules(result.dillPath);
 
     if (vmService == null) {
-      // A restart still gets the edit in front of the user, but it is not the
-      // reload they asked for — say so rather than reporting it as one.
-      final restarted = await applyRestart(result, sessions);
-      if (restarted.isSuccess) {
-        return const StrategyUnsupported(
-            'DWDS VM service not connected — restarted instead of reloading');
-      }
-      return restarted;
+      // This used to delegate to applyRestart for a CDP page reload. Restart is
+      // now a DWDS call that needs the same connection, so the delegation would
+      // only recurse into this check.
+      return const StrategyUnsupported(_noClientMessage);
     }
 
     try {
@@ -255,35 +297,32 @@ class DwdsReloadStrategy implements ReloadStrategy {
       CompileResult result, List<DeviceSession> sessions) async {
     moduleServer.updateModules(result.dillPath);
 
-    // Hot restart uses CDP page reload — the page reloads and picks up
-    // the new modules from the module server.
-    if (cdpPort == null) {
-      return const StrategyUnsupported(
-          'no CDP port — cannot reload the browser page');
+    final service = _vmService;
+    if (service == null) {
+      // Upstream's answer too: report, don't wait and don't touch the page
+      // (`resident_web_runner.dart:519`). The modules are already served, so a
+      // client that connects later gets the new code as its first load.
+      return const StrategyUnsupported(_noClientMessage);
     }
+
     try {
-      // Arm BEFORE triggering the reload so we can't miss the reconnect event.
-      final reattached = _awaitReattach();
-      await _cdpPageReload(cdpPort!, appUrl: appUrl);
-      // Wait for the browser to reconnect and re-attach the VM service, so a
-      // hot reload issued right after this restart uses the live connection
-      // rather than the now-dead one. Bounded so a missed reconnect logs and
-      // returns instead of hanging the session.
-      var reconnected = true;
-      await reattached.timeout(const Duration(seconds: 10), onTimeout: () {
-        reconnected = false;
-      });
-      if (!reconnected) {
-        // The page was told to reload but never came back, so there is no
-        // live connection and no evidence the new code is running. Reporting
-        // success here left the next reload talking to a dead isolate.
-        return const StrategyRejected(
-            'the browser did not reconnect within 10s of the page reload');
+      await service.callMethod(_hotRestartMethod).timeout(restartTimeout);
+    } on TimeoutException {
+      return StrategyRejected('the browser did not report a restarted isolate '
+          'within ${restartTimeout.inSeconds}s');
+    } on vm.RPCError catch (e) {
+      if (e.code == _rpcIsolateCannotReload || e.code == _rpcServerError) {
+        return const StrategyUnsupported(_noClientMessage);
       }
-      return const StrategyApplied(1);
-    } catch (e) {
-      return StrategyRejected('CDP page reload failed: $e');
+      return StrategyRejected(e.message);
     }
+
+    // Load-bearing. DWDS swapped the code into the live page, so there is no
+    // navigation, no browser reconnect, and no attachVmService call — the only
+    // other place this is cleared. Left set, it names the isolate DWDS just
+    // replaced and the next hot reload calls reloadSources on a dead one.
+    _isolateId = null;
+    return const StrategyApplied(1);
   }
 }
 

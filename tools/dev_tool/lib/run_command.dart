@@ -940,17 +940,12 @@ class RunCommand {
     if (isWebDevice && webModuleServer != null && !wasmMode) {
       if (webModuleServer.connectedApps != null) {
         // Set up the VM service on EVERY browser connection — not just the
-        // first. A web hot restart is a CDP page reload, which tears down the
-        // page's isolate and VM service; re-attaching on each (re)connection
-        // lets the next hot reload use the live connection instead of a dead
-        // one. Matches Flutter's resident_web_runner, which re-attaches per
-        // connection.
-        final webDevice = devices.first as WebDevice;
-        final dwdsReload = DwdsReloadStrategy(
-          moduleServer: webModuleServer,
-          cdpPort: webDevice.cdpPort,
-          appUrl: webModuleServer.uri.toString(),
-        );
+        // first. Hot restart preserves the page, but a genuine navigation (the
+        // user hitting reload, a crash) still tears down the page's isolate and
+        // VM service; re-attaching on each (re)connection lets the next hot
+        // reload use the live connection instead of a dead one. Matches
+        // Flutter's resident_web_runner, which re-attaches per connection.
+        final dwdsReload = DwdsReloadStrategy(moduleServer: webModuleServer);
         reloadStrategy = dwdsReload;
         VmServiceLogForwarder? webLogForwarder;
 
@@ -976,7 +971,7 @@ class RunCommand {
             );
             session.vmClient = webClient;
             final webVmService = webClient.service!;
-            dwdsReload.attachVmService(webVmService);
+            await dwdsReload.attachVmService(webVmService);
 
             // Claim hot reload on the DDS, as flutter_tools does. Without it a
             // DevTools-initiated reload bypasses us and calls DWDS's raw

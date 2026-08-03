@@ -248,11 +248,25 @@ class FakeVmService implements VmService {
   /// The `renderedErrorText` carried by the simulated `Flutter.Error`.
   String flutterErrorText;
 
+  /// The name a `hotRestart` [callMethod] was issued under — bare, or the
+  /// DDS-namespaced alias. Null until one is called. What proves the alias
+  /// resolved off the `ServiceRegistered` event rather than being hardcoded.
+  String? hotRestartMethod;
+
+  /// If non-null, a `hotRestart` call throws this instead of succeeding.
+  RPCError? hotRestartError;
+
+  /// If non-null, a `hotRestart` call awaits this gate before returning. Lets
+  /// a test drive DWDS's unbounded `waitForIsolateStarted` deterministically.
+  Completer<void>? hotRestartGate;
+
   final StreamController<Event> _extController =
       StreamController<Event>.broadcast();
   final StreamController<Event> _stdoutController =
       StreamController<Event>.broadcast();
   final StreamController<Event> _stderrController =
+      StreamController<Event>.broadcast();
+  final StreamController<Event> _serviceController =
       StreamController<Event>.broadcast();
 
   /// Stream IDs passed to [streamListen], in call order.
@@ -294,6 +308,31 @@ class FakeVmService implements VmService {
 
   @override
   Stream<Event> get onExtensionEvent => _extController.stream;
+
+  @override
+  Stream<Event> get onServiceEvent => _serviceController.stream;
+
+  /// Emit the `ServiceRegistered` event DDS sends when a client registers a
+  /// service, carrying the namespaced [method] the caller must actually use
+  /// (dds `stream_manager.dart:49-60`).
+  void emitServiceRegistered(String service, String method) {
+    _serviceController.add(Event(
+      kind: EventKind.kServiceRegistered,
+      service: service,
+      method: method,
+      timestamp: 0,
+    ));
+  }
+
+  /// Emit the matching `ServiceUnregistered`.
+  void emitServiceUnregistered(String service, String method) {
+    _serviceController.add(Event(
+      kind: EventKind.kServiceUnregistered,
+      service: service,
+      method: method,
+      timestamp: 0,
+    ));
+  }
 
   @override
   Stream<Event> get onStdoutEvent => _stdoutController.stream;
@@ -458,6 +497,16 @@ class FakeVmService implements VmService {
     Map<String, dynamic>? args,
   }) async {
     _checkAlive(method);
+    // DWDS's hot restart, reachable bare or under a DDS namespace (`s0.`).
+    // Without this branch the fall-through below would answer an empty
+    // Response, making every restart pass while recording nothing.
+    if (method == 'hotRestart' || method.endsWith('.hotRestart')) {
+      hotRestartMethod = method;
+      if (hotRestartGate != null) await hotRestartGate!.future;
+      _checkAlive(method); // the gate may have outlived the connection
+      if (hotRestartError != null) throw hotRestartError!;
+      return Response()..json = Success().toJson();
+    }
     if (method == '_flutter.listViews') {
       return Response()
         ..json = {
@@ -505,6 +554,7 @@ class FakeVmService implements VmService {
     await _extController.close();
     await _stdoutController.close();
     await _stderrController.close();
+    await _serviceController.close();
   }
 
   @override
