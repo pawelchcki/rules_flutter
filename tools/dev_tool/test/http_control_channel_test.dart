@@ -36,7 +36,12 @@ void main() {
     });
 
     tearDown(() async {
-      client.close();
+      // force: true, or the client's keep-alive sockets stay open until they
+      // idle out. `dart test` force-exits the VM once tests finish and hides
+      // that, but running the file directly — as the Bazel target does — makes
+      // the VM linger on the open handles: 35 cases turned a <1s suite into a
+      // 60s test action, and blew the 300s timeout on CI.
+      client.close(force: true);
       await channel.stop();
     });
 
