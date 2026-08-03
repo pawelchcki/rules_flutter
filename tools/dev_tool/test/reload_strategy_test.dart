@@ -95,6 +95,77 @@ void main() {
     });
   });
 
+  group('reloadResultToMap', () {
+    // The bug this pins: the map answered a fixed '$verb failed on some
+    // devices', so every StrategyOutcome message — the only place the reason
+    // is ever written down — was discarded at the protocol boundary.
+    test('a rejected apply explains itself', () {
+      final map = reloadResultToMap(
+        ReloadResult(
+          compileSuccess: true,
+          outcome: const StrategyRejected('the browser refused the new sources'),
+          elapsedMs: 1,
+        ),
+        'Hot reload',
+      );
+
+      expect(map['message'], contains('the browser refused the new sources'));
+    });
+
+    test('an unsupported apply explains itself too', () {
+      final map = reloadResultToMap(
+        ReloadResult(
+          compileSuccess: true,
+          outcome: const StrategyUnsupported('no browser client connected'),
+          elapsedMs: 1,
+        ),
+        'Restart',
+      );
+
+      expect(map['message'], contains('no browser client connected'));
+      expect(map['message'], startsWith('Restart'));
+    });
+
+    // Reachable: nothing stops a caller building a result with no outcome, and
+    // 'Restart failed: null' would be worse than the generic wording.
+    test('an outcome-less failure keeps the generic wording', () {
+      final map = reloadResultToMap(
+        ReloadResult(compileSuccess: true, elapsedMs: 1),
+        'Restart',
+      );
+
+      expect(map['message'], 'Restart failed on some devices');
+    });
+
+    test('a compile failure short-circuits with its diagnostics', () {
+      final map = reloadResultToMap(
+        ReloadResult(
+          compileSuccess: false,
+          diagnostics: 'main.dart:3:1: Error: boom',
+          elapsedMs: 1,
+        ),
+        'Hot reload',
+      );
+
+      expect(map['message'], 'Compilation failed');
+      expect(map['error'], contains('boom'));
+    });
+
+    test('a success says so and carries no error', () {
+      final map = reloadResultToMap(
+        ReloadResult(
+          compileSuccess: true,
+          outcome: const StrategyApplied(1),
+          elapsedMs: 1,
+        ),
+        'Hot reload',
+      );
+
+      expect(map['message'], 'Hot reload successful');
+      expect(map.containsKey('error'), isFalse);
+    });
+  });
+
   group('reportReloadCommand', () {
     test('renders an error rather than staying silent', () {
       final logged = <String>[];

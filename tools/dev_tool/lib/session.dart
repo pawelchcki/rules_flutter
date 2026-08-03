@@ -167,6 +167,37 @@ class ReloadResult {
   });
 }
 
+/// Convert a [ReloadResult] to an `app.hotReload` / `app.restart` response map.
+///
+/// [verb] names the operation ('Hot reload', 'Restart') so one function serves
+/// both commands.
+///
+/// The failure arm carries [ReloadResult.failureReason]. Without it every
+/// [StrategyOutcome] message died here behind a fixed '$verb failed on some
+/// devices' — the strategies compose careful explanations ("no browser client
+/// connected", "the browser did not report a restarted isolate within 60s")
+/// and the user saw none of them. `failureReason` had no production caller at
+/// all before this.
+Map<String, dynamic> reloadResultToMap(ReloadResult result, String verb) {
+  if (!result.compileSuccess) {
+    return {
+      'message': 'Compilation failed',
+      if (result.diagnostics.isNotEmpty) 'error': result.diagnostics,
+    };
+  }
+  if (!result.deviceSuccess) {
+    // Null whenever the result carries no outcome, which a caller can still
+    // construct — keep the generic wording for that case rather than printing
+    // a dangling 'failed: null'.
+    final reason = result.failureReason;
+    return {
+      'message':
+          reason == null ? '$verb failed on some devices' : '$verb failed: $reason',
+    };
+  }
+  return {'message': '$verb successful'};
+}
+
 /// Incrementally recompile and hot reload all devices.
 ///
 /// Calls [FrontendServer.recompile] with the given [invalidatedFiles], then

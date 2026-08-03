@@ -271,20 +271,6 @@ class RunCommand {
       if (!shutdownRequested.isCompleted) shutdownRequested.complete();
     }
 
-    /// Convert a [ReloadResult] to a machine protocol response map.
-    Map<String, dynamic> _reloadResultToMap(ReloadResult result, String verb) {
-      if (!result.compileSuccess) {
-        return {
-          'message': 'Compilation failed',
-          if (result.diagnostics.isNotEmpty) 'error': result.diagnostics,
-        };
-      }
-      if (!result.deviceSuccess) {
-        return {'message': '$verb failed on some devices'};
-      }
-      return {'message': '$verb successful'};
-    }
-
     /// Get the list of sessions targeted by a command.
     /// If appId is provided, targets only that session. Otherwise all sessions.
     List<DeviceSession> targetSessions(Map<String, dynamic> params) {
@@ -397,7 +383,7 @@ class RunCommand {
         appliedVersions.clear();
         appliedVersions.markApplied(snap, files: snap.fileUris.toSet());
       }
-      return _reloadResultToMap(result, 'Restart');
+      return reloadResultToMap(result, 'Restart');
     }
 
     Future<Map<String, dynamic>> performHotReload(
@@ -454,7 +440,7 @@ class RunCommand {
       if (result.success) {
         appliedVersions.markApplied(snap, files: invalidated);
       }
-      return _reloadResultToMap(result, 'Hot reload');
+      return reloadResultToMap(result, 'Hot reload');
     }
 
     commandRunner.register('app.restart', (params) async {
