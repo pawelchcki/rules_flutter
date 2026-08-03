@@ -9,37 +9,72 @@ import 'fakes.dart';
 
 void main() {
   group('WebDevice server cleanup (H9)', () {
+    /// A directory with the one file the static server needs, cleaned up with
+    /// the test.
+    Future<Directory> appDir() async {
+      final tmpDir = await Directory.systemTemp.createTemp('web_test_');
+      addTearDown(() => tmpDir.delete(recursive: true));
+      await File('${tmpDir.path}/index.html').writeAsString('<html></html>');
+      return tmpDir;
+    }
+
+    /// Chrome's real announcement, which is all [WebDevice] reads it for.
+    const devToolsLine =
+        'DevTools listening on ws://127.0.0.1:9222/devtools/browser/abc123';
+
     test('launch returns AppInstance with server field', () async {
-      // We can't fully test Chrome launching, but we can verify the
-      // server is created and accessible by testing a mock device.
-      // WebDevice needs Chrome, so we test the pattern with a custom
-      // startProcess that returns a fake.
+      // Chrome itself is faked, but the launch still resolves the real binary
+      // first — an explicit skip rather than a swallowed StateError, which
+      // used to make this pass without running any of the assertions.
+      if (findChrome() == null) {
+        markTestSkipped('Chrome is not installed on this host');
+        return;
+      }
       final fakeChrome = FakeProcess();
       final device = WebDevice(
         startProcess: (exe, args) async => fakeChrome,
       );
 
-      // WebDevice.launch needs a real directory with an index.html.
-      final tmpDir = await Directory.systemTemp.createTemp('web_test_');
-      try {
-        await File('${tmpDir.path}/index.html').writeAsString('<html></html>');
+      final tmpDir = await appDir();
+      final launch = device.launch(tmpDir.path);
+      // The launch now waits for the debugging port, so the fake has to
+      // announce one the way Chrome does.
+      await fakeChrome.outputAttached;
+      fakeChrome.emitStderr('$devToolsLine\n');
 
-        // This will fail if Chrome is not found, which is fine for CI.
-        // The test is mainly about verifying the server field exists.
-        try {
-          final instance = await device.launch(tmpDir.path);
-          expect(instance.server, isNotNull);
-          expect(instance.server!.port, greaterThan(0));
+      final instance = await launch;
+      expect(instance.server, isNotNull);
+      expect(instance.server!.port, greaterThan(0));
+      expect(device.cdpPort, 9222);
 
-          // Verify stop closes the server.
-          await device.stop(instance);
-          // After close, binding to the same port should work.
-        } on StateError {
-          // Chrome not found — skip test gracefully.
-        }
-      } finally {
-        await tmpDir.delete(recursive: true);
+      // Verify stop closes the server.
+      await device.stop(instance);
+    });
+
+    test('a browser that exits without announcing a debug port fails the launch',
+        () async {
+      if (findChrome() == null) {
+        markTestSkipped('Chrome is not installed on this host');
+        return;
       }
+      final fakeChrome = FakeProcess();
+      final device = WebDevice(
+        startProcess: (exe, args) async => fakeChrome,
+      );
+
+      final tmpDir = await appDir();
+      final launch = device.launch(tmpDir.path);
+      await fakeChrome.outputAttached;
+      // Chrome dies having said nothing. Silently accepting a null port left
+      // the run with no screenshots, no page reload and no console, and said
+      // nothing about any of it.
+      fakeChrome.complete(1);
+
+      await expectLater(
+        launch,
+        throwsA(isA<StateError>().having((e) => e.message, 'message',
+            allOf(contains('exited'), contains('debugging port')))),
+      );
     });
   });
 

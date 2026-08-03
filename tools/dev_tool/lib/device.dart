@@ -2368,7 +2368,15 @@ class WebDevice extends Device {
     ]);
 
     final logs = _startChromeLogs(chrome, onLog);
-    _cdpPort = await _discoverCdpPort(_browserDiagnostics!);
+    try {
+      _cdpPort = await _discoverCdpPort(_browserDiagnostics!);
+    } catch (_) {
+      // No debugging port means this launch produced nothing usable; don't
+      // leave the browser and its throwaway profile running behind the error.
+      chrome.kill();
+      await logs.close();
+      rethrow;
+    }
     // No CDP console client here: DDC mode gets the app's output from the DWDS
     // VM service, and running both would print every line twice.
     return AppInstance(process: chrome, vmServiceUri: null, logs: logs);
@@ -2400,26 +2408,32 @@ class WebDevice extends Device {
     ]);
 
     final logs = _startChromeLogs(chrome, onLog);
-    _cdpPort = await _discoverCdpPort(_browserDiagnostics!);
+    try {
+      _cdpPort = await _discoverCdpPort(_browserDiagnostics!);
+    } catch (_) {
+      // As above — plus this path owns the static file server.
+      chrome.kill();
+      await logs.close();
+      await server.close();
+      rethrow;
+    }
 
     // No DWDS on this path (WASM / production JS), so CDP is the only source
     // of the app's console output.
-    if (_cdpPort != null) {
-      _consoleClient = CdpConsoleClient(
-        cdpPort: _cdpPort!,
-        appUrl: _appUrl,
-        logs: logs,
-      );
-      try {
-        await _consoleClient!.start();
-      } catch (e) {
-        // Console forwarding is not worth failing a launch over, but a silent
-        // loss of all app output would be worse than the noise.
-        stderr.writeln(
-            'Warning: could not attach to the browser console ($e). '
-            'App output will not appear in this run.');
-        _consoleClient = null;
-      }
+    _consoleClient = CdpConsoleClient(
+      cdpPort: _cdpPort!,
+      appUrl: _appUrl,
+      logs: logs,
+    );
+    try {
+      await _consoleClient!.start();
+    } catch (e) {
+      // Console forwarding is not worth failing a launch over, but a silent
+      // loss of all app output would be worse than the noise.
+      stderr.writeln(
+          'Warning: could not attach to the browser console ($e). '
+          'App output will not appear in this run.');
+      _consoleClient = null;
     }
 
     return AppInstance(
@@ -2511,13 +2525,26 @@ final cdpPortPattern = RegExp(r'DevTools listening on ws://\S+?:(\d+)/');
 /// directly, so finding the port doesn't stop those pipes being drained — an
 /// unread stderr on a browser as chatty as Chrome is the likeliest place for a
 /// full-pipe stall.
-Future<int?> _discoverCdpPort(
+///
+/// Throws a [StateError] rather than returning null when the port never
+/// arrives. It is not optional equipment: DDC dev mode dials CDP to give DWDS
+/// its Chrome connection, and every web path uses it for screenshots and page
+/// reloads. Accepting null here bought a run with none of that and no message.
+/// Upstream tool-exits in the same situation (`chrome.dart`'s "Unable to
+/// connect to Chrome debug port"). The two causes are reported separately
+/// because they call for different fixes.
+Future<int> _discoverCdpPort(
   AppLogStream browserDiagnostics, {
   Duration timeout = const Duration(seconds: 15),
 }) async {
-  final completer = Completer<int?>();
+  final completer = Completer<int>();
   final timer = Timer(timeout, () {
-    if (!completer.isCompleted) completer.complete(null);
+    if (!completer.isCompleted) {
+      completer.completeError(StateError(
+          'Chrome did not announce a DevTools debugging port within '
+          '${timeout.inSeconds}s of launch. Without it there is no debugging '
+          'connection: no DWDS VM service, no hot restart, no screenshots.'));
+    }
   });
 
   final sub = browserDiagnostics.lines.listen(
@@ -2527,7 +2554,13 @@ Future<int?> _discoverCdpPort(
       if (match != null) completer.complete(int.parse(match.group(1)!));
     },
     onDone: () {
-      if (!completer.isCompleted) completer.complete(null);
+      // Chrome's output is this stream's only source, so it ending means the
+      // browser is gone — a different failure from a browser that is up and
+      // silent, and worth saying so.
+      if (!completer.isCompleted) {
+        completer.completeError(StateError(
+            'Chrome exited before announcing a DevTools debugging port.'));
+      }
     },
   );
 
