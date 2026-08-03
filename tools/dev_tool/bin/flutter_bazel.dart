@@ -59,7 +59,16 @@ void main(List<String> args) async {
         exit(1);
     }
   } on DevToolException catch (e) {
-    stderr.writeln('Error: $e');
+    // Through the logger rather than straight to stderr: under
+    // `LOG_FORMAT=json` the line that says why the run failed has to be a
+    // record with a level like every other, or the one message a consumer most
+    // needs is the one it cannot parse. Text mode is unchanged.
+    Logger('dev_tool').severe({
+      'message': 'command_failed',
+      'text': 'Error: $e',
+      'error': '$e',
+      'exitCode': e.exitCode,
+    });
     exit(e.exitCode);
   } on FormatException catch (e) {
     stderr.writeln('Error: ${e.message}');

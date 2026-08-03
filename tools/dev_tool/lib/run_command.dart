@@ -145,7 +145,34 @@ class RunCommand {
 
   RunCommand(this._results);
 
+  /// This run's machine protocol, once [_execute] has built it.
+  ///
+  /// Held on the command so [execute] can still reach it while unwinding.
+  /// Null until startup gets that far, and a no-op outside `--machine` mode.
+  MachineProtocol? _protocol;
+
+  /// Build, launch, and drive the app until the session ends.
+  ///
+  /// A [DevToolException] leaving here becomes the process's exit status —
+  /// `bin/flutter_bazel.dart` prints it and exits. Before it goes, a
+  /// `--machine` client is told why: the exception unwinds past the protocol
+  /// entirely, so without this the JSON-RPC stream just stops mid-run with no
+  /// final event and no reason. `daemon.logMessage` is flutter's own daemon
+  /// shape for exactly this — `{level, message, stackTrace?}`.
   Future<void> execute() async {
+    try {
+      await _execute();
+    } on DevToolException catch (e, stack) {
+      _protocol?.sendEvent('daemon.logMessage', {
+        'level': 'error',
+        'message': e.message,
+        'stackTrace': stack.toString(),
+      });
+      rethrow;
+    }
+  }
+
+  Future<void> _execute() async {
     final target = _results['target'] as String;
     final config = _results['config'] as String?;
     // --dart-define flags ride along on EVERY bazel invocation this run
@@ -232,6 +259,7 @@ class RunCommand {
       enabled: isMachine,
       commandRunner: commandRunner,
     );
+    _protocol = protocol;
 
     /// Look up a session by appId. Returns null if not found.
     DeviceSession? findSession(String? appId) {
@@ -471,19 +499,11 @@ class RunCommand {
     /// status like any other [DevToolException].
     DevToolException? deferredFailure;
 
-    /// End the run because of a [deferredFailure]-shaped failure: record it,
-    /// tell any machine client, and tear the session down so the loop returns.
-    void failRun(DevToolException error, StackTrace stack) {
+    /// End the run because of a [deferredFailure]-shaped failure: record it
+    /// and tear the session down so the loop returns. [execute] rethrows it
+    /// afterwards, which is what reports it and sets the exit status.
+    void failRun(DevToolException error) {
       deferredFailure ??= error;
-      // A DevToolException unwinds past the protocol entirely, so a
-      // `--machine` client would otherwise just see the stream stop with no
-      // reason given. `daemon.logMessage` is flutter's own daemon shape for
-      // this ({level, message, stackTrace?}).
-      protocol.sendEvent('daemon.logMessage', {
-        'level': 'error',
-        'message': error.message,
-        'stackTrace': stack.toString(),
-      });
       unawaited(() async {
         try {
           await performCleanup();
@@ -818,6 +838,10 @@ class RunCommand {
               'Serving the last build statically — no hot reload, no '
               'DevTools, no app console.',
           'error': '$e',
+          // Named as a field as well as in the prose: JSON mode drops `text`,
+          // so this is how a machine consumer learns the run is only still
+          // alive because someone asked for it to be.
+          'flag': '--allow-no-vm-service',
         });
         hotReloadReady.signalUnavailable(
             'DDC dev server failed; hot reload unavailable: $e');
@@ -1069,7 +1093,7 @@ class RunCommand {
             'message': 'dwds_vm_service',
             'text': 'DWDS VM service ready — hot reload enabled.',
           });
-        } catch (e, stack) {
+        } catch (e) {
           // The same rule as the native abort above, applied where web can
           // apply it. `!isWebDevice` guards that check because a browser's
           // VM service arrives asynchronously, so the decision cannot be
@@ -1092,12 +1116,10 @@ class RunCommand {
               'error': '$e',
             });
           } else {
-            failRun(
-                DevToolException(
-                    'No VM service connection for the browser session: $e\n'
-                    'Hot reload, DevTools, and the app console would all be '
-                    'unavailable. Pass --allow-no-vm-service to run anyway.'),
-                stack);
+            failRun(DevToolException(
+                'No VM service connection for the browser session: $e\n'
+                'Hot reload, DevTools, and the app console would all be '
+                'unavailable. Pass --allow-no-vm-service to run anyway.'));
             return;
           }
         }

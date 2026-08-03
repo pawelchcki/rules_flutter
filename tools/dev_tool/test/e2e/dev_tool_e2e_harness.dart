@@ -180,6 +180,31 @@ class DevToolProcess {
         );
   }
 
+  /// Wait for a stderr line containing [needle].
+  ///
+  /// The dev tool's diagnostics all go to stderr (stdout belongs to the
+  /// machine protocol), so this is how a test asserts on what a *user* would
+  /// have read — including the message a run ends with. Waiting beats reading
+  /// [stderrLines] after `exitCode`: the pipe can still be draining then.
+  Future<String> waitForStderr(
+    Pattern needle, {
+    Duration timeout = const Duration(seconds: 120),
+  }) {
+    bool matches(String line) => line.contains(needle);
+
+    for (final line in stderrLines) {
+      if (matches(line)) return Future.value(line);
+    }
+    return _stderrController.stream.where(matches).first.timeout(
+          timeout,
+          onTimeout: () => throw StateError(
+            'No stderr line matching "$needle" within ${timeout.inSeconds}s. '
+            'Saw ${stderrLines.length} line(s), last 20: '
+            '${stderrLines.reversed.take(20).toList().reversed.join(" | ")}',
+          ),
+        );
+  }
+
   /// Fetch a page of app output from the HTTP control channel's `/logs`
   /// endpoint. [since] follows the endpoint's cursor rules: omitted tails,
   /// negative tails that many lines, 0 reads from the start, positive resumes.
