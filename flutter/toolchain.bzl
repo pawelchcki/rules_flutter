@@ -8,7 +8,7 @@ FlutterInfo = provider(
         "tool_files": """Files required in runfiles to make the tool executable available.
 
 May be empty if the target_tool_path points to a locally installed tool binary.""",
-        "sdk_files": "All Flutter SDK files needed for the tool to work properly.",
+        "sdk_files": "Depset of all Flutter SDK files needed for the tool to work properly.",
     },
 )
 
@@ -42,10 +42,9 @@ def _flutter_toolchain_impl(ctx):
         runfiles = ctx.runfiles(files = tool_files),
     )
 
-    # Get SDK files if provided
-    sdk_files = []
-    if ctx.attr.sdk_files:
-        sdk_files = ctx.attr.sdk_files.files.to_list()
+    # Keep the (large) SDK file set as a depset end-to-end: consumers merge it
+    # into action inputs/runfiles without ever flattening it per target.
+    sdk_files = ctx.attr.sdk_files.files if ctx.attr.sdk_files else depset()
 
     flutterinfo = FlutterInfo(
         target_tool_path = target_tool_path,

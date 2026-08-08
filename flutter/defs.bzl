@@ -6,7 +6,7 @@ load("@protobuf//bazel/common:proto_common.bzl", "proto_common")
 load("@protobuf//bazel/common:proto_info.bzl", "ProtoInfo")
 load(
     "//flutter/private:flutter_actions.bzl",
-    "PACKAGE_CONFIG_FROM_PUB_DEPS_PY",
+    "STAGE_TREE_HELPERS",
     "create_flutter_working_dir",
     "flutter_assemble_pub_cache_action",
     "flutter_build_action",
@@ -63,6 +63,16 @@ ALLOW_REMOTE_EXECUTION_ATTR = {
         default = Label("//flutter:remote_cache_trees"),
         providers = [BuildSettingInfo],
     ),
+    "_fast_staging": attr.label(
+        default = Label("//flutter:fast_staging"),
+        providers = [BuildSettingInfo],
+    ),
+    # Action/runtime helper executed with the toolchain SDK's own `dart`, so
+    # no build action depends on a host Python interpreter.
+    "_pub_tool": attr.label(
+        default = Label("//flutter/private:tools/pub_tool.dart"),
+        allow_single_file = True,
+    ),
 }
 
 def _allow_remote_exec(ctx):
@@ -73,6 +83,9 @@ def _build_runner_cache(ctx):
 
 def _remote_cache_trees(ctx):
     return ctx.attr._remote_cache_trees[BuildSettingInfo].value
+
+def _fast_staging(ctx):
+    return ctx.attr._fast_staging[BuildSettingInfo].value
 
 def _resolve_flutter_toolchain(ctx):
     """Return (toolchain, flutter_bin File) for the resolved Flutter toolchain.
@@ -208,6 +221,8 @@ def _prepare_library_deps(ctx, flutter_toolchain, working_dir, pubspec_file, pub
         remote_cache_trees = cache_trees,
         preassembled_cache = preassembled_cache,
         build_runner_cache = _build_runner_cache(ctx),
+        fast_staging = _fast_staging(ctx),
+        pub_tool_file = ctx.file._pub_tool,
     )
 
 def _render_pub_deps_generate_script(pubspec_file, flutter_bin):
@@ -395,10 +410,8 @@ def _pub_deps_update_impl(ctx):
     runfiles = ctx.runfiles(
         files = [update_script, flutter_bin],
         transitive_files = depset(
-            transitive = [
-                depset(flutter_toolchain.flutterinfo.tool_files),
-                depset(flutter_toolchain.flutterinfo.sdk_files),
-            ],
+            direct = flutter_toolchain.flutterinfo.tool_files,
+            transitive = [flutter_toolchain.flutterinfo.sdk_files],
         ),
     )
 
@@ -650,7 +663,8 @@ def _flutter_format_impl(ctx):
             executable = runner,
             files = depset([runner]),
             runfiles = ctx.runfiles(
-                files = [runner, ctx.file.pubspec] + flutter_toolchain.flutterinfo.tool_files + flutter_toolchain.flutterinfo.sdk_files,
+                files = [runner, ctx.file.pubspec] + flutter_toolchain.flutterinfo.tool_files,
+                transitive_files = flutter_toolchain.flutterinfo.sdk_files,
             ),
         ),
     ]
@@ -807,7 +821,8 @@ def _build_runner_command_impl(ctx):
             executable = runner,
             files = depset([runner]),
             runfiles = ctx.runfiles(
-                files = [runner, ctx.file.pubspec] + flutter_toolchain.flutterinfo.tool_files + flutter_toolchain.flutterinfo.sdk_files,
+                files = [runner, ctx.file.pubspec] + flutter_toolchain.flutterinfo.tool_files,
+                transitive_files = flutter_toolchain.flutterinfo.sdk_files,
             ),
         ),
     ]
@@ -1033,6 +1048,7 @@ def _flutter_library_impl(ctx):
         pubspec_file,
         allow_remote_exec = _allow_remote_exec(ctx),
         remote_cache_trees = _remote_cache_trees(ctx),
+        fast_staging = _fast_staging(ctx),
     )
 
     return [
@@ -1461,23 +1477,23 @@ def _flutter_app_impl(ctx):
 
     copy_script = """#!/bin/bash
 set -euo pipefail
-
+""" + STAGE_TREE_HELPERS + """
 DEST="$1"
 SRC_WORKSPACE="$2"
 MANIFEST="$3"
 PUB_DEPS_SRC="$4"
+FAST_STAGING="$5"
 
 rm -rf "$DEST"
-mkdir -p "$DEST"
-
-if command -v rsync >/dev/null 2>&1; then
-    rsync -aL "$SRC_WORKSPACE/" "$DEST/"
+_stage_tree "$SRC_WORKSPACE" "$DEST" "$FAST_STAGING"
+if [ "$FAST_STAGING" = "1" ]; then
+    _make_dirs_writable "$DEST"
 else
-    cp -RL "$SRC_WORKSPACE/." "$DEST/"
+    chmod -R u+rwX "$DEST"
 fi
-chmod -R u+rwX "$DEST"
 
 if [ -f "$PUB_DEPS_SRC" ]; then
+    rm -f "$DEST/pub_deps.json"
     cp "$PUB_DEPS_SRC" "$DEST/pub_deps.json"
 fi
 
@@ -1488,6 +1504,8 @@ if [ -s "$MANIFEST" ]; then
         fi
         dest_path="$DEST/$rel"
         mkdir -p "$(dirname "$dest_path")"
+        # Replace, never write through: the staged copy may be a hardlink.
+        rm -rf "$dest_path"
         cp -RL "$src" "$dest_path"
     done < "$MANIFEST"
 fi
@@ -1505,10 +1523,15 @@ fi
             library_info.workspace.path,
             manifest.path,
             library_info.pub_deps.path,
+            "1" if _fast_staging(ctx) else "0",
         ],
         command = copy_script,
         mnemonic = "PrepareFlutterAppWorkspace",
         progress_message = "Preparing Flutter workspace for %s" % ctx.label.name,
+        execution_requirements = tree_output_execution_requirements(
+            _allow_remote_exec(ctx),
+            _remote_cache_trees(ctx),
+        ),
     )
 
     android = _android_environment(ctx)
@@ -1535,6 +1558,8 @@ fi
         android = android,
         android_test = ctx.attr.android_test,
         allow_remote_exec = _allow_remote_exec(ctx),
+        fast_staging = _fast_staging(ctx),
+        pub_tool_file = ctx.file._pub_tool,
     )
 
     runner = ctx.actions.declare_file(ctx.label.name + "_runner.sh")
@@ -1749,8 +1774,8 @@ def _flutter_dev_server_impl(ctx):
             files = depset([runner]),
             runfiles = ctx.runfiles(
                 files = [runner, library_info.pubspec] +
-                        flutter_toolchain.flutterinfo.tool_files +
-                        flutter_toolchain.flutterinfo.sdk_files,
+                        flutter_toolchain.flutterinfo.tool_files,
+                transitive_files = flutter_toolchain.flutterinfo.sdk_files,
             ),
         ),
     ]
@@ -2007,7 +2032,7 @@ def flutter_app(
 
     native.alias(**alias_args)
 
-def _render_runtime_bootstrap(prepared_workspace, library_info, flutter_bin, log_name = "flutter_test.log", pub_cache_mode = "copy"):
+def _render_runtime_bootstrap(prepared_workspace, library_info, flutter_bin, pub_tool, log_name = "flutter_test.log", pub_cache_mode = "copy"):
     """Render the bash prologue materializing a mutable runtime workspace.
 
     After this fragment runs, $RUNTIME_WORKSPACE holds a writable copy of the
@@ -2242,9 +2267,16 @@ export PATH="$FLUTTER_BIN_DIR:$PATH"
 # stripped from prepared workspaces, so an offline solve could legitimately
 # fail even though the pinned package set is complete and consistent.
 echo "Regenerating package_config.json for runtime workspace..."
-PYTHON_BIN="$(command -v python3 || command -v python || true)"
-if [ -z "$PYTHON_BIN" ]; then
-    echo "✗ python interpreter not found on PATH" | tee -a "$TEST_LOG"
+DART_BIN="$FLUTTER_ROOT/bin/cache/dart-sdk/bin/dart"
+if [ ! -x "$DART_BIN" ]; then
+    echo "✗ Dart binary not found at $DART_BIN" | tee -a "$TEST_LOG"
+    exit 1
+fi
+# resolve_path returns nonzero when it finds nothing; without `|| true` the
+# assignment would abort the script under `set -e` before the message below.
+PUB_TOOL="$(resolve_path "{pub_tool_short}" "{pub_tool_path}" || true)"
+if [ -z "$PUB_TOOL" ]; then
+    echo "✗ Unable to locate the rules_flutter pub tool" | tee -a "$TEST_LOG"
     exit 1
 fi
 export PUB_DEPS_PATH="$RUNTIME_WORKSPACE/pub_deps.json"
@@ -2253,9 +2285,7 @@ export WORKSPACE_ABS="$(cd "$RUNTIME_WORKSPACE" && pwd -P)"
 export PACKAGE_CONFIG_PATH="$RUNTIME_WORKSPACE/.dart_tool/package_config.json"
 mkdir -p "$(dirname "$PACKAGE_CONFIG_PATH")"
 rm -f "$PACKAGE_CONFIG_PATH"
-if "$PYTHON_BIN" <<'PY'
-{package_config_py}
-PY
+if "$DART_BIN" "$PUB_TOOL" package-config
 then
     echo "✓ Package config regenerated from declared metadata" | tee -a "$TEST_LOG"
 else
@@ -2274,7 +2304,8 @@ fi
         flutter_bin = flutter_bin,
         log_name = log_name,
         pub_cache_mode = pub_cache_mode,
-        package_config_py = PACKAGE_CONFIG_FROM_PUB_DEPS_PY,
+        pub_tool_short = pub_tool.short_path,
+        pub_tool_path = pub_tool.path,
     )
 
 def _single_embedded_library(ctx, rule_name):
@@ -2305,18 +2336,16 @@ def _prepare_overlay_workspace(ctx, library_info, overlay_files, suffix, mnemoni
 
     copy_script = """#!/bin/bash
 set -euo pipefail
-
+""" + STAGE_TREE_HELPERS + """
 DEST="$1"
 SRC_WORKSPACE="$2"
-shift 2
+FAST_STAGING="$3"
+shift 3
 
 rm -rf "$DEST"
-mkdir -p "$DEST"
-
-if command -v rsync >/dev/null 2>&1; then
-    rsync -aL "$SRC_WORKSPACE/" "$DEST/"
-else
-    cp -RL "$SRC_WORKSPACE/." "$DEST/"
+_stage_tree "$SRC_WORKSPACE" "$DEST" "$FAST_STAGING"
+if [ "$FAST_STAGING" = "1" ]; then
+    _make_dirs_writable "$DEST"
 fi
 
 # Copy overlay files: arguments come in pairs (rel_path, abs_path)
@@ -2329,6 +2358,9 @@ while [ $# -gt 0 ]; do
     fi
     mkdir -p "$DEST/$(dirname "$rel")"
     if [ -f "$abs" ] || [ -d "$abs" ]; then
+        # The overlay replaces whatever the workspace staged at this path;
+        # remove it first so a hardlinked file is never written through.
+        rm -rf "$DEST/$rel"
         cp -RL "$abs" "$DEST/$rel"
     fi
 done
@@ -2340,6 +2372,7 @@ done
         arguments = [
             prepared_workspace.path,
             library_info.workspace.path,
+            "1" if _fast_staging(ctx) else "0",
         ] + overlay_args,
         command = copy_script,
         mnemonic = mnemonic,
@@ -2365,6 +2398,8 @@ def _runtime_runfiles(ctx, runner, prepared_workspace, library_info):
             library_info.pub_cache,
             library_info.pub_deps,
             library_info.dart_tool,
+            # The package_config regeneration runs this with the SDK's dart.
+            ctx.file._pub_tool,
         ],
     )
 
@@ -2393,6 +2428,7 @@ def _flutter_test_impl(ctx):
         prepared_workspace,
         library_info,
         flutter_bin,
+        ctx.file._pub_tool,
         pub_cache_mode = ctx.attr.pub_cache_materialization,
     ) + """
 CMD=("$FLUTTER_BIN_ABS" "--suppress-analytics" "--no-version-check" "test" "--no-pub")
@@ -2562,9 +2598,11 @@ PUB_CACHE_SRC="$3"
 PUB_DEPS_SRC="$4"
 DART_TOOL_SRC="$5"
 FLUTTER_BIN_REL="$6"
-JOBS="$7"
-TEST_TAGS="$8"
-shift 8
+PUB_TOOL_REL="$7"
+JOBS="$8"
+TEST_TAGS="$9"
+shift 9
+ORIGINAL_PWD="$PWD"
 
 copy_tree() {
     if command -v rsync >/dev/null 2>&1; then
@@ -2656,9 +2694,9 @@ export ANDROID_SDK_ROOT=""
 export FLUTTER_ROOT
 export PATH="$FLUTTER_BIN_DIR:$PATH"
 
-PYTHON_BIN="$(command -v python3 || command -v python || true)"
-if [ -z "$PYTHON_BIN" ]; then
-    echo "python interpreter not found on PATH" >&2
+DART_BIN="$FLUTTER_ROOT/bin/cache/dart-sdk/bin/dart"
+if [ ! -x "$DART_BIN" ]; then
+    echo "Dart binary not found at $DART_BIN" >&2
     exit 1
 fi
 export PUB_DEPS_PATH="$RUNTIME_WORKSPACE/pub_deps.json"
@@ -2667,9 +2705,7 @@ export WORKSPACE_ABS="$RUNTIME_WORKSPACE"
 export PACKAGE_CONFIG_PATH="$RUNTIME_WORKSPACE/.dart_tool/package_config.json"
 mkdir -p "$(dirname "$PACKAGE_CONFIG_PATH")"
 rm -f "$PACKAGE_CONFIG_PATH"
-"$PYTHON_BIN" <<'PY'
-__PACKAGE_CONFIG_PY__
-PY
+"$DART_BIN" "$ORIGINAL_PWD/$PUB_TOOL_REL" package-config
 
 CMD=("$FLUTTER_BIN_ABS" "--suppress-analytics" "--no-version-check" "test" "--no-pub" "--update-goldens" "--run-skipped")
 # Scope --run-skipped to the golden tag(s) so it only un-skips golden tests and
@@ -2696,7 +2732,7 @@ while IFS= read -r golden_dir; do
     mkdir -p "$OUT_DIR/$(dirname "$rel")"
     copy_tree "$RUNTIME_WORKSPACE/$rel" "$OUT_DIR/$rel"
 done < <(cd "$RUNTIME_WORKSPACE" && find . -type d -name goldens 2>/dev/null)
-""".replace("__PACKAGE_CONFIG_PY__", PACKAGE_CONFIG_FROM_PUB_DEPS_PY)
+"""
 
 # `bazel run` write-back: copy the (cached) regenerated goldens into the source
 # tree. Clears existing goldens dirs first so removed images don't linger.
@@ -2789,12 +2825,17 @@ def _flutter_goldens_impl(ctx):
 
     goldens_out = ctx.actions.declare_directory(ctx.label.name + "_goldens")
 
-    action_inputs = [
-        prepared_workspace,
-        library_info.pub_cache,
-        library_info.pub_deps,
-        library_info.dart_tool,
-    ] + flutter_toolchain.flutterinfo.tool_files + flutter_toolchain.flutterinfo.sdk_files
+    pub_tool = ctx.file._pub_tool
+    action_inputs = depset(
+        direct = [
+            prepared_workspace,
+            library_info.pub_cache,
+            library_info.pub_deps,
+            library_info.dart_tool,
+            pub_tool,
+        ] + flutter_toolchain.flutterinfo.tool_files,
+        transitive = [flutter_toolchain.flutterinfo.sdk_files],
+    )
 
     ctx.actions.run_shell(
         inputs = action_inputs,
@@ -2806,6 +2847,7 @@ def _flutter_goldens_impl(ctx):
             library_info.pub_deps.path,
             library_info.dart_tool.path,
             flutter_bin,
+            pub_tool.path,
             str(ctx.attr.jobs),
             ",".join(ctx.attr.test_tags),
         ] + ctx.attr.test_files,
@@ -2910,6 +2952,7 @@ def _flutter_analyze_test_impl(ctx):
         prepared_workspace,
         library_info,
         flutter_bin,
+        ctx.file._pub_tool,
         log_name = "flutter_analyze.log",
         pub_cache_mode = ctx.attr.pub_cache_materialization,
     ) + """
@@ -3062,8 +3105,8 @@ exec "$DART_BIN" format --output=none --set-exit-if-changed "${{FILES[@]}}"
             files = depset([runner]),
             runfiles = ctx.runfiles(
                 files = [runner] + ctx.files.srcs +
-                        flutter_toolchain.flutterinfo.tool_files +
-                        flutter_toolchain.flutterinfo.sdk_files,
+                        flutter_toolchain.flutterinfo.tool_files,
+                transitive_files = flutter_toolchain.flutterinfo.sdk_files,
             ),
         ),
     ] + _test_execution_info(ctx)
@@ -3137,7 +3180,6 @@ def _dart_proto_aspect_impl(target, ctx):
     flutter_bin = flutter_toolchain.flutterinfo.target_tool_path
     flutter_bin_dir = paths.dirname(flutter_bin)
     dart_bin = paths.normalize(paths.join(flutter_bin_dir, "cache", "dart-sdk", "bin", "dart"))
-    flutter_root = paths.dirname(flutter_bin_dir)
 
     tree = ctx.actions.declare_directory(ctx.label.name + ".dart_pb")
     wrapper_script = ctx.actions.declare_file(ctx.label.name + ".dart_pb_protoc_gen_dart.sh")
@@ -3145,8 +3187,11 @@ def _dart_proto_aspect_impl(target, ctx):
     # The plugin executes out of its own pub repository, whose fetch vendors
     # the exact dependency closure its pub_deps.json pinned into .pub_cache —
     # independent of whatever versions the consuming app resolves. The package
-    # config is generated at runtime from that metadata.
+    # config resolving that closure is generated once per build by
+    # //flutter/private:protoc_gen_dart_package_config, so the wrapper only
+    # execs dart (no interpreter, no per-invocation synthesis).
     plugin_repo = ctx.attr._dart_plugin_files.label.workspace_name
+    package_config = ctx.file._dart_plugin_package_config
 
     wrapper_content = """#!/bin/bash
 set -euo pipefail
@@ -3158,8 +3203,6 @@ if [ ! -x "$DART_BIN" ]; then
     fi
 fi
 
-PYTHON_BIN="$(command -v python3 || command -v python)"
-
 PLUGIN_ROOT="$PWD/external/{plugin_repo}"
 ENTRYPOINT="$PLUGIN_ROOT/bin/protoc_plugin.dart"
 if [ ! -f "$ENTRYPOINT" ]; then
@@ -3167,22 +3210,11 @@ if [ ! -f "$ENTRYPOINT" ]; then
     exit 1
 fi
 
-export PUB_DEPS_PATH="$PLUGIN_ROOT/pub_deps.json"
-export PUB_CACHE_ABS="$PLUGIN_ROOT/.pub_cache"
-export WORKSPACE_ABS="$PLUGIN_ROOT"
-export PACKAGE_CONFIG_PATH="$(mktemp -d)/package_config.json"
-export FLUTTER_ROOT="$PWD/{flutter_root}"
-
-"$PYTHON_BIN" <<'PYEOF'
-{package_config_py}
-PYEOF
-
-exec "$DART_BIN" --packages="$PACKAGE_CONFIG_PATH" "$ENTRYPOINT" "$@"
+exec "$DART_BIN" --packages="$PWD/{package_config}" "$ENTRYPOINT" "$@"
 """.format(
         dart = dart_bin,
         plugin_repo = plugin_repo,
-        flutter_root = flutter_root,
-        package_config_py = PACKAGE_CONFIG_FROM_PUB_DEPS_PY,
+        package_config = package_config.path,
     )
 
     ctx.actions.write(
@@ -3191,8 +3223,12 @@ exec "$DART_BIN" --packages="$PACKAGE_CONFIG_PATH" "$ENTRYPOINT" "$@"
         is_executable = True,
     )
 
-    tool_inputs = depset(flutter_toolchain.flutterinfo.tool_files + flutter_toolchain.flutterinfo.sdk_files)
+    tool_inputs = depset(
+        direct = flutter_toolchain.flutterinfo.tool_files,
+        transitive = [flutter_toolchain.flutterinfo.sdk_files],
+    )
     additional_inputs = depset(
+        direct = [package_config],
         transitive = [
             ctx.attr._dart_plugin_files[DefaultInfo].files,
             tool_inputs,
@@ -3249,6 +3285,10 @@ _dart_proto_aspect = aspect(
     }) | {
         "_dart_plugin_files": attr.label(
             default = Label("@pub_protoc_plugin//:protoc_plugin_files"),
+        ),
+        "_dart_plugin_package_config": attr.label(
+            default = Label("//flutter/private:protoc_gen_dart_package_config"),
+            allow_single_file = True,
         ),
     },
     required_providers = [ProtoInfo],

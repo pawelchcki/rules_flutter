@@ -53,6 +53,19 @@ string_flag(
     visibility = ["//visibility:public"],
 )
 
+# Fast workspace/pub-cache staging. The prepare and build actions copy the
+# staged workspace and pub cache several times per target; with this flag on
+# (the default) those copies use APFS clones (macOS) or hardlinks (Linux)
+# instead of byte copies, with the handful of files the tool rewrites in
+# place re-materialized as private copies. Set false to restore plain byte
+# copies if a filesystem or tool interaction misbehaves:
+#   build --no//flutter:fast_staging
+bool_flag(
+    name = "fast_staging",
+    build_setting_default = True,
+    visibility = ["//visibility:public"],
+)
+
 # This is the target rule authors should put in their "toolchains"
 # attribute in order to get a runtime for the correct platform.
 # See https://docs.bazel.build/versions/main/toolchains.html#writing-rules-that-use-toolchains

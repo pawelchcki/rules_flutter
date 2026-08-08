@@ -19,6 +19,19 @@ platform_manifest="$2"
 component_manifest="$3"
 ndk_manifest="$4"
 mkdir -p "$out/platforms" "$out/build-tools/{build_tools_version}" "$out/platform-tools" "$out/licenses"
+# The SDK tree is thousands of files (the NDK alone is ~4GB) that Gradle only
+# ever reads. Hardlinking them costs a directory entry each instead of a byte
+# copy, while still producing a real directory tree — unlike symlinks, which
+# AGP resolves through realpath and would point back into the exec root.
+# `link_files=0` (the `copy_mode` attr) restores the byte copies.
+LINK_FILES={link_files}
+place() {{
+  # $1 source, $2 destination.
+  if [ "$LINK_FILES" = "1" ] && ln "$1" "$2" 2>/dev/null; then
+    return 0
+  fi
+  cp -p "$1" "$2"
+}}
 copy_tree() {{
   manifest="$1"
   marker="$2"
@@ -31,7 +44,7 @@ copy_tree() {{
       exit 1
     fi
     mkdir -p "$destination/$(dirname "$relative")"
-    cp -p "$source" "$destination/$relative"
+    place "$source" "$destination/$relative"
   done < "$manifest"
 }}
 copy_tree "$platform_manifest" "/platforms/" "$out/platforms"
@@ -41,12 +54,12 @@ while IFS= read -r source; do
     *"/build-tools/{platform}/{build_tools_version}/"*)
       relative="${{source#*/build-tools/{platform}/{build_tools_version}/}}"
       mkdir -p "$out/build-tools/{build_tools_version}/$(dirname "$relative")"
-      cp -p "$source" "$out/build-tools/{build_tools_version}/$relative"
+      place "$source" "$out/build-tools/{build_tools_version}/$relative"
       ;;
     *"/platform-tools/{platform}/"*)
       relative="${{source#*/platform-tools/{platform}/}}"
       mkdir -p "$out/platform-tools/$(dirname "$relative")"
-      cp -p "$source" "$out/platform-tools/$relative"
+      place "$source" "$out/platform-tools/$relative"
       ;;
   esac
 done < "$component_manifest"
@@ -58,7 +71,7 @@ if [ -s "$ndk_manifest" ]; then
     relative="${{source#*external/}}"
     relative="${{relative#*/}}"
     mkdir -p "$out/ndk/{ndk_version}/$(dirname "$relative")"
-    cp -p "$source" "$out/ndk/{ndk_version}/$relative"
+    place "$source" "$out/ndk/{ndk_version}/$relative"
   done < "$ndk_manifest"
   properties="$out/ndk/{ndk_version}/source.properties"
   if [ ! -f "$properties" ]; then
@@ -75,6 +88,7 @@ fi
             build_tools_version = ctx.attr.build_tools_version,
             ndk_version = ctx.attr.ndk_version,
             platform = ctx.attr.platform,
+            link_files = "0" if ctx.attr.copy_mode else "1",
         ),
         inputs = depset(
             direct = [platform_manifest, component_manifest, ndk_manifest],
@@ -95,6 +109,11 @@ android_sdk_tree = rule(
     attrs = {
         "build_tools_version": attr.string(mandatory = True),
         "component_files": attr.label(mandatory = True),
+        "copy_mode": attr.bool(
+            default = False,
+            doc = """Byte-copy every SDK file instead of hardlinking it. Escape
+hatch for filesystems or tools that cannot handle a hardlinked SDK tree.""",
+        ),
         "ndk_files": attr.label(),
         "ndk_version": attr.string(),
         "platform": attr.string(mandatory = True),

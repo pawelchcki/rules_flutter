@@ -32,6 +32,15 @@ verifies sentinel paths without running anything. When a sentinel is missing
 and the repository platform matches the host, `flutter precache` runs at fetch
 time (network is available to repository rules).""",
     ),
+    "warm_first_run_stamps": attr.bool(
+        default = True,
+        doc = """Run one `flutter precache` at fetch time to write the tool's
+first-run artifact stamps before bin/cache is sealed (see
+_warm_first_run_stamps). Costs ~70s of fetch work. Consumers that only build
+pure-Dart targets — which never invoke the artifact updater — can set this
+False to skip it; anything running `flutter test`/`analyze`/`build` needs
+it.""",
+    ),
 }
 
 # Sentinel paths (relative to flutter/bin/cache) proving an artifact group is
@@ -287,6 +296,8 @@ def _warm_first_run_stamps(repository_ctx):
     artifacts regardless of group flags; run one at fetch time scoped to the
     host-supported requested groups so all stamps exist before sealing.
     """
+    if not repository_ctx.attr.warm_first_run_stamps:
+        return
     if not _host_matches_platform(repository_ctx, repository_ctx.attr.platform):
         return
 
@@ -621,6 +632,12 @@ def _flutter_repo_impl(repository_ctx):
 
     _patch_engine_version_script(repository_ctx)
     if platform in _ARCHIVE_ALIASES:
+        if not repository_ctx.attr.warm_first_run_stamps:
+            fail(
+                ("rules_flutter: the {} SDK reuses the {} release archive and depends on the " +
+                 "fetch-time precache to refetch host-architecture native artifacts, so " +
+                 "warm_first_run_stamps cannot be disabled for it.").format(platform, _ARCHIVE_ALIASES[platform]),
+            )
         if not _host_matches_platform(repository_ctx, platform):
             fail(
                 ("rules_flutter: the {} SDK reuses the {} release archive and must refetch native " +

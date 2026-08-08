@@ -33,6 +33,13 @@ in the SDK cache after fetch. Stable archives already ship these; when one is
 missing, `flutter precache` runs at repository fetch time. Unioned across
 registrations of the same toolchain name.
 """, default = []),
+    "warm_first_run_stamps": attr.bool(doc = """\
+Run one `flutter precache` at fetch time so the tool's first-run artifact
+stamps exist before the SDK cache is sealed (~70s of fetch work). Required by
+anything that runs `flutter test`, `analyze` or `build`; pure-Dart consumers
+can set this False to skip it. False only takes effect when every registration
+of this toolchain name asks for it.
+""", default = True),
     "integrity": attr.string_dict(doc = """\
 Escape hatch for Flutter versions not in the built-in version table: a map
 from platform (macos, macos_arm64, linux, linux_arm64, windows) to the SRI
@@ -69,6 +76,7 @@ def _toolchain_extension(module_ctx):
     registrations = {}
     precache_groups = {}
     integrity_overrides = {}
+    warm_stamps = {}
     for mod in module_ctx.modules:
         for toolchain in mod.tags.toolchain:
             if toolchain.name != _DEFAULT_NAME and not mod.is_root:
@@ -80,6 +88,13 @@ def _toolchain_extension(module_ctx):
                 registrations[toolchain.name] = []
                 precache_groups[toolchain.name] = {}
                 integrity_overrides[toolchain.name] = {}
+                warm_stamps[toolchain.name] = False
+
+            # Any registration that needs the stamps wins: skipping them breaks
+            # every flutter test/analyze/build action, so the union is the only
+            # safe merge.
+            if toolchain.warm_first_run_stamps:
+                warm_stamps[toolchain.name] = True
             registrations[toolchain.name].append(toolchain.flutter_version)
             for group in toolchain.precache:
                 precache_groups[toolchain.name][group] = True
@@ -119,6 +134,7 @@ def _toolchain_extension(module_ctx):
             name = name,
             flutter_version = selected,
             precache = sorted(precache_groups[name].keys()),
+            warm_first_run_stamps = warm_stamps[name],
             integrity = overrides,
             register = False,
         )
@@ -209,6 +225,7 @@ pub_package = tag_class(attrs = {
     "name": attr.string(doc = "Repository name for the package", mandatory = True),
     "package": attr.string(doc = "Package name on pub.dev", mandatory = True),
     "version": attr.string(doc = "Package version (optional, defaults to latest)"),
+    "sha256": attr.string(doc = "Expected SHA-256 of the package archive (optional; pins the download)"),
 })
 
 _DEPS_DISCOVERY_SCRIPT = """
@@ -330,6 +347,7 @@ def _parse_pub_deps_json(content):
             packages[name] = {
                 "version": version,
                 "url": url or "https://pub.dev",
+                "sha256": entry.get("sha256") or "",
                 "dependencies": [dep for dep in entry.get("dependencies", []) if type(dep) == "string"],
             }
 
@@ -393,7 +411,7 @@ def _extract_description_url(description):
         )
     return None
 
-def _register_repo(repo_map, repo_name, package, version, origin, from_root = True, tagged = False):
+def _register_repo(repo_map, repo_name, package, version, origin, from_root = True, tagged = False, sha256 = ""):
     """Merge repository metadata ensuring consistency across lockfiles/tags.
 
     Root-module registrations (pub_deps.json scans and root pub.package tags)
@@ -417,6 +435,7 @@ def _register_repo(repo_map, repo_name, package, version, origin, from_root = Tr
                 "origins": [origin],
                 "from_root": True,
                 "tagged": existing["tagged"] or tagged,
+                "sha256": sha256 or existing["sha256"],
             }
             return
         if existing["package"] != package:
@@ -441,6 +460,18 @@ def _register_repo(repo_map, repo_name, package, version, origin, from_root = Tr
             )
         if version and not existing["version"]:
             existing["version"] = version
+        if sha256 and existing["sha256"] and sha256 != existing["sha256"]:
+            fail(
+                "Repository '{}' has conflicting sha256 pins: '{}' from {} vs '{}' from {}".format(
+                    repo_name,
+                    existing["sha256"],
+                    ", ".join(existing["origins"]),
+                    sha256,
+                    origin,
+                ),
+            )
+        if sha256 and not existing["sha256"]:
+            existing["sha256"] = sha256
         existing["origins"].append(origin)
         return
 
@@ -450,6 +481,7 @@ def _register_repo(repo_map, repo_name, package, version, origin, from_root = Tr
         "origins": [origin],
         "from_root": from_root,
         "tagged": tagged,
+        "sha256": sha256,
     }
 
 def _pub_extension(module_ctx):
@@ -479,6 +511,7 @@ def _pub_extension(module_ctx):
                     package,
                     info.get("version"),
                     origin,
+                    sha256 = info.get("sha256") or "",
                 )
                 merged = {dep: True for dep in dep_edges.get(package, [])}
                 for dep in info.get("dependencies", []):
@@ -496,6 +529,7 @@ def _pub_extension(module_ctx):
                 origin,
                 from_root = mod.is_root,
                 tagged = True,
+                sha256 = pkg.sha256,
             )
 
     # Restrict recorded edges to hosted packages that actually have repos and
@@ -519,6 +553,7 @@ def _pub_extension(module_ctx):
                 hosted_deps_explicit = True,
                 keep_vendored_cache = meta["tagged"],
                 resolve_deps = meta["tagged"],
+                sha256 = meta["sha256"],
             )
         else:
             pub_dev_repository(
@@ -527,6 +562,7 @@ def _pub_extension(module_ctx):
                 version = meta["version"],
                 keep_vendored_cache = meta["tagged"],
                 resolve_deps = meta["tagged"],
+                sha256 = meta["sha256"],
             )
 
 pub = module_extension(

@@ -18,6 +18,15 @@ _ATTRS = {
     "version": attr.string(
         doc = "Version of the package. If omitted, the latest stable is used.",
     ),
+    "sha256": attr.string(
+        doc = """Expected SHA-256 of the package archive. When set, the download
+is verified against it (and becomes eligible for the repository cache). When
+unset, the downloaded archive's hash is printed so it can be pinned.""",
+    ),
+    "integrity": attr.string(
+        doc = """Expected SRI checksum (e.g. sha256-...) of the package archive.
+Alternative to sha256; at most one of the two may be set.""",
+    ),
     "pub_dev_url": attr.string(
         default = "https://pub.dev",
         doc = "Base URL for pub.dev API",
@@ -74,37 +83,25 @@ def _pub_dev_repository_impl(repository_ctx):
     requested_version = repository_ctx.attr.version
     pub_dev_url = repository_ctx.attr.pub_dev_url
 
-    # Fetch package metadata from pub.dev API
-    api_url = "{}/api/packages/{}".format(pub_dev_url, package_name)
+    if repository_ctx.attr.sha256 and repository_ctx.attr.integrity:
+        fail("pub_dev_repository '{}': set at most one of sha256 and integrity.".format(package_name))
 
-    # Download package metadata
-    result = repository_ctx.download(
-        url = api_url,
-        output = "package_info.json",
-    )
-
-    if not result.success:
-        fail("Failed to download package information for {}: {}".format(package_name, result))
-
-    # Determine the version to fetch. If not provided, pick the latest stable
+    # Determine the version to fetch. Only when no version is pinned does the
+    # pub.dev metadata API need to be consulted (for the latest stable);
+    # pinned versions go straight to the archive download.
     version = requested_version
     if not version or version.strip() == "":
-        content = repository_ctx.read("package_info.json")
+        api_url = "{}/api/packages/{}".format(pub_dev_url, package_name)
+        result = repository_ctx.download(
+            url = api_url,
+            output = "package_info.json",
+        )
+        if not result.success:
+            fail("Failed to download package information for {}: {}".format(package_name, result))
 
-        # Try to extract latest stable version from the JSON payload without external tools.
-        # We look for the "latest" object and then its "version" field.
-        # This is a minimal, robust string search to avoid JSON parsing deps.
-        latest_idx = content.find('"latest"')
-        if latest_idx != -1:
-            ver_key_idx = content.find('"version"', latest_idx)
-            if ver_key_idx != -1:
-                # Find first quote after the colon
-                colon_idx = content.find(":", ver_key_idx)
-                if colon_idx != -1:
-                    first_quote = content.find('"', colon_idx + 1)
-                    second_quote = content.find('"', first_quote + 1) if first_quote != -1 else -1
-                    if first_quote != -1 and second_quote != -1:
-                        version = content[first_quote + 1:second_quote]
+        metadata = json.decode(repository_ctx.read("package_info.json"))
+        version = metadata.get("latest", {}).get("version", "")
+        repository_ctx.delete("package_info.json")
         if not version:
             fail("Could not determine latest version for {} from pub.dev metadata".format(package_name))
 
@@ -112,22 +109,38 @@ def _pub_dev_repository_impl(repository_ctx):
     # pub.dev uses the format: https://pub.dev/packages/{package}/versions/{version}.tar.gz
     archive_url = "{}/packages/{}/versions/{}.tar.gz".format(pub_dev_url, package_name, version)
 
-    # Download and extract the package archive. Extraction uses the system tar
-    # because some pub.dev archives carry trailing bytes after the gzip stream
-    # (e.g. hashcodes 2.0.0), which Bazel's strict extractor rejects.
+    # Download the package archive, verified against the pinned hash when one
+    # was provided. Extraction prefers the system tar because some pub.dev
+    # archives carry trailing bytes after the gzip stream (e.g. hashcodes
+    # 2.0.0), which Bazel's strict extractor rejects; when no tar is on PATH
+    # (hermetic containers), Bazel's own extractor is used instead.
     archive_name = "_pub_package.tar.gz"
-    repository_ctx.download(
+    download_result = repository_ctx.download(
         url = archive_url,
         output = archive_name,
+        sha256 = repository_ctx.attr.sha256,
+        integrity = repository_ctx.attr.integrity,
     )
-    extract_result = repository_ctx.execute(["tar", "-xzf", archive_name])
-    if extract_result.return_code != 0 and not repository_ctx.path("pubspec.yaml").exists:
-        fail("Failed to extract {} for package '{}' (code {}):\n{}".format(
-            archive_url,
+    if not repository_ctx.attr.sha256 and not repository_ctx.attr.integrity:
+        # buildifier: disable=print
+        print("rules_flutter: pub package {}@{} downloaded without a pinned hash; pin it with sha256 = \"{}\"".format(
             package_name,
-            extract_result.return_code,
-            extract_result.stderr,
+            version,
+            download_result.sha256,
         ))
+
+    tar_bin = repository_ctx.which("tar")
+    if tar_bin:
+        extract_result = repository_ctx.execute([tar_bin, "-xzf", archive_name])
+        if extract_result.return_code != 0 and not repository_ctx.path("pubspec.yaml").exists:
+            fail("Failed to extract {} for package '{}' (code {}):\n{}".format(
+                archive_url,
+                package_name,
+                extract_result.return_code,
+                extract_result.stderr,
+            ))
+    else:
+        repository_ctx.extract(archive_name)
     repository_ctx.delete(archive_name)
 
     generate_package_build(
@@ -161,4 +174,7 @@ pub_dev_repository = repository_rule(
     implementation = _pub_dev_repository_impl,
     attrs = _ATTRS,
     doc = _DOC,
+    # The fetch is driven entirely by declared attrs and the toolchain SDK; no
+    # host environment variable may influence the result.
+    environ = [],
 )

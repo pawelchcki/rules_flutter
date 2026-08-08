@@ -461,7 +461,7 @@
     },
     "@@rules_flutter+//flutter:extensions.bzl%flutter": {
       "general": {
-        "bzlTransitiveDigest": "kTUuJddisDUy7Qi+pQLRo9jFZyGnAWflYH9B2aWGVWQ=",
+        "bzlTransitiveDigest": "Nag5ec7JYZg+cBrephDJ6Cyy+l4CAVLpfwL5M1MfpkY=",
         "usagesDigest": "DmtFD/WdAMvXh7whCtauj7M6DaD5eQgpFMzkqiIIds0=",
         "recordedFileInputs": {},
         "recordedDirentsInputs": {},
@@ -478,7 +478,8 @@
               "flutter_version": "3.24.0",
               "precache": [
                 "web"
-              ]
+              ],
+              "warm_first_run_stamps": true
             }
           },
           "flutter_macos_arm64": {
@@ -489,7 +490,8 @@
               "flutter_version": "3.24.0",
               "precache": [
                 "web"
-              ]
+              ],
+              "warm_first_run_stamps": true
             }
           },
           "flutter_linux": {
@@ -500,7 +502,8 @@
               "flutter_version": "3.24.0",
               "precache": [
                 "web"
-              ]
+              ],
+              "warm_first_run_stamps": true
             }
           },
           "flutter_linux_arm64": {
@@ -511,7 +514,8 @@
               "flutter_version": "3.24.0",
               "precache": [
                 "web"
-              ]
+              ],
+              "warm_first_run_stamps": true
             }
           },
           "flutter_windows": {
@@ -522,7 +526,8 @@
               "flutter_version": "3.24.0",
               "precache": [
                 "web"
-              ]
+              ],
+              "warm_first_run_stamps": true
             }
           },
           "flutter_toolchains": {
@@ -610,7 +615,7 @@
     },
     "@@rules_flutter+//flutter:extensions.bzl%pub": {
       "general": {
-        "bzlTransitiveDigest": "kTUuJddisDUy7Qi+pQLRo9jFZyGnAWflYH9B2aWGVWQ=",
+        "bzlTransitiveDigest": "Nag5ec7JYZg+cBrephDJ6Cyy+l4CAVLpfwL5M1MfpkY=",
         "usagesDigest": "8P2FYQtelPagBVJ+QGRG7oizLHy3cwyOJtcLU4HfBrk=",
         "recordedFileInputs": {
           "@@//codegen_app/pub_deps.json": "1f360270a671c0b00fd37abb03989d09840cd98b55272670abebcdf6bf11a087",
@@ -631,7 +636,8 @@
               ],
               "hosted_deps_explicit": true,
               "keep_vendored_cache": false,
-              "resolve_deps": false
+              "resolve_deps": false,
+              "sha256": ""
             }
           },
           "pub_analyzer": {
@@ -656,7 +662,8 @@
               ],
               "hosted_deps_explicit": true,
               "keep_vendored_cache": false,
-              "resolve_deps": false
+              "resolve_deps": false,
+              "sha256": ""
             }
           },
           "pub_archive": {
@@ -670,7 +677,8 @@
               ],
               "hosted_deps_explicit": true,
               "keep_vendored_cache": false,
-              "resolve_deps": false
+              "resolve_deps": false,
+              "sha256": ""
             }
           },
           "pub_args": {
@@ -681,7 +689,8 @@
               "hosted_deps": [],
               "hosted_deps_explicit": true,
               "keep_vendored_cache": false,
-              "resolve_deps": false
+              "resolve_deps": false,
+              "sha256": ""
             }
           },
           "pub_async": {
@@ -695,7 +704,8 @@
               ],
               "hosted_deps_explicit": true,
               "keep_vendored_cache": false,
-              "resolve_deps": false
+              "resolve_deps": false,
+              "sha256": ""
             }
           },
           "pub_boolean_selector": {
@@ -709,7 +719,8 @@
               ],
               "hosted_deps_explicit": true,
               "keep_vendored_cache": false,
-              "resolve_deps": false
+              "resolve_deps": false,
+              "sha256": ""
             }
           },
           "pub_build": {
@@ -730,7 +741,8 @@
               ],
               "hosted_deps_explicit": true,
               "keep_vendored_cache": false,
-              "resolve_deps": false
+              "resolve_deps": false,
+              "sha256": ""
             }
           },
           "pub_build_config": {
@@ -747,7 +759,8 @@
               ],
               "hosted_deps_explicit": true,
               "keep_vendored_cache": false,
-              "resolve_deps": false
+              "resolve_deps": false,
+              "sha256": ""
             }
           },
           "pub_build_daemon": {
@@ -771,7 +784,8 @@
               ],
               "hosted_deps_explicit": true,
               "keep_vendored_cache": false,
-              "resolve_deps": false
+              "resolve_deps": false,
+              "sha256": ""
             }
           },
           "pub_build_resolvers": {
@@ -797,7 +811,8 @@
               ],
               "hosted_deps_explicit": true,
               "keep_vendored_cache": false,
-              "resolve_deps": false
+              "resolve_deps": false,
+              "sha256": ""
             }
           },
           "pub_build_runner": {
@@ -843,7 +858,8 @@
               ],
               "hosted_deps_explicit": true,
               "keep_vendored_cache": false,
-              "resolve_deps": false
+              "resolve_deps": false,
+              "sha256": ""
             }
           },
           "pub_build_runner_core": {
@@ -873,7 +889,8 @@
               ],
               "hosted_deps_explicit": true,
               "keep_vendored_cache": false,
-              "resolve_deps": false
+              "resolve_deps": false,
+              "sha256": ""
             }
           },
           "pub_built_collection": {
@@ -884,7 +901,8 @@
               "hosted_deps": [],
               "hosted_deps_explicit": true,
               "keep_vendored_cache": false,
-              "resolve_deps": false
+              "resolve_deps": false,
+              "sha256": ""
             }
           },
           "pub_built_value": {
@@ -900,7 +918,8 @@
               ],
               "hosted_deps_explicit": true,
               "keep_vendored_cache": false,
-              "resolve_deps": false
+              "resolve_deps": false,
+              "sha256": ""
             }
           },
           "pub_characters": {
@@ -911,7 +930,8 @@
               "hosted_deps": [],
               "hosted_deps_explicit": true,
               "keep_vendored_cache": false,
-              "resolve_deps": false
+              "resolve_deps": false,
+              "sha256": ""
             }
           },
           "pub_checked_yaml": {
@@ -926,7 +946,8 @@
               ],
               "hosted_deps_explicit": true,
               "keep_vendored_cache": false,
-              "resolve_deps": false
+              "resolve_deps": false,
+              "sha256": ""
             }
           },
           "pub_clock": {
@@ -937,7 +958,8 @@
               "hosted_deps": [],
               "hosted_deps_explicit": true,
               "keep_vendored_cache": false,
-              "resolve_deps": false
+              "resolve_deps": false,
+              "sha256": ""
             }
           },
           "pub_code_builder": {
@@ -954,7 +976,8 @@
               ],
               "hosted_deps_explicit": true,
               "keep_vendored_cache": false,
-              "resolve_deps": false
+              "resolve_deps": false,
+              "sha256": ""
             }
           },
           "pub_collection": {
@@ -965,7 +988,8 @@
               "hosted_deps": [],
               "hosted_deps_explicit": true,
               "keep_vendored_cache": false,
-              "resolve_deps": false
+              "resolve_deps": false,
+              "sha256": ""
             }
           },
           "pub_color": {
@@ -976,7 +1000,8 @@
               "hosted_deps": [],
               "hosted_deps_explicit": true,
               "keep_vendored_cache": false,
-              "resolve_deps": false
+              "resolve_deps": false,
+              "sha256": ""
             }
           },
           "pub_convert": {
@@ -989,7 +1014,8 @@
               ],
               "hosted_deps_explicit": true,
               "keep_vendored_cache": false,
-              "resolve_deps": false
+              "resolve_deps": false,
+              "sha256": ""
             }
           },
           "pub_copy_with_extension": {
@@ -1002,7 +1028,8 @@
               ],
               "hosted_deps_explicit": true,
               "keep_vendored_cache": false,
-              "resolve_deps": false
+              "resolve_deps": false,
+              "sha256": ""
             }
           },
           "pub_copy_with_extension_gen": {
@@ -1019,7 +1046,8 @@
               ],
               "hosted_deps_explicit": true,
               "keep_vendored_cache": false,
-              "resolve_deps": false
+              "resolve_deps": false,
+              "sha256": ""
             }
           },
           "pub_crypto": {
@@ -1032,7 +1060,8 @@
               ],
               "hosted_deps_explicit": true,
               "keep_vendored_cache": false,
-              "resolve_deps": false
+              "resolve_deps": false,
+              "sha256": ""
             }
           },
           "pub_cupertino_icons": {
@@ -1043,7 +1072,8 @@
               "hosted_deps": [],
               "hosted_deps_explicit": true,
               "keep_vendored_cache": false,
-              "resolve_deps": false
+              "resolve_deps": false,
+              "sha256": ""
             }
           },
           "pub_dart_style": {
@@ -1062,7 +1092,8 @@
               ],
               "hosted_deps_explicit": true,
               "keep_vendored_cache": false,
-              "resolve_deps": false
+              "resolve_deps": false,
+              "sha256": ""
             }
           },
           "pub_dartx": {
@@ -1080,7 +1111,8 @@
               ],
               "hosted_deps_explicit": true,
               "keep_vendored_cache": false,
-              "resolve_deps": false
+              "resolve_deps": false,
+              "sha256": ""
             }
           },
           "pub_fake_async": {
@@ -1094,7 +1126,8 @@
               ],
               "hosted_deps_explicit": true,
               "keep_vendored_cache": false,
-              "resolve_deps": false
+              "resolve_deps": false,
+              "sha256": ""
             }
           },
           "pub_ffi": {
@@ -1105,7 +1138,8 @@
               "hosted_deps": [],
               "hosted_deps_explicit": true,
               "keep_vendored_cache": false,
-              "resolve_deps": false
+              "resolve_deps": false,
+              "sha256": ""
             }
           },
           "pub_file": {
@@ -1119,7 +1153,8 @@
               ],
               "hosted_deps_explicit": true,
               "keep_vendored_cache": false,
-              "resolve_deps": false
+              "resolve_deps": false,
+              "sha256": ""
             }
           },
           "pub_fixnum": {
@@ -1130,7 +1165,8 @@
               "hosted_deps": [],
               "hosted_deps_explicit": true,
               "keep_vendored_cache": true,
-              "resolve_deps": true
+              "resolve_deps": true,
+              "sha256": ""
             }
           },
           "pub_flutter_gen_core": {
@@ -1158,7 +1194,8 @@
               ],
               "hosted_deps_explicit": true,
               "keep_vendored_cache": false,
-              "resolve_deps": false
+              "resolve_deps": false,
+              "sha256": ""
             }
           },
           "pub_flutter_gen_runner": {
@@ -1177,7 +1214,8 @@
               ],
               "hosted_deps_explicit": true,
               "keep_vendored_cache": false,
-              "resolve_deps": false
+              "resolve_deps": false,
+              "sha256": ""
             }
           },
           "pub_flutter_lints": {
@@ -1190,7 +1228,8 @@
               ],
               "hosted_deps_explicit": true,
               "keep_vendored_cache": false,
-              "resolve_deps": false
+              "resolve_deps": false,
+              "sha256": ""
             }
           },
           "pub_frontend_server_client": {
@@ -1204,7 +1243,8 @@
               ],
               "hosted_deps_explicit": true,
               "keep_vendored_cache": false,
-              "resolve_deps": false
+              "resolve_deps": false,
+              "sha256": ""
             }
           },
           "pub_glob": {
@@ -1221,7 +1261,8 @@
               ],
               "hosted_deps_explicit": true,
               "keep_vendored_cache": false,
-              "resolve_deps": false
+              "resolve_deps": false,
+              "sha256": ""
             }
           },
           "pub_graphs": {
@@ -1234,7 +1275,8 @@
               ],
               "hosted_deps_explicit": true,
               "keep_vendored_cache": false,
-              "resolve_deps": false
+              "resolve_deps": false,
+              "sha256": ""
             }
           },
           "pub_hashcodes": {
@@ -1245,7 +1287,8 @@
               "hosted_deps": [],
               "hosted_deps_explicit": true,
               "keep_vendored_cache": false,
-              "resolve_deps": false
+              "resolve_deps": false,
+              "sha256": ""
             }
           },
           "pub_http": {
@@ -1261,7 +1304,8 @@
               ],
               "hosted_deps_explicit": true,
               "keep_vendored_cache": false,
-              "resolve_deps": false
+              "resolve_deps": false,
+              "sha256": ""
             }
           },
           "pub_http_multi_server": {
@@ -1274,7 +1318,8 @@
               ],
               "hosted_deps_explicit": true,
               "keep_vendored_cache": false,
-              "resolve_deps": false
+              "resolve_deps": false,
+              "sha256": ""
             }
           },
           "pub_http_parser": {
@@ -1290,7 +1335,8 @@
               ],
               "hosted_deps_explicit": true,
               "keep_vendored_cache": false,
-              "resolve_deps": false
+              "resolve_deps": false,
+              "sha256": ""
             }
           },
           "pub_image_size_getter": {
@@ -1305,7 +1351,8 @@
               ],
               "hosted_deps_explicit": true,
               "keep_vendored_cache": false,
-              "resolve_deps": false
+              "resolve_deps": false,
+              "sha256": ""
             }
           },
           "pub_intl": {
@@ -1320,7 +1367,8 @@
               ],
               "hosted_deps_explicit": true,
               "keep_vendored_cache": false,
-              "resolve_deps": false
+              "resolve_deps": false,
+              "sha256": ""
             }
           },
           "pub_intl_utils": {
@@ -1341,7 +1389,8 @@
               ],
               "hosted_deps_explicit": true,
               "keep_vendored_cache": false,
-              "resolve_deps": false
+              "resolve_deps": false,
+              "sha256": ""
             }
           },
           "pub_io": {
@@ -1356,7 +1405,8 @@
               ],
               "hosted_deps_explicit": true,
               "keep_vendored_cache": false,
-              "resolve_deps": false
+              "resolve_deps": false,
+              "sha256": ""
             }
           },
           "pub_js": {
@@ -1367,7 +1417,8 @@
               "hosted_deps": [],
               "hosted_deps_explicit": true,
               "keep_vendored_cache": false,
-              "resolve_deps": false
+              "resolve_deps": false,
+              "sha256": ""
             }
           },
           "pub_json_annotation": {
@@ -1380,7 +1431,8 @@
               ],
               "hosted_deps_explicit": true,
               "keep_vendored_cache": false,
-              "resolve_deps": false
+              "resolve_deps": false,
+              "sha256": ""
             }
           },
           "pub_leak_tracker": {
@@ -1397,7 +1449,8 @@
               ],
               "hosted_deps_explicit": true,
               "keep_vendored_cache": false,
-              "resolve_deps": false
+              "resolve_deps": false,
+              "sha256": ""
             }
           },
           "pub_leak_tracker_flutter_testing": {
@@ -1413,7 +1466,8 @@
               ],
               "hosted_deps_explicit": true,
               "keep_vendored_cache": false,
-              "resolve_deps": false
+              "resolve_deps": false,
+              "sha256": ""
             }
           },
           "pub_leak_tracker_testing": {
@@ -1428,7 +1482,8 @@
               ],
               "hosted_deps_explicit": true,
               "keep_vendored_cache": false,
-              "resolve_deps": false
+              "resolve_deps": false,
+              "sha256": ""
             }
           },
           "pub_lints": {
@@ -1439,7 +1494,8 @@
               "hosted_deps": [],
               "hosted_deps_explicit": true,
               "keep_vendored_cache": false,
-              "resolve_deps": false
+              "resolve_deps": false,
+              "sha256": ""
             }
           },
           "pub_logging": {
@@ -1450,7 +1506,8 @@
               "hosted_deps": [],
               "hosted_deps_explicit": true,
               "keep_vendored_cache": false,
-              "resolve_deps": false
+              "resolve_deps": false,
+              "sha256": ""
             }
           },
           "pub_macros": {
@@ -1461,7 +1518,8 @@
               "hosted_deps": [],
               "hosted_deps_explicit": true,
               "keep_vendored_cache": false,
-              "resolve_deps": false
+              "resolve_deps": false,
+              "sha256": ""
             }
           },
           "pub_matcher": {
@@ -1478,7 +1536,8 @@
               ],
               "hosted_deps_explicit": true,
               "keep_vendored_cache": false,
-              "resolve_deps": false
+              "resolve_deps": false,
+              "sha256": ""
             }
           },
           "pub_material_color_utilities": {
@@ -1491,7 +1550,8 @@
               ],
               "hosted_deps_explicit": true,
               "keep_vendored_cache": false,
-              "resolve_deps": false
+              "resolve_deps": false,
+              "sha256": ""
             }
           },
           "pub_meta": {
@@ -1502,7 +1562,8 @@
               "hosted_deps": [],
               "hosted_deps_explicit": true,
               "keep_vendored_cache": true,
-              "resolve_deps": true
+              "resolve_deps": true,
+              "sha256": ""
             }
           },
           "pub_mime": {
@@ -1513,7 +1574,8 @@
               "hosted_deps": [],
               "hosted_deps_explicit": true,
               "keep_vendored_cache": false,
-              "resolve_deps": false
+              "resolve_deps": false,
+              "sha256": ""
             }
           },
           "pub_package_config": {
@@ -1526,7 +1588,8 @@
               ],
               "hosted_deps_explicit": true,
               "keep_vendored_cache": false,
-              "resolve_deps": false
+              "resolve_deps": false,
+              "sha256": ""
             }
           },
           "pub_path": {
@@ -1537,7 +1600,8 @@
               "hosted_deps": [],
               "hosted_deps_explicit": true,
               "keep_vendored_cache": true,
-              "resolve_deps": true
+              "resolve_deps": true,
+              "sha256": ""
             }
           },
           "pub_path_parsing": {
@@ -1551,7 +1615,8 @@
               ],
               "hosted_deps_explicit": true,
               "keep_vendored_cache": false,
-              "resolve_deps": false
+              "resolve_deps": false,
+              "sha256": ""
             }
           },
           "pub_petitparser": {
@@ -1564,7 +1629,8 @@
               ],
               "hosted_deps_explicit": true,
               "keep_vendored_cache": false,
-              "resolve_deps": false
+              "resolve_deps": false,
+              "sha256": ""
             }
           },
           "pub_pool": {
@@ -1578,7 +1644,8 @@
               ],
               "hosted_deps_explicit": true,
               "keep_vendored_cache": false,
-              "resolve_deps": false
+              "resolve_deps": false,
+              "sha256": ""
             }
           },
           "pub_posix": {
@@ -1593,7 +1660,8 @@
               ],
               "hosted_deps_explicit": true,
               "keep_vendored_cache": false,
-              "resolve_deps": false
+              "resolve_deps": false,
+              "sha256": ""
             }
           },
           "pub_protobuf": {
@@ -1608,7 +1676,8 @@
               ],
               "hosted_deps_explicit": true,
               "keep_vendored_cache": true,
-              "resolve_deps": true
+              "resolve_deps": true,
+              "sha256": ""
             }
           },
           "pub_protoc_plugin": {
@@ -1617,7 +1686,8 @@
               "package": "protoc_plugin",
               "version": "21.1.1",
               "keep_vendored_cache": true,
-              "resolve_deps": true
+              "resolve_deps": true,
+              "sha256": ""
             }
           },
           "pub_pub_semver": {
@@ -1630,7 +1700,8 @@
               ],
               "hosted_deps_explicit": true,
               "keep_vendored_cache": false,
-              "resolve_deps": false
+              "resolve_deps": false,
+              "sha256": ""
             }
           },
           "pub_pubspec_parse": {
@@ -1647,7 +1718,8 @@
               ],
               "hosted_deps_explicit": true,
               "keep_vendored_cache": false,
-              "resolve_deps": false
+              "resolve_deps": false,
+              "sha256": ""
             }
           },
           "pub_shelf": {
@@ -1665,7 +1737,8 @@
               ],
               "hosted_deps_explicit": true,
               "keep_vendored_cache": false,
-              "resolve_deps": false
+              "resolve_deps": false,
+              "sha256": ""
             }
           },
           "pub_shelf_web_socket": {
@@ -1680,7 +1753,8 @@
               ],
               "hosted_deps_explicit": true,
               "keep_vendored_cache": false,
-              "resolve_deps": false
+              "resolve_deps": false,
+              "sha256": ""
             }
           },
           "pub_source_gen": {
@@ -1700,7 +1774,8 @@
               ],
               "hosted_deps_explicit": true,
               "keep_vendored_cache": false,
-              "resolve_deps": false
+              "resolve_deps": false,
+              "sha256": ""
             }
           },
           "pub_source_span": {
@@ -1715,7 +1790,8 @@
               ],
               "hosted_deps_explicit": true,
               "keep_vendored_cache": false,
-              "resolve_deps": false
+              "resolve_deps": false,
+              "sha256": ""
             }
           },
           "pub_stack_trace": {
@@ -1728,7 +1804,8 @@
               ],
               "hosted_deps_explicit": true,
               "keep_vendored_cache": false,
-              "resolve_deps": false
+              "resolve_deps": false,
+              "sha256": ""
             }
           },
           "pub_stream_channel": {
@@ -1741,7 +1818,8 @@
               ],
               "hosted_deps_explicit": true,
               "keep_vendored_cache": false,
-              "resolve_deps": false
+              "resolve_deps": false,
+              "sha256": ""
             }
           },
           "pub_stream_transform": {
@@ -1752,7 +1830,8 @@
               "hosted_deps": [],
               "hosted_deps_explicit": true,
               "keep_vendored_cache": false,
-              "resolve_deps": false
+              "resolve_deps": false,
+              "sha256": ""
             }
           },
           "pub_string_scanner": {
@@ -1765,7 +1844,8 @@
               ],
               "hosted_deps_explicit": true,
               "keep_vendored_cache": false,
-              "resolve_deps": false
+              "resolve_deps": false,
+              "sha256": ""
             }
           },
           "pub_term_glyph": {
@@ -1776,7 +1856,8 @@
               "hosted_deps": [],
               "hosted_deps_explicit": true,
               "keep_vendored_cache": false,
-              "resolve_deps": false
+              "resolve_deps": false,
+              "sha256": ""
             }
           },
           "pub_test_api": {
@@ -1797,7 +1878,8 @@
               ],
               "hosted_deps_explicit": true,
               "keep_vendored_cache": false,
-              "resolve_deps": false
+              "resolve_deps": false,
+              "sha256": ""
             }
           },
           "pub_time": {
@@ -1810,7 +1892,8 @@
               ],
               "hosted_deps_explicit": true,
               "keep_vendored_cache": false,
-              "resolve_deps": false
+              "resolve_deps": false,
+              "sha256": ""
             }
           },
           "pub_timing": {
@@ -1823,7 +1906,8 @@
               ],
               "hosted_deps_explicit": true,
               "keep_vendored_cache": false,
-              "resolve_deps": false
+              "resolve_deps": false,
+              "sha256": ""
             }
           },
           "pub_typed_data": {
@@ -1836,7 +1920,8 @@
               ],
               "hosted_deps_explicit": true,
               "keep_vendored_cache": false,
-              "resolve_deps": false
+              "resolve_deps": false,
+              "sha256": ""
             }
           },
           "pub_vector_graphics_codec": {
@@ -1847,7 +1932,8 @@
               "hosted_deps": [],
               "hosted_deps_explicit": true,
               "keep_vendored_cache": false,
-              "resolve_deps": false
+              "resolve_deps": false,
+              "sha256": ""
             }
           },
           "pub_vector_graphics_compiler": {
@@ -1865,7 +1951,8 @@
               ],
               "hosted_deps_explicit": true,
               "keep_vendored_cache": false,
-              "resolve_deps": false
+              "resolve_deps": false,
+              "sha256": ""
             }
           },
           "pub_vector_math": {
@@ -1876,7 +1963,8 @@
               "hosted_deps": [],
               "hosted_deps_explicit": true,
               "keep_vendored_cache": false,
-              "resolve_deps": false
+              "resolve_deps": false,
+              "sha256": ""
             }
           },
           "pub_vm_service": {
@@ -1887,7 +1975,8 @@
               "hosted_deps": [],
               "hosted_deps_explicit": true,
               "keep_vendored_cache": false,
-              "resolve_deps": false
+              "resolve_deps": false,
+              "sha256": ""
             }
           },
           "pub_watcher": {
@@ -1901,7 +1990,8 @@
               ],
               "hosted_deps_explicit": true,
               "keep_vendored_cache": false,
-              "resolve_deps": false
+              "resolve_deps": false,
+              "sha256": ""
             }
           },
           "pub_web": {
@@ -1912,7 +2002,8 @@
               "hosted_deps": [],
               "hosted_deps_explicit": true,
               "keep_vendored_cache": false,
-              "resolve_deps": false
+              "resolve_deps": false,
+              "sha256": ""
             }
           },
           "pub_web_socket": {
@@ -1925,7 +2016,8 @@
               ],
               "hosted_deps_explicit": true,
               "keep_vendored_cache": false,
-              "resolve_deps": false
+              "resolve_deps": false,
+              "sha256": ""
             }
           },
           "pub_web_socket_channel": {
@@ -1942,7 +2034,8 @@
               ],
               "hosted_deps_explicit": true,
               "keep_vendored_cache": false,
-              "resolve_deps": false
+              "resolve_deps": false,
+              "sha256": ""
             }
           },
           "pub_xml": {
@@ -1957,7 +2050,8 @@
               ],
               "hosted_deps_explicit": true,
               "keep_vendored_cache": false,
-              "resolve_deps": false
+              "resolve_deps": false,
+              "sha256": ""
             }
           },
           "pub_yaml": {
@@ -1972,7 +2066,8 @@
               ],
               "hosted_deps_explicit": true,
               "keep_vendored_cache": false,
-              "resolve_deps": false
+              "resolve_deps": false,
+              "sha256": ""
             }
           }
         },

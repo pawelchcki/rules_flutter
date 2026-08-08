@@ -1,4 +1,15 @@
 load("@bazel_skylib//:bzl_library.bzl", "bzl_library")
+load(":dart_package_config.bzl", "dart_package_config")
+
+# One package_config.json for the vendored protoc-gen-dart plugin repository,
+# generated once per build and shared by every DartProtoCompile action (which
+# previously each synthesized their own with an embedded Python interpreter).
+dart_package_config(
+    name = "protoc_gen_dart_package_config",
+    package_files = "@pub_protoc_plugin//:protoc_plugin_files",
+    pub_deps = "@pub_protoc_plugin//:pub_deps.json",
+    visibility = ["//visibility:public"],
+)
 
 exports_files([
     "android.init.gradle.kts",
@@ -46,6 +57,12 @@ bzl_library(
 )
 
 bzl_library(
+    name = "dart_package_config",
+    srcs = ["dart_package_config.bzl"],
+    visibility = ["//flutter:__subpackages__"],
+)
+
+bzl_library(
     name = "flutter_actions",
     srcs = ["flutter_actions.bzl"],
     visibility = ["//flutter:__subpackages__"],
@@ -85,4 +102,14 @@ bzl_library(
     name = "versions",
     srcs = ["versions.bzl"],
     visibility = ["//flutter:__subpackages__"],
+)
+
+# Build-action helper executed with the toolchain SDK's own `dart`, replacing
+# the embedded Python the action scripts used to pipe into a host python3.
+exports_files(["tools/pub_tool.dart"])
+
+filegroup(
+    name = "pub_tool",
+    srcs = ["tools/pub_tool.dart"],
+    visibility = ["//visibility:public"],
 )

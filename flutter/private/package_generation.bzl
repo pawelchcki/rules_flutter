@@ -348,6 +348,10 @@ def generate_package_build(repository_ctx, package_name, package_dir = ".", sdk_
         "# Generated BUILD file for package: {}".format(package_name),
         _DEF_LOAD_STMT,
         "",
+        # The dependency metadata is consumed directly by rules_flutter (e.g.
+        # the shared protoc-gen-dart package_config), so it needs a target.
+        'exports_files(["pub_deps.json"])',
+        "",
         "{}(".format(rule_kind),
         '    name = "{}",'.format(package_name),
     ]

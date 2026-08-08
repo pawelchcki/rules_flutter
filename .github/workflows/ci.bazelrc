@@ -4,10 +4,16 @@
 # Debug where options came from
 build --announce_rc
 # This directory is configured in GitHub actions to be persisted between runs.
-# We do not enable the repository cache to cache downloaded external artifacts
-# as these are generally faster to download again than to fetch them from the
-# GitHub actions cache.
 build --disk_cache=~/.cache/bazel
+# Cache the *materialized* Flutter SDK repository between runs. The SDK repo
+# rule returns repo_metadata(reproducible = ...) precisely to exploit this:
+# reusing the unpacked, precached SDK tree skips ~70s of serial unpack +
+# fetch-time precache per fresh output base (145s -> 10s cold builds).
+# The plain repository cache would only cache the downloaded archive, not the
+# tree derived from it, which is why it stays disabled.
+# Rooted inside ~/.cache/bazel so the existing GitHub Actions cache step
+# persists it without workflow changes.
+common --repo_contents_cache=~/.cache/bazel/repo-contents
 # Don't rely on test logs being easily accessible from the test runner,
 # though it makes the log noisier.
 test --test_output=errors

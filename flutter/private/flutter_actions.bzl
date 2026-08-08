@@ -106,262 +106,50 @@ if [ -n "${RULES_FLUTTER_BUILD_RUNNER_CACHE:-}" ] && [ -d "$WORKSPACE_DIR_ABS/.d
 fi
 """
 
-# Python snippet that resolves a `package:executable` command (from the
-# CODEGEN_CMD env var) to its bin/<executable>.dart entrypoint using the
-# package_config.json at PACKAGE_CONFIG_PATH. Injected as a format *value*,
-# so braces here are single.
-RESOLVE_ENTRYPOINT_PY = """import json
-import os
-import sys
-import urllib.parse
-import urllib.request
-
-command = os.environ["CODEGEN_CMD"]
-config_path = os.environ["PACKAGE_CONFIG_PATH"]
-config_dir = os.path.dirname(config_path)
-
-if command.startswith("package:"):
-    command = command[len("package:"):]
-
-if ":" in command:
-    package, executable = command.split(":", 1)
-else:
-    package = command
-    executable = command
-
-if not package or not executable:
-    sys.stderr.write("Invalid generator command: {}\\n".format(os.environ["CODEGEN_CMD"]))
-    sys.exit(1)
-
-with open(config_path, "r", encoding="utf-8") as fh:
-    config = json.load(fh)
-
-root_uri = None
-for entry in config.get("packages", []):
-    if entry.get("name") == package:
-        root_uri = entry.get("rootUri")
-        break
-
-if not root_uri:
-    sys.stderr.write("Package '{}' not found in {}\\n".format(package, config_path))
-    sys.exit(1)
-
-parsed = urllib.parse.urlparse(root_uri)
-if parsed.scheme == "file":
-    root_path = urllib.request.url2pathname(parsed.path)
-elif parsed.scheme:
-    sys.stderr.write("Unsupported package root URI for '{}': {}\\n".format(package, root_uri))
-    sys.exit(1)
-else:
-    root_path = os.path.abspath(os.path.join(config_dir, urllib.parse.unquote(root_uri)))
-
-entrypoint = os.path.join(root_path, "bin", executable + ".dart")
-if not os.path.isfile(entrypoint):
-    sys.stderr.write("Codegen entrypoint not found: {}\\n".format(entrypoint))
-    sys.exit(1)
-
-print(entrypoint)"""
-
-# Python snippet that writes .dart_tool/package_config.json from declared
-# pub_deps.json metadata. Inputs via env: PUB_DEPS_PATH, PUB_CACHE_ABS,
-# WORKSPACE_ABS, PACKAGE_CONFIG_PATH, FLUTTER_ROOT. Injected as a format
-# *value*, so braces here are single.
-PACKAGE_CONFIG_FROM_PUB_DEPS_PY = """import json
-import os
-
-deps_path = os.environ["PUB_DEPS_PATH"]
-cache_root = os.environ["PUB_CACHE_ABS"]
-workspace_root = os.environ["WORKSPACE_ABS"]
-config_path = os.environ["PACKAGE_CONFIG_PATH"]
-config_dir = os.path.dirname(config_path)
-
-def _read_language_spec(root_path):
-    pubspec = os.path.join(root_path, "pubspec.yaml")
-    if not os.path.exists(pubspec):
-        return ">=3.0.0 <4.0.0"
-
-    capture = False
-    with open(pubspec, "r", encoding="utf-8") as fh:
-        for line in fh:
-            stripped = line.strip()
-            if stripped.startswith("environment:"):
-                capture = True
-                continue
-            if capture:
-                if stripped.startswith("sdk:"):
-                    return stripped.split(":", 1)[1].strip().strip('"').strip("'")
-                if stripped and not stripped.startswith("#") and not stripped.startswith(("flutter:", "flutter_test:", "dart:")):
-                    break
-    return ">=3.0.0 <4.0.0"
-
-def _parse_language(spec):
-    if not spec:
-        return "3.0"
-    spec = spec.replace(">=", " ").replace("<=", " ").replace(">", " ").replace("<", " ").replace("^", " ").split()
-    if spec:
-        version = spec[0].split("+")[0]
-        parts = version.split(".")
-        numeric_parts = []
-        for part in parts:
-            if part.isdigit():
-                numeric_parts.append(part)
-            else:
-                break
-        if len(numeric_parts) >= 2:
-            return ".".join(numeric_parts[:2])
-        if len(numeric_parts) == 1:
-            return numeric_parts[0] + ".0"
-    return "3.0"
-
-def _root_uri(root_path):
-    rel = os.path.relpath(root_path, config_dir).replace(os.sep, "/")
-    if rel != "." and not rel.endswith("/"):
-        rel += "/"
-    return rel
-
-default_language_version = _parse_language(_read_language_spec(workspace_root))
-
-def _package_language_version(root_path):
-    pubspec = os.path.join(root_path, "pubspec.yaml")
-    if not os.path.exists(pubspec):
-        return default_language_version
-
-    capture = False
-    with open(pubspec, "r", encoding="utf-8") as fh:
-        for line in fh:
-            stripped = line.strip()
-            if stripped.startswith("environment:"):
-                capture = True
-                continue
-            if capture:
-                if stripped.startswith("sdk:"):
-                    return _parse_language(stripped.split(":", 1)[1].strip().strip('"').strip("'"))
-                if stripped and not stripped.startswith("#") and not stripped.startswith(("flutter:", "flutter_test:", "dart:")):
-                    break
-    return default_language_version
-
-with open(deps_path, "r", encoding="utf-8") as fh:
-    data = json.load(fh)
-
-packages = []
-
-def add_package(name, root_path):
-    if not name or not root_path or not os.path.isdir(root_path):
-        return
-    pkg = dict()
-    pkg["name"] = name
-    pkg["rootUri"] = _root_uri(root_path)
-    pkg["packageUri"] = "lib/"
-    pkg["languageVersion"] = _package_language_version(root_path)
-    packages.append(pkg)
-
-def _path_deps_from_pubspec(root_path):
-    # `flutter pub deps --json` reports source == "path" but omits where the
-    # package lives, so recover the location from the pubspec declaring it.
-    locations = dict()
-    pubspec = os.path.join(root_path, "pubspec.yaml")
-    if not os.path.exists(pubspec):
-        return locations
-
-    in_deps = False
-    current = None
-    with open(pubspec, "r", encoding="utf-8") as fh:
-        for line in fh:
-            if not line.strip() or line.lstrip().startswith("#"):
-                continue
-            indent = len(line) - len(line.lstrip())
-            stripped = line.strip()
-            if indent == 0:
-                in_deps = stripped.startswith("dependencies:") or stripped.startswith("dev_dependencies:")
-                current = None
-            elif not in_deps:
-                continue
-            elif indent <= 2:
-                current = stripped[:-1] if stripped.endswith(":") else None
-            elif current and stripped.startswith("path:"):
-                locations[current] = stripped.split(":", 1)[1].strip().strip('"').strip("'")
-    return locations
-
-
-path_dep_locations = _path_deps_from_pubspec(workspace_root)
-
-for entry in data.get("packages", []):
-    name = entry.get("name")
-    source = entry.get("source")
-    version = entry.get("version")
-    description = entry.get("description")
-    if not name:
-        continue
-    if source == "hosted" and version:
-        root_path = os.path.join(cache_root, "hosted", "pub.dev", name + "-" + version)
-        add_package(name, root_path)
-    elif source == "root":
-        add_package(name, workspace_root)
-    elif source == "sdk":
-        if name == "sky_engine":
-            root_path = os.path.join(os.environ["FLUTTER_ROOT"], "bin", "cache", "pkg", name)
-        elif name == "_macros":
-            root_path = os.path.join(os.environ["FLUTTER_ROOT"], "bin", "cache", "dart-sdk", "pkg", name)
-        else:
-            root_path = os.path.join(os.environ["FLUTTER_ROOT"], "packages", name)
-        add_package(name, root_path)
-    elif source == "path":
-        # A path dependency lives outside the depending package's directory, so
-        # it cannot be staged inside that package's prepared workspace tree.
-        # The depended-on flutter_library republishes its workspace into the
-        # assembled cache at path/<name>/ instead
-        # (flutter_stage_path_package_action). Prefer that staged copy, and
-        # fall back to resolving against the source tree for workspaces that
-        # were not staged by Bazel.
-        staged_root = os.path.join(cache_root, "path", name)
-        if os.path.isdir(staged_root):
-            add_package(name, staged_root)
-        else:
-            path_value = ""
-            if isinstance(description, str):
-                path_value = description
-            elif isinstance(description, dict):
-                path_value = description.get("path") or ""
-            if not path_value:
-                path_value = path_dep_locations.get(name) or ""
-            if path_value:
-                add_package(name, os.path.abspath(os.path.join(workspace_root, path_value)))
-
-config = dict()
-config["configVersion"] = 2
-config["generated"] = True
-config["generator"] = "rules_flutter"
-config["packages"] = packages
-with open(config_path, "w", encoding="utf-8") as fh:
-    json.dump(config, fh, indent=2)
-    fh.write("\\n")
-
-# Newer flutter_tools also require .dart_tool/package_graph.json (normally
-# written by `pub get`).
-graph_packages = []
-root_name = None
-for entry in data.get("packages", []):
-    name = entry.get("name")
-    if not name:
-        continue
-    if entry.get("source") == "root":
-        root_name = name
-    node = dict()
-    node["name"] = name
-    node["version"] = entry.get("version") or "0.0.0"
-    node["dependencies"] = [dep for dep in entry.get("dependencies", []) if isinstance(dep, str)]
-    if entry.get("source") == "root":
-        node["devDependencies"] = []
-    graph_packages.append(node)
-
-graph = dict()
-graph["configVersion"] = 1
-graph["roots"] = [root_name] if root_name else []
-graph["packages"] = graph_packages
-graph_path = os.path.join(config_dir, "package_graph.json")
-with open(graph_path, "w", encoding="utf-8") as fh:
-    json.dump(graph, fh, indent=2)
-    fh.write("\\n")"""
+# Shared staging helpers, injected as a format *value* (so braces here are
+# single). _stage_tree copies a staged input tree into a mutable destination.
+# With fast staging ($3 = 1) it first tries an APFS clone (macOS `cp -c`,
+# copy-on-write and therefore safe for in-place rewrites) and then a hardlink
+# farm (GNU `cp -l -L`): directories are private and writable, files share
+# inodes with the read-only inputs. Files a later step rewrites *in place*
+# must be re-materialized with _unshare_file first — an in-place truncation
+# of a hardlinked file would reach back into the action's inputs. New files
+# and delete-then-recreate writes are safe with writable directories alone
+# (_make_dirs_writable). With fast staging off ($3 = 0) this is byte-for-byte
+# the historical rsync/cp copy.
+STAGE_TREE_HELPERS = """
+_stage_tree() {
+    # $1 src dir, $2 dest dir (created), $3 fast staging (1/0).
+    mkdir -p "$2"
+    if [ "$3" = "1" ]; then
+        if cp -cRL "$1/." "$2/" 2>/dev/null; then
+            return 0
+        fi
+        rm -rf "$2" && mkdir -p "$2"
+        if cp -RLl "$1/." "$2/" 2>/dev/null; then
+            return 0
+        fi
+        rm -rf "$2" && mkdir -p "$2"
+    fi
+    if command -v rsync >/dev/null 2>&1; then
+        rsync -aL "$1/" "$2/"
+    else
+        cp -RL "$1/." "$2/"
+    fi
+}
+_unshare_file() {
+    # Re-materialize $1 as a private, writable copy (breaks a hardlink).
+    if [ -f "$1" ]; then
+        cp -L "$1" "$1.rules_flutter_unshare" && mv -f "$1.rules_flutter_unshare" "$1"
+        chmod u+rw "$1"
+    fi
+}
+_make_dirs_writable() {
+    # Directories in a staged tree are always private (hardlinks never share
+    # them), so this cannot touch action inputs.
+    find "$1" -type d ! -perm -700 -exec chmod u+rwx {} + 2>/dev/null || true
+}
+"""
 
 def create_flutter_working_dir(ctx, pubspec_file, dart_files, other_files, data_files, extra_entries = [], allow_remote_exec = False, remote_cache_trees = False):
     """Create a working directory structure for Flutter commands.
@@ -632,7 +420,8 @@ def flutter_stage_path_package_action(
         workspace,
         pubspec,
         allow_remote_exec = False,
-        remote_cache_trees = False):
+        remote_cache_trees = False,
+        fast_staging = False):
     """Stage a local flutter_library's workspace as a pub-cache `path/` entry.
 
     A pubspec `path:` dependency points outside the depending package's
@@ -648,6 +437,7 @@ def flutter_stage_path_package_action(
         pubspec: That library's pubspec.yaml, read for the package name.
         allow_remote_exec: Whether //flutter:allow_remote_execution is set.
         remote_cache_trees: Whether //flutter:remote_cache_trees is set.
+        fast_staging: Whether //flutter:fast_staging is set.
 
     Returns:
         A pub-cache-shaped tree artifact containing `path/<name>/`.
@@ -661,42 +451,26 @@ STAGED="{staged}"
 WORKSPACE="{workspace}"
 PUBSPEC="{pubspec}"
 
-PYTHON_BIN="$(command -v python3 || command -v python || true)"
-if [ -z "$PYTHON_BIN" ]; then
-    echo "✗ FATAL ERROR: python interpreter not found on PATH" >&2
-    exit 1
-fi
-
-NAME="$(PUBSPEC_PATH="$PUBSPEC" "$PYTHON_BIN" <<'PY'
-import os
-name = ""
-with open(os.environ["PUBSPEC_PATH"], "r", encoding="utf-8") as fh:
-    for line in fh:
-        s = line.strip()
-        if s.startswith("#"):
-            continue
-        if s.startswith("name:"):
-            name = s.split(":", 1)[1].strip().strip("'").strip('"')
-            break
-print(name)
-PY
-)"
+# The package name is the pubspec's first top-level `name:`. awk is POSIX;
+# this action has no Flutter SDK input, so it must not need an interpreter.
+NAME="$(awk -F: '/^name:[[:space:]]*/ {{ v = $2; gsub(/^[[:space:]]*["'"'"']?|["'"'"']?[[:space:]]*$/, "", v); print v; exit }}' "$PUBSPEC")"
 if [ -z "$NAME" ]; then
     echo "✗ could not read package name from $PUBSPEC" >&2
     exit 1
 fi
 
+{stage_tree_helpers}
 rm -rf "$STAGED"
-mkdir -p "$STAGED/path/$NAME"
-if command -v rsync >/dev/null 2>&1; then
-    rsync -aL "$WORKSPACE/" "$STAGED/path/$NAME/"
-else
-    cp -RL "$WORKSPACE/." "$STAGED/path/$NAME/"
-fi
+mkdir -p "$STAGED/path"
+# This tree is consumed read-only (merged into assembled pub caches), so
+# sharing inodes with the workspace input is always safe here.
+_stage_tree "$WORKSPACE" "$STAGED/path/$NAME" "{fast_staging}"
 """.format(
         staged = staged.path,
         workspace = workspace.path,
         pubspec = pubspec.path,
+        stage_tree_helpers = STAGE_TREE_HELPERS,
+        fast_staging = "1" if fast_staging else "0",
     )
 
     ctx.actions.run_shell(
@@ -759,31 +533,13 @@ STAGED="{staged}"
 MANIFEST="{manifest}"
 PUBSPEC="{pubspec_path}"
 
-PYTHON_BIN="$(command -v python3 || command -v python || true)"
-if [ -z "$PYTHON_BIN" ]; then
-    echo "✗ FATAL ERROR: python interpreter not found on PATH" >&2
-    exit 1
-fi
-
-INFO="$(PUBSPEC_PATH="$PUBSPEC" "$PYTHON_BIN" <<'PY'
-import os
-name = version = ""
-with open(os.environ["PUBSPEC_PATH"], "r", encoding="utf-8") as fh:
-    for line in fh:
-        s = line.strip()
-        if s.startswith("#"):
-            continue
-        if s.startswith("name:") and not name:
-            name = s.split(":", 1)[1].strip().strip("'").strip('"')
-        elif s.startswith("version:") and not version:
-            version = s.split(":", 1)[1].strip().strip("'").strip('"')
-        elif s.startswith("environment:"):
-            break
-print(name + "|" + version)
-PY
-)"
-NAME="${{INFO%%|*}}"
-VERSION="${{INFO#*|}}"
+# Top-level name:/version:, read with POSIX awk — this action has no Flutter
+# SDK input, so it must not need an interpreter.
+read_key() {{
+    awk -v key="$1" -F: '$0 ~ "^" key ":" {{ v = $2; gsub(/^[[:space:]]*["'"'"']?|["'"'"']?[[:space:]]*$/, "", v); print v; exit }} /^environment:/ {{ exit }}' "$PUBSPEC"
+}}
+NAME="$(read_key name)"
+VERSION="$(read_key version)"
 if [ -z "$NAME" ] || [ -z "$VERSION" ]; then
     echo "✗ FATAL ERROR: could not read name/version from $PUBSPEC" >&2
     exit 1
@@ -832,7 +588,9 @@ def flutter_pub_get_action(
         allow_remote_exec = False,
         remote_cache_trees = False,
         preassembled_cache = None,
-        build_runner_cache = ""):
+        build_runner_cache = "",
+        fast_staging = False,
+        pub_tool_file = None):
     """Prepare Flutter/Dart dependencies from declared pub_deps.json metadata.
 
     Args:
@@ -863,6 +621,8 @@ def flutter_pub_get_action(
             a Dart edit re-runs codegen without re-merging the dependency
             caches. Mutually exclusive with a non-empty dependency_pub_caches
             and with is_pub_package (which republishes into its own cache).
+        fast_staging: Whether //flutter:fast_staging is set; staged-tree copies
+            use clones/hardlinks instead of byte copies (see STAGE_TREE_HELPERS).
         build_runner_cache: Absolute directory (from //flutter:build_runner_cache)
             for persisting build_runner's incremental .dart_tool/build state
             across builds. Empty (default) keeps the action fully hermetic and
@@ -1006,20 +766,38 @@ else
 fi
 
 # Copy staged workspace into prepared output directory
+{stage_tree_helpers}
+FAST_STAGING="{fast_staging}"
 rm -rf "$WORKSPACE_DIR_ABS"
-mkdir -p "$WORKSPACE_DIR_ABS"
-if command -v rsync >/dev/null 2>&1; then
-    rsync -aL "$WORKSPACE_SRC_ABS/" "$WORKSPACE_DIR_ABS/"
+_stage_tree "$WORKSPACE_SRC_ABS" "$WORKSPACE_DIR_ABS" "$FAST_STAGING"
+if [ "$FAST_STAGING" = "1" ]; then
+    # Only the files rewritten in place below need private copies; everything
+    # the tool writes later is either a new file or delete-then-recreate.
+    _make_dirs_writable "$WORKSPACE_DIR_ABS"
+    _unshare_file "$WORKSPACE_DIR_ABS/pubspec.yaml"
+    _unshare_file "$WORKSPACE_DIR_ABS/pubspec.lock"
 else
-    cp -RL "$WORKSPACE_SRC_ABS/." "$WORKSPACE_DIR_ABS/"
+    chmod -R u+rwX "$WORKSPACE_DIR_ABS"
 fi
-chmod -R u+rwX "$WORKSPACE_DIR_ABS"
 
-PYTHON_BIN="$(command -v python3 || command -v python || true)"
-if [ -z "$PYTHON_BIN" ]; then
-    echo "✗ FATAL ERROR: python interpreter not found on PATH" >&2
+# The SDK's own dart runs the action helper (//flutter/private:pub_tool);
+# nothing here depends on a host interpreter.
+FLUTTER_BIN_ABS="$ORIGINAL_PWD/$FLUTTER_BIN"
+if [ ! -x "$FLUTTER_BIN_ABS" ]; then
+    echo "✗ FATAL ERROR: Flutter binary not found at $FLUTTER_BIN_ABS" >&2
     exit 1
 fi
+FLUTTER_ROOT="$(cd "$(dirname "$FLUTTER_BIN_ABS")/.." && pwd -P)"
+export FLUTTER_ROOT
+DART_BIN_LOCAL="$FLUTTER_ROOT/bin/cache/dart-sdk/bin/dart"
+if [ ! -x "$DART_BIN_LOCAL" ]; then
+    echo "✗ FATAL ERROR: Dart binary not found at $DART_BIN_LOCAL" >&2
+    exit 1
+fi
+PUB_TOOL="$ORIGINAL_PWD/{pub_tool}"
+pub_tool() {{
+    "$DART_BIN_LOCAL" "$PUB_TOOL" "$@"
+}}
 
 if [ -f "$WORKSPACE_DIR_ABS/pubspec.yaml" ]; then
     # Published pub packages get their dev_dependencies/dependency_overrides
@@ -1030,88 +808,14 @@ if [ -f "$WORKSPACE_DIR_ABS/pubspec.yaml" ]; then
     if [ "$IS_PUB_PACKAGE" = "1" ]; then
         PUBSPEC_SECTIONS="dependency_overrides dev_dependencies"
     fi
-    PUBSPEC_PATH="$WORKSPACE_DIR_ABS/pubspec.yaml" PUBSPEC_SECTIONS="$PUBSPEC_SECTIONS" "$PYTHON_BIN" - <<'PY'
-import os
-import sys
-
-path = os.environ.get("PUBSPEC_PATH")
-sections = set(filter(None, (os.environ.get("PUBSPEC_SECTIONS") or "").split()))
-if not path or not os.path.exists(path) or not sections:
-    sys.exit(0)
-
-with open(path, "r", encoding="utf-8") as fh:
-    lines = fh.readlines()
-
-output = []
-skip = False
-skip_indent = 0
-for line in lines:
-    stripped = line.rstrip()
-    indent = len(line) - len(line.lstrip(" "))
-    if skip:
-        if stripped and not stripped.startswith("#") and indent <= skip_indent:
-            skip = False
-        else:
-            continue
-
-    key = stripped.rstrip(":")
-    if not skip and stripped.endswith(":") and key in sections:
-        skip = True
-        skip_indent = indent
-        continue
-
-    output.append(line)
-
-with open(path, "w", encoding="utf-8") as fh:
-    fh.writelines(output)
-PY
+    PUBSPEC_PATH="$WORKSPACE_DIR_ABS/pubspec.yaml" PUBSPEC_SECTIONS="$PUBSPEC_SECTIONS" pub_tool strip-pubspec
 fi
 
 {pub_cache_assembly}
 echo ""
 
 export PUBSPEC_PATH="$WORKSPACE_DIR_ABS/pubspec.yaml"
-PACKAGE_INFO="$("$PYTHON_BIN" <<'PY'
-import os
-path = os.environ.get("PUBSPEC_PATH")
-name = ""
-version = ""
-language = ""
-if path and os.path.exists(path):
-    with open(path, "r", encoding="utf-8") as fh:
-        for line in fh:
-            stripped = line.strip()
-            if stripped.startswith("#"):
-                continue
-            if stripped.startswith("name:") and not name:
-                value = stripped.split(":", 1)[1].strip()
-                value = value.strip("\\\"").strip("'")
-                name = value
-            elif stripped.startswith("version:") and not version:
-                value = stripped.split(":", 1)[1].strip()
-                value = value.strip("\\\"").strip("'")
-                version = value
-            elif stripped.startswith("environment:"):
-                break
-        fh.seek(0)
-        capture = False
-        for line in fh:
-            stripped = line.strip()
-            if stripped.startswith("environment:"):
-                capture = True
-                continue
-            if capture:
-                if stripped.startswith("sdk:"):
-                    value = stripped.split(":", 1)[1].strip()
-                    value = value.strip("\\\"").strip("'")
-                    language = value
-                    break
-                if stripped and not stripped.startswith("#") and not stripped.startswith(("flutter:", "flutter_test:", "dart:")):
-                    break
-values = [name or "", version or "", language or ""]
-print("|".join(values))
-PY
-)"
+PACKAGE_INFO="$(pub_tool pubspec-info)"
 
 PACKAGE_NAME="${{PACKAGE_INFO%%|*}}"
 PACKAGE_VERSION="${{PACKAGE_INFO#*|}}"
@@ -1124,12 +828,7 @@ fi
 if [ "$IS_PUB_PACKAGE" = "1" ] && [ -n "$PACKAGE_NAME" ] && [ -n "$PACKAGE_VERSION" ]; then
     DEST="$PUB_CACHE_DIR_ABS/hosted/pub.dev/${{PACKAGE_NAME}}-${{PACKAGE_VERSION}}"
     rm -rf "$DEST"
-    mkdir -p "$DEST"
-    if command -v rsync >/dev/null 2>&1; then
-        rsync -aL "$WORKSPACE_DIR_ABS/" "$DEST/"
-    else
-        cp -RL "$WORKSPACE_DIR_ABS/." "$DEST/"
-    fi
+    _stage_tree "$WORKSPACE_DIR_ABS" "$DEST" "$FAST_STAGING"
 fi
 
 export FLUTTER_SUPPRESS_ANALYTICS=true
@@ -1137,14 +836,8 @@ export CI=true
 export PUB_ENVIRONMENT="flutter_tool:bazel"
 export ANDROID_HOME=""
 export ANDROID_SDK_ROOT=""
-FLUTTER_BIN_ABS="$ORIGINAL_PWD/$FLUTTER_BIN"
-if [ ! -x "$FLUTTER_BIN_ABS" ]; then
-    echo "✗ FATAL ERROR: Flutter binary not found at $FLUTTER_BIN_ABS" >&2
-    exit 1
-fi
-
-FLUTTER_ROOT="$(cd "$(dirname "$FLUTTER_BIN_ABS")/.." && pwd -P)"
-export FLUTTER_ROOT
+# FLUTTER_BIN_ABS / FLUTTER_ROOT / DART_BIN_LOCAL were resolved at the top of
+# the script, before the first pub_tool call.
 export PATH="$FLUTTER_ROOT/bin:$PATH"
 
 cd "$WORKSPACE_DIR_ABS"
@@ -1155,30 +848,14 @@ if [ ! -s "$PUB_DEPS_INPUT_ABS" ]; then
     echo "Run the generated .update target or provide a checked-in pub_deps.json." >&2
     exit 1
 fi
+# rm first: the staged workspace may already carry a (possibly hardlinked)
+# pub_deps.json, and overwriting it in place would truncate a shared inode.
+rm -f pub_deps.json
 cp "$PUB_DEPS_INPUT_ABS" pub_deps.json
+chmod u+rw pub_deps.json
 
 export PUB_DEPS_PATH="$WORKSPACE_DIR_ABS/pub_deps.json"
-"$PYTHON_BIN" <<'PY'
-import json
-import os
-
-path = os.environ.get("PUB_DEPS_PATH")
-if path and os.path.exists(path):
-    with open(path, "r", encoding="utf-8") as fh:
-        payload = fh.read()
-    start = None
-    for idx, ch in enumerate(payload):
-        if ch == "[" or ch == chr(123):
-            start = idx
-            break
-    if start and start > 0:
-        with open(path, "w", encoding="utf-8") as fh:
-            fh.write(payload[start:])
-    with open(path, "r", encoding="utf-8") as fh:
-        data = json.load(fh)
-    if not isinstance(data.get("packages"), list):
-        raise SystemExit("pub_deps.json must contain a packages list")
-PY
+pub_tool normalize-pub-deps
 
 if [ ! -s pub_deps.json ]; then
     echo "✗ FATAL ERROR: pub_deps.json is empty" >&2
@@ -1190,227 +867,18 @@ export WORKSPACE_ABS="$WORKSPACE_DIR_ABS"
 export PACKAGE_CONFIG_PATH="$WORKSPACE_DIR_ABS/.dart_tool/package_config.json"
 export ROOT_PACKAGE_NAME="$PACKAGE_NAME"
 export ROOT_LANGUAGE_SPEC="$LANGUAGE_SPEC"
+export SYNTHESIZE_PUBSPEC_LOCK=1
 mkdir -p "$(dirname "$PACKAGE_CONFIG_PATH")"
-"$PYTHON_BIN" <<'PY'
-import json
-import os
-
-deps_path = os.path.join(os.environ["WORKSPACE_ABS"], "pub_deps.json")
-cache_root = os.environ["PUB_CACHE_ABS"]
-workspace_root = os.environ["WORKSPACE_ABS"]
-config_path = os.environ["PACKAGE_CONFIG_PATH"]
-root_name = os.environ.get("ROOT_PACKAGE_NAME") or ""
-language_spec = os.environ.get("ROOT_LANGUAGE_SPEC") or ""
-
-def _parse_language(spec):
-    if not spec:
-        return "3.0"
-    spec = spec.replace(">=", " ").replace("<=", " ").replace(">", " ").replace("<", " ").replace("^", " ").split()
-    if spec:
-        version = spec[0].split("+")[0]
-        parts = version.split(".")
-        numeric_parts = []
-        for part in parts:
-            if part.isdigit():
-                numeric_parts.append(part)
-            else:
-                break
-        if len(numeric_parts) >= 2:
-            return ".".join(numeric_parts[:2])
-        if len(numeric_parts) == 1:
-            return numeric_parts[0] + ".0"
-    return "3.0"
-
-language_version = _parse_language(language_spec)
-
-def _package_language_version(root_path):
-    pubspec = os.path.join(root_path, "pubspec.yaml")
-    if not os.path.exists(pubspec):
-        return language_version
-
-    capture = False
-    with open(pubspec, "r", encoding="utf-8") as fh:
-        for line in fh:
-            stripped = line.strip()
-            if stripped.startswith("environment:"):
-                capture = True
-                continue
-            if capture:
-                if stripped.startswith("sdk:"):
-                    return _parse_language(stripped.split(":", 1)[1].strip().strip("\\\"").strip("'"))
-                if stripped and not stripped.startswith("#") and not stripped.startswith(("flutter:", "flutter_test:", "dart:")):
-                    break
-    return language_version
-
-with open(deps_path, "r", encoding="utf-8") as fh:
-    data = json.load(fh)
-
-packages = []
-config_dir = os.path.dirname(config_path)
-
-def _root_uri(root_path):
-    rel = os.path.relpath(root_path, config_dir).replace(os.sep, "/")
-    if rel != "." and not rel.endswith("/"):
-        rel += "/"
-    return rel
-
-def add_package(name, root_path):
-    if not name or not root_path or not os.path.isdir(root_path):
-        return
-    pkg = dict()
-    pkg["name"] = name
-    pkg["rootUri"] = _root_uri(root_path)
-    pkg["packageUri"] = "lib/"
-    pkg["languageVersion"] = _package_language_version(root_path)
-    packages.append(pkg)
-
-def _path_deps_from_pubspec(root_path):
-    # `flutter pub deps --json` reports source == "path" but omits where the
-    # package lives, so recover the location from the pubspec declaring it.
-    locations = dict()
-    pubspec = os.path.join(root_path, "pubspec.yaml")
-    if not os.path.exists(pubspec):
-        return locations
-
-    in_deps = False
-    current = None
-    with open(pubspec, "r", encoding="utf-8") as fh:
-        for line in fh:
-            if not line.strip() or line.lstrip().startswith("#"):
-                continue
-            indent = len(line) - len(line.lstrip())
-            stripped = line.strip()
-            if indent == 0:
-                in_deps = stripped.startswith("dependencies:") or stripped.startswith("dev_dependencies:")
-                current = None
-            elif not in_deps:
-                continue
-            elif indent <= 2:
-                current = stripped[:-1] if stripped.endswith(":") else None
-            elif current and stripped.startswith("path:"):
-                locations[current] = stripped.split(":", 1)[1].strip().strip('"').strip("'")
-    return locations
-
-
-path_dep_locations = _path_deps_from_pubspec(workspace_root)
-
-for entry in data.get("packages", []):
-    name = entry.get("name")
-    source = entry.get("source")
-    version = entry.get("version")
-    description = entry.get("description")
-    if not name:
-        continue
-    if source == "hosted" and version:
-        root_path = os.path.join(cache_root, "hosted", "pub.dev", name + "-" + version)
-        add_package(name, root_path)
-    elif source == "root":
-        add_package(name, workspace_root)
-    elif source == "sdk":
-        if name == "sky_engine":
-            root_path = os.path.join(os.environ["FLUTTER_ROOT"], "bin", "cache", "pkg", name)
-        elif name == "_macros":
-            root_path = os.path.join(os.environ["FLUTTER_ROOT"], "bin", "cache", "dart-sdk", "pkg", name)
-        else:
-            root_path = os.path.join(os.environ["FLUTTER_ROOT"], "packages", name)
-        add_package(name, root_path)
-    elif source == "path":
-        # A path dependency lives outside the depending package's directory, so
-        # it cannot be staged inside that package's prepared workspace tree.
-        # The depended-on flutter_library republishes its workspace into the
-        # assembled cache at path/<name>/ instead
-        # (flutter_stage_path_package_action). Prefer that staged copy, and
-        # fall back to resolving against the source tree for workspaces that
-        # were not staged by Bazel.
-        staged_root = os.path.join(cache_root, "path", name)
-        if os.path.isdir(staged_root):
-            add_package(name, staged_root)
-        else:
-            path_value = ""
-            if isinstance(description, str):
-                path_value = description
-            elif isinstance(description, dict):
-                path_value = description.get("path") or ""
-            if not path_value:
-                path_value = path_dep_locations.get(name) or ""
-            if path_value:
-                add_package(name, os.path.abspath(os.path.join(workspace_root, path_value)))
-
-config = dict()
-config["configVersion"] = 2
-config["generated"] = True
-config["generator"] = "rules_flutter"
-config["packages"] = packages
-with open(config_path, "w", encoding="utf-8") as fh:
-    json.dump(config, fh, indent=2)
-    fh.write("\\n")
-
-# Synthesize a minimal pubspec.lock when the package does not ship one:
-# build_runner's package graph requires it to classify dependencies
-# (direct main / direct dev / transitive), which pub_deps.json records
-# as "kind".
-lock_path = os.path.join(workspace_root, "pubspec.lock")
-if not os.path.exists(lock_path):
-    kind_map = dict()
-    kind_map["direct"] = "direct main"
-    kind_map["dev"] = "direct dev"
-    kind_map["transitive"] = "transitive"
-
-    lines = []
-    lines.append("# Generated by rules_flutter from pub_deps.json.")
-    lines.append("packages:")
-    for entry in data.get("packages", []):
-        name = entry.get("name")
-        source = entry.get("source")
-        version = entry.get("version") or "0.0.0"
-        kind = entry.get("kind") or "transitive"
-        if not name or source == "root":
-            continue
-        dependency = kind_map.get(kind, "transitive")
-        lines.append("  {{}}:".format(name))
-        lines.append('    dependency: "{{}}"'.format(dependency))
-        if source == "sdk":
-            lines.append('    source: sdk')
-            lines.append('    description: "flutter"')
-        elif source == "path":
-            description = entry.get("description")
-            path_value = ""
-            if isinstance(description, str):
-                path_value = description
-            elif isinstance(description, dict):
-                path_value = description.get("path") or ""
-            if not path_value:
-                path_value = path_dep_locations.get(name) or ""
-            lines.append("    source: path")
-            lines.append("    description:")
-            lines.append('      path: "{{}}"'.format(path_value))
-            lines.append("      relative: true")
-        else:
-            lines.append("    source: hosted")
-            lines.append("    description:")
-            lines.append('      name: "{{}}"'.format(name))
-            lines.append('      url: "https://pub.dev"')
-        lines.append('    version: "{{}}"'.format(version))
-    lines.append("sdks:")
-    lines.append('  dart: ">=3.0.0 <4.0.0"')
-    with open(lock_path, "w", encoding="utf-8") as fh:
-        fh.write("\\n".join(lines) + "\\n")
-PY
+pub_tool package-config
+unset SYNTHESIZE_PUBSPEC_LOCK
 
 GENERATOR_COMMANDS=({generator_commands})
 if [ ${{#GENERATOR_COMMANDS[@]}} -gt 0 ]; then
-    DART_BIN_LOCAL="$FLUTTER_ROOT/bin/cache/dart-sdk/bin/dart"
-    if [ ! -x "$DART_BIN_LOCAL" ]; then
-        echo "✗ FATAL ERROR: Dart binary not found at $DART_BIN_LOCAL" >&2
-        exit 1
-    fi
     for CODEGEN_CMD in "${{GENERATOR_COMMANDS[@]}}"; do
         if [ -n "$CODEGEN_CMD" ]; then
             echo "Running code generation: $CODEGEN_CMD"
             CODEGEN_ENTRYPOINT="$(
-                CODEGEN_CMD="$CODEGEN_CMD" PACKAGE_CONFIG_PATH="$PACKAGE_CONFIG_PATH" "$PYTHON_BIN" <<'PY'
-{resolve_entrypoint_py}
-PY
+                CODEGEN_CMD="$CODEGEN_CMD" PACKAGE_CONFIG_PATH="$PACKAGE_CONFIG_PATH" pub_tool resolve-entrypoint
             )"
             if ! "$DART_BIN_LOCAL" --packages="$PACKAGE_CONFIG_PATH" "$CODEGEN_ENTRYPOINT"; then
                 echo "✗ FATAL ERROR: Generator command '$CODEGEN_CMD' failed" >&2
@@ -1425,24 +893,7 @@ fi
 BUILD_RUNNER_COMMON_ARGS=({build_runner_common_args})
 BUILD_RUNNER_BUILD_ARGS=({build_runner_build_args})
 if [ "{run_build_runner_build}" = "1" ]; then
-    DART_BIN_LOCAL="$FLUTTER_ROOT/bin/cache/dart-sdk/bin/dart"
-    if [ ! -x "$DART_BIN_LOCAL" ]; then
-        echo "✗ FATAL ERROR: Dart binary not found at $DART_BIN_LOCAL" >&2
-        exit 1
-    fi
-
-    if ! "$PYTHON_BIN" - "$WORKSPACE_ABS/pub_deps.json" <<'PY'
-import json
-import sys
-
-with open(sys.argv[1], "r", encoding="utf-8") as fh:
-    data = json.load(fh)
-
-for entry in data.get("packages", []):
-    if entry.get("name") == "build_runner":
-        raise SystemExit(0)
-raise SystemExit(1)
-PY
+    if ! pub_tool has-package "$WORKSPACE_ABS/pub_deps.json" build_runner
     then
         echo "✗ FATAL ERROR: build_runner requested but not present in pub_deps.json" >&2
         exit 1
@@ -1453,9 +904,7 @@ PY
     # package resolution is up to date and attempt an implicit (networked)
     # `pub get`, which must never happen inside a build action.
     BUILD_RUNNER_ENTRYPOINT="$(
-        CODEGEN_CMD="build_runner:build_runner" PACKAGE_CONFIG_PATH="$PACKAGE_CONFIG_PATH" "$PYTHON_BIN" <<'PY'
-{resolve_entrypoint_py}
-PY
+        CODEGEN_CMD="build_runner:build_runner" PACKAGE_CONFIG_PATH="$PACKAGE_CONFIG_PATH" pub_tool resolve-entrypoint
     )"
     if [ -z "$BUILD_RUNNER_ENTRYPOINT" ]; then
         echo "✗ FATAL ERROR: unable to resolve build_runner entrypoint from package_config.json" >&2
@@ -1494,6 +943,8 @@ echo "=== Dependency preparation complete ==="
         workspace_dir = prepared_workspace.path,
         pub_cache_dir = pub_cache_dir.path,
         pub_cache_assembly = pub_cache_assembly,
+        stage_tree_helpers = STAGE_TREE_HELPERS,
+        fast_staging = "1" if fast_staging else "0",
         pub_deps = pub_deps.path,
         pub_deps_input = pub_deps_file.path,
         dart_tool_dir = dart_tool_dir.path,
@@ -1503,18 +954,22 @@ echo "=== Dependency preparation complete ==="
         build_runner_build_args = " ".join(build_runner_build_args_quoted),
         run_build_runner_build = "1" if run_build_runner_build else "0",
         is_pub_package = "1" if is_pub_package else "0",
-        resolve_entrypoint_py = RESOLVE_ENTRYPOINT_PY,
+        pub_tool = pub_tool_file.path,
         build_runner_cache_restore = build_runner_cache_restore,
         build_runner_cache_save = build_runner_cache_save,
     )
 
-    prepare_inputs = [working_dir, pubspec_file, pub_deps_file] + dep_pub_cache_files + flutter_toolchain.flutterinfo.tool_files + flutter_toolchain.flutterinfo.sdk_files
+    prepare_direct_inputs = [working_dir, pubspec_file, pub_deps_file, pub_tool_file] + dep_pub_cache_files + flutter_toolchain.flutterinfo.tool_files
     prepare_outputs = [pub_get_output, pub_deps, dart_tool_dir, prepared_workspace]
     if preassembled_cache != None:
         # Consumed read-only; produced by flutter_assemble_pub_cache_action.
-        prepare_inputs = prepare_inputs + [preassembled_cache]
+        prepare_direct_inputs.append(preassembled_cache)
     else:
         prepare_outputs = prepare_outputs + [pub_cache_dir]
+    prepare_inputs = depset(
+        direct = prepare_direct_inputs,
+        transitive = [flutter_toolchain.flutterinfo.sdk_files],
+    )
 
     ctx.actions.run_shell(
         inputs = prepare_inputs,
@@ -1531,7 +986,6 @@ LOG_FILE="{pub_get_output}"
 echo "=== Flutter Dependency Preparation ===" > "$LOG_FILE"
 echo "Flutter binary: {flutter_bin}" >> "$LOG_FILE"
 echo "Workspace output: {workspace_dir}" >> "$LOG_FILE"
-echo "Prepared at: $(date)" >> "$LOG_FILE"
 echo "" >> "$LOG_FILE"
 
 if [ -f "$WORKSPACE_DIR_ABS/pub_deps.json" ]; then
@@ -1710,12 +1164,15 @@ def heavy_action_resource_set(os, inputs_size):
 
     The prepare/codegen and flutter build actions run multi-process Dart
     tooling; the Bazel default of one CPU per action badly oversubscribes a
-    machine running several of them.
+    machine running several of them. Memory scales with the input count (a
+    proxy for how much workspace/pub-cache tree the action copies and how
+    large the Dart compile is), clamped so small targets don't reserve 4GB
+    and huge ones don't starve.
     """
 
     # buildifier: disable=unused-variable
-    _ignore = (os, inputs_size)
-    return {"cpu": 4, "memory": 4096}
+    _ignore = os
+    return {"cpu": 4, "memory": max(2048, min(8192, inputs_size // 2))}
 
 def flutter_build_action(
         ctx,
@@ -1730,7 +1187,9 @@ def flutter_build_action(
         env = {},
         android = None,
         android_test = False,
-        allow_remote_exec = False):
+        allow_remote_exec = False,
+        fast_staging = False,
+        pub_tool_file = None):
     """Execute flutter build command for the specified target.
 
     Args:
@@ -1753,6 +1212,8 @@ def flutter_build_action(
         allow_remote_exec: Whether //flutter:allow_remote_execution is set;
             when False, web/desktop builds carry no-remote-exec (remote
             caching stays enabled; Android/iOS have stricter requirements)
+        fast_staging: Whether //flutter:fast_staging is set; staged-tree copies
+            use clones/hardlinks instead of byte copies (see STAGE_TREE_HELPERS)
 
     Returns:
         Tuple of (build_output, build_artifacts_dir)
@@ -1831,13 +1292,14 @@ def flutter_build_action(
 # pub writes bookkeeping (active_roots) into PUB_CACHE, so give it a mutable
 # copy of the assembled cache before regenerating plugin tooling.
 RW_PUB_CACHE="$BUILD_WORKSPACE_TMP/.pub_cache_rw"
-mkdir -p "$RW_PUB_CACHE"
-if command -v rsync >/dev/null 2>&1; then
-    rsync -aL "$PUB_CACHE_DIR_ABS/" "$RW_PUB_CACHE/"
+_stage_tree "$PUB_CACHE_DIR_ABS" "$RW_PUB_CACHE" "$FAST_STAGING"
+if [ "$FAST_STAGING" = "1" ]; then
+    # pub only *adds* bookkeeping files (active_roots); writable directories
+    # suffice, and chmod'ing hardlinked files would reach the inputs.
+    _make_dirs_writable "$RW_PUB_CACHE"
 else
-    cp -RL "$PUB_CACHE_DIR_ABS/." "$RW_PUB_CACHE/"
+    chmod -R u+w "$RW_PUB_CACHE"
 fi
-chmod -R u+w "$RW_PUB_CACHE"
 export PUB_CACHE="$RW_PUB_CACHE"
 export PUB_CACHE_DIR_ABS="$RW_PUB_CACHE"
 export PUB_CACHE_ABS="$RW_PUB_CACHE"
@@ -2023,12 +1485,16 @@ cleanup() {{
 }}
 trap cleanup EXIT
 
-if command -v rsync >/dev/null 2>&1; then
-    rsync -aL "$SOURCE_WORKSPACE_ABS/" "$BUILD_WORKSPACE_TMP/"
+{stage_tree_helpers}
+FAST_STAGING="{fast_staging}"
+_stage_tree "$SOURCE_WORKSPACE_ABS" "$BUILD_WORKSPACE_TMP" "$FAST_STAGING"
+if [ "$FAST_STAGING" = "1" ]; then
+    _make_dirs_writable "$BUILD_WORKSPACE_TMP"
+    _unshare_file "$BUILD_WORKSPACE_TMP/pubspec.yaml"
+    _unshare_file "$BUILD_WORKSPACE_TMP/pubspec.lock"
 else
-    cp -RL "$SOURCE_WORKSPACE_ABS/." "$BUILD_WORKSPACE_TMP/"
+    chmod -R u+rwX "$BUILD_WORKSPACE_TMP"
 fi
-chmod -R u+rwX "$BUILD_WORKSPACE_TMP"
 
 # Change to the mutable workspace directory
 cd "$BUILD_WORKSPACE_TMP"
@@ -2037,9 +1503,14 @@ cd "$BUILD_WORKSPACE_TMP"
 # inputs are symlinks to read-only files, and the regeneration step below
 # must be able to rewrite these copies in place.
 if [ -d "$DART_TOOL_DIR_ABS" ]; then
-    mkdir -p .dart_tool
-    cp -RL "$DART_TOOL_DIR_ABS/." .dart_tool/
-    chmod -R u+rwX .dart_tool
+    _stage_tree "$DART_TOOL_DIR_ABS" "$PWD/.dart_tool" "$FAST_STAGING"
+    if [ "$FAST_STAGING" = "1" ]; then
+        # package_config.json / package_graph.json are removed and rewritten
+        # below (never truncated in place), so writable directories suffice.
+        _make_dirs_writable "$PWD/.dart_tool"
+    else
+        chmod -R u+rwX .dart_tool
+    fi
 fi
 {android_gradle_env}
 {ios_env}
@@ -2056,9 +1527,9 @@ echo ""
 # use the prepared cache and metadata.
 echo ""
 echo "Regenerating package_config.json from declared metadata..."
-PYTHON_BIN="$(command -v python3 || command -v python || true)"
-if [ -z "$PYTHON_BIN" ]; then
-    echo "✗ FATAL ERROR: python interpreter not found on PATH" >&2
+DART_BIN_LOCAL="$FLUTTER_ROOT/bin/cache/dart-sdk/bin/dart"
+if [ ! -x "$DART_BIN_LOCAL" ]; then
+    echo "✗ FATAL ERROR: Dart binary not found at $DART_BIN_LOCAL" >&2
     exit 1
 fi
 if [ ! -s pub_deps.json ]; then
@@ -2072,9 +1543,7 @@ export WORKSPACE_ABS="$PWD"
 export PACKAGE_CONFIG_PATH="$PWD/.dart_tool/package_config.json"
 mkdir -p "$(dirname "$PACKAGE_CONFIG_PATH")"
 rm -f "$PACKAGE_CONFIG_PATH" "$PWD/.dart_tool/package_graph.json"
-"$PYTHON_BIN" <<'PY'
-{package_config_py}
-PY
+"$DART_BIN_LOCAL" "$ORIGINAL_PWD/{pub_tool}" package-config
 echo "✓ Package config regenerated from declared metadata"
 echo ""
 {mobile_pub_get}
@@ -2087,7 +1556,10 @@ if "$FLUTTER_BIN_ABS" --suppress-analytics --no-version-check {build_command}; t
     mkdir -p "$BUILD_ARTIFACTS_ABS"
     if [ -d "$BUILD_OUTPUT_DIR" ]; then
         echo "Copying from $BUILD_OUTPUT_DIR to $BUILD_ARTIFACTS_ABS"
-        cp -r "$BUILD_OUTPUT_DIR"/* "$BUILD_ARTIFACTS_ABS/" 2>/dev/null || echo "No files to copy from $BUILD_OUTPUT_DIR"
+        if ! cp -r "$BUILD_OUTPUT_DIR"/. "$BUILD_ARTIFACTS_ABS/"; then
+            echo "✗ FATAL ERROR: copying build artifacts from $BUILD_OUTPUT_DIR failed" >&2
+            exit 1
+        fi
         echo "Build artifacts copied from $BUILD_OUTPUT_DIR"
         echo "Artifacts directory contents:"
         ls -la "$BUILD_ARTIFACTS_ABS" | head -10
@@ -2123,14 +1595,16 @@ SCRIPT_COMPLETED=1
         ios_env = ios_env,
         mobile_pub_get = mobile_pub_get,
         android_test_step = android_test_step,
-        package_config_py = PACKAGE_CONFIG_FROM_PUB_DEPS_PY,
+        pub_tool = pub_tool_file.path,
+        stage_tree_helpers = STAGE_TREE_HELPERS,
+        fast_staging = "1" if fast_staging else "0",
     )
 
     inputs = depset(
-        direct = [working_dir, pub_cache_dir, dart_tool_dir] +
-                 flutter_toolchain.flutterinfo.tool_files +
-                 flutter_toolchain.flutterinfo.sdk_files,
-        transitive = [android.files] if android else [],
+        direct = [working_dir, pub_cache_dir, dart_tool_dir, pub_tool_file] +
+                 flutter_toolchain.flutterinfo.tool_files,
+        transitive = [flutter_toolchain.flutterinfo.sdk_files] +
+                     ([android.files] if android else []),
     )
 
     # Web/desktop builds are hermetic but CPU-heavy; keep them off
