@@ -164,7 +164,9 @@ def _toolchain_extension(module_ctx):
             ndk_repo = "{}_android_ndk".format(android.name)
             ndk_platform_repos = {}
             for platform in sorted(ANDROID_PLATFORMS.keys()):
-                platform_repo = "{}_{}".format(ndk_repo, platform)
+                # The upstream redirect BUILD addresses these repositories by
+                # their historical fixed names.
+                platform_repo = "androidndk_{}".format(platform)
                 hermetic_android_ndk_platform_repository(
                     name = platform_repo,
                     platform = platform,

@@ -461,13 +461,13 @@
     },
     "@@rules_flutter+//flutter:extensions.bzl%flutter": {
       "general": {
-        "bzlTransitiveDigest": "57hYoT4wviwV7kZDjweLDinH/vR6XtCzA2jKuBLS2es=",
-        "usagesDigest": "28OnpcYnSmzay/V6WMwTNE0upCyG0V5VmLKmR7xi70Y=",
+        "bzlTransitiveDigest": "UDz9uzhrBppLGV8gqgjgBNW0zJBBIERcQsWf3lwYdqw=",
+        "usagesDigest": "DmtFD/WdAMvXh7whCtauj7M6DaD5eQgpFMzkqiIIds0=",
         "recordedFileInputs": {},
         "recordedDirentsInputs": {},
         "envVariables": {
           "ACCEPTED_ANDROID_NDK_LICENSE_VERSION": null,
-          "ACCEPTED_ANDROID_SDK_LICENSE_VERSION": null
+          "ACCEPTED_ANDROID_SDK_LICENSE_VERSION": "36"
         },
         "generatedRepoSpecs": {
           "flutter_macos": {
@@ -536,6 +536,62 @@
             "attributes": {
               "user_repository_name": "flutter"
             }
+          },
+          "android_android_sdk_darwin": {
+            "repoRuleId": "@@hermetic_android_toolchains+//sdk:repositories.bzl%hermetic_android_sdk_platform_repository",
+            "attributes": {
+              "platform": "darwin",
+              "version": "36",
+              "build_tools_version": "36.0.0"
+            }
+          },
+          "android_android_sdk_linux": {
+            "repoRuleId": "@@hermetic_android_toolchains+//sdk:repositories.bzl%hermetic_android_sdk_platform_repository",
+            "attributes": {
+              "platform": "linux",
+              "version": "36",
+              "build_tools_version": "36.0.0"
+            }
+          },
+          "android_android_sdk_windows": {
+            "repoRuleId": "@@hermetic_android_toolchains+//sdk:repositories.bzl%hermetic_android_sdk_platform_repository",
+            "attributes": {
+              "platform": "windows",
+              "version": "36",
+              "build_tools_version": "36.0.0"
+            }
+          },
+          "android_android_sdk": {
+            "repoRuleId": "@@hermetic_android_toolchains+//sdk:repositories.bzl%hermetic_android_sdk_repository",
+            "attributes": {
+              "platform_repositories": {
+                "darwin": "android_android_sdk_darwin",
+                "linux": "android_android_sdk_linux",
+                "windows": "android_android_sdk_windows"
+              },
+              "version": "36",
+              "build_tools_version": "36.0.0"
+            }
+          },
+          "android_gradle": {
+            "repoRuleId": "@@rules_flutter+//flutter/private:android_repositories.bzl%gradle_repository",
+            "attributes": {
+              "url": "https://services.gradle.org/distributions/gradle-8.9-bin.zip",
+              "integrity": "sha256-1yXXB7+r1N/clYxiQAOzyArMwD9wN7USLEsdDvFc7Ks=",
+              "version": "8.9"
+            }
+          },
+          "android_toolchains": {
+            "repoRuleId": "@@rules_flutter+//flutter/private:android_repositories.bzl%android_toolchains_repository",
+            "attributes": {
+              "sdk_repository": "android_android_sdk",
+              "ndk_repository": "",
+              "gradle_repository": "android_gradle",
+              "sdk_version": "36",
+              "build_tools_version": "36.0.0",
+              "ndk_version": "",
+              "gradle_version": "8.9"
+            }
           }
         },
         "recordedRepoMappingEntries": [
@@ -554,7 +610,7 @@
     },
     "@@rules_flutter+//flutter:extensions.bzl%pub": {
       "general": {
-        "bzlTransitiveDigest": "57hYoT4wviwV7kZDjweLDinH/vR6XtCzA2jKuBLS2es=",
+        "bzlTransitiveDigest": "UDz9uzhrBppLGV8gqgjgBNW0zJBBIERcQsWf3lwYdqw=",
         "usagesDigest": "8P2FYQtelPagBVJ+QGRG7oizLHy3cwyOJtcLU4HfBrk=",
         "recordedFileInputs": {
           "@@//codegen_app/pub_deps.json": "1f360270a671c0b00fd37abb03989d09840cd98b55272670abebcdf6bf11a087",

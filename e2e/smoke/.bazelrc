@@ -7,3 +7,4 @@ common --repo_env=ANDROID_HOME
 build --action_env=HOME
 build --java_runtime_version=remotejdk_17
 build --tool_java_runtime_version=remotejdk_17
+common --repo_env=ACCEPTED_ANDROID_SDK_LICENSE_VERSION=36

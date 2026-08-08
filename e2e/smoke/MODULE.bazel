@@ -62,13 +62,22 @@ flutter.toolchain(
     # (stable archives ship them; `flutter precache` runs only if missing).
     precache = ["web"],
 )
+flutter.android_toolchain(
+    name = "android",
+    build_tools_version = "36.0.0",
+    gradle_distribution_integrity = "sha256-1yXXB7+r1N/clYxiQAOzyArMwD9wN7USLEsdDvFc7Ks=",
+    gradle_distribution_url = "https://services.gradle.org/distributions/gradle-8.9-bin.zip",
+    sdk_version = "36",
+)
 use_repo(
     flutter,
+    "android_toolchains",
     "flutter_sdk",
     "flutter_toolchains",
 )
 
 register_toolchains("@flutter_toolchains//:all")
+register_toolchains("@android_toolchains//:all")
 
 # Pub.dev dependencies
 pub = use_extension("@rules_flutter//flutter:extensions.bzl", "pub")

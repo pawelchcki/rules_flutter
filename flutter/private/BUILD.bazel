@@ -2,8 +2,15 @@ load("@bazel_skylib//:bzl_library.bzl", "bzl_library")
 
 exports_files([
     "android.init.gradle.kts",
+    "android_sdk_tree.bzl",
     "versions.bzl",
 ])
+
+bzl_library(
+    name = "android_sdk_tree",
+    srcs = ["android_sdk_tree.bzl"],
+    visibility = ["//visibility:public"],
+)
 
 bzl_library(
     name = "android_repositories",

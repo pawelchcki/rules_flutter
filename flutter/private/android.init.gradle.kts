@@ -10,7 +10,7 @@ fun org.gradle.api.artifacts.dsl.RepositoryHandler.useRulesFlutterMirror() {
     maven { url = mirrorUri }
 }
 
-gradle.settingsEvaluated {
+gradle.beforeSettings {
     pluginManagement.repositories.useRulesFlutterMirror()
     dependencyResolutionManagement.repositories.useRulesFlutterMirror()
 }

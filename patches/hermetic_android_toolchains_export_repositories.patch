@@ -23,3 +23,36 @@ diff --git a/private/BUILD.bazel b/private/BUILD.bazel
 +++ b/private/BUILD.bazel
 @@ -0,0 +1 @@
 +exports_files(["utils.bzl"])
+diff --git a/sdk/BUILD.androidsdk.tpl b/sdk/BUILD.androidsdk.tpl
+--- a/sdk/BUILD.androidsdk.tpl
++++ b/sdk/BUILD.androidsdk.tpl
+@@ -9,1 +9,6 @@
+ package(default_visibility = ["//visibility:public"])
++filegroup(
++    name = "sdk_component_files",
++    srcs = glob(["build-tools/**", "platform-tools/**"]),
++)
++
+ %{platform_rules}
+diff --git a/sdk/BUILD.sdkredirect.tpl b/sdk/BUILD.sdkredirect.tpl
+--- a/sdk/BUILD.sdkredirect.tpl
++++ b/sdk/BUILD.sdkredirect.tpl
+@@ -21,1 +21,6 @@
+ package(default_visibility = ["//visibility:public"])
++filegroup(
++    name = "platform_files",
++    srcs = glob(["platforms/**"]),
++)
++
+ exports_files([
+diff --git a/ndk/BUILD.androidndk.bazel b/ndk/BUILD.androidndk.bazel
+--- a/ndk/BUILD.androidndk.bazel
++++ b/ndk/BUILD.androidndk.bazel
+@@ -9,1 +9,6 @@
+ package(default_visibility = ["//visibility:public"])
++filegroup(
++    name = "ndk_files",
++    srcs = glob(["**"], exclude = ["BUILD.bazel"]),
++)
++
+ exports_files([

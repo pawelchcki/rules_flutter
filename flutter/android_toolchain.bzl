@@ -30,17 +30,14 @@ def _android_toolchain_impl(ctx):
     sdk = ctx.attr.sdk[DefaultInfo].files
     gradle = ctx.attr.gradle[DefaultInfo].files
     transitive = [sdk, gradle]
-    ndk_path = None
-    if ctx.attr.ndk:
-        ndk = ctx.attr.ndk[DefaultInfo].files
-        transitive.append(ndk)
-        ndk_path = _root(ndk, "NDK")
+    sdk_path = _root(sdk, "SDK")
+    ndk_path = "{}/ndk/{}".format(sdk_path, ctx.attr.ndk_version) if ctx.attr.ndk_version else None
 
     info = AndroidToolchainInfo(
         sdk_version = ctx.attr.sdk_version,
         build_tools_version = ctx.attr.build_tools_version,
         ndk_version = ctx.attr.ndk_version,
-        sdk_path = _root(sdk, "SDK"),
+        sdk_path = sdk_path,
         ndk_path = ndk_path,
         gradle_home = _root(gradle, "Gradle distribution"),
         gradle_version = ctx.attr.gradle_version,
@@ -53,7 +50,6 @@ android_toolchain = rule(
     attrs = {
         "sdk": attr.label(mandatory = True, allow_files = True),
         "gradle": attr.label(mandatory = True, allow_files = True),
-        "ndk": attr.label(allow_files = True),
         "sdk_version": attr.string(mandatory = True),
         "build_tools_version": attr.string(mandatory = True),
         "ndk_version": attr.string(),
