@@ -22,7 +22,7 @@ FlutterLibraryInfo = provider(
         "workspace": "Prepared Flutter workspace tree artifact containing project sources and pub outputs.",
         "pub_get_log": "Captured log from dependency preparation (pub deps, cache assembly, and generation commands).",
         "pub_cache": "Tree artifact containing the assembled pub cache for this library.",
-        "pub_deps": "JSON dependency report copied from checked-in or repository-generated pub_deps.json.",
+        "lock": "pubspec.lock staged into the prepared workspace, from the checked-in or repository-generated lock.",
         "dart_tool": "Tree artifact containing the generated .dart_tool/package_config.json.",
         "pubspec": "The pubspec.yaml file for this library.",
         "dart_sources": "Depset of Dart source files that make up the library.",
@@ -39,7 +39,7 @@ DartLibraryInfo = provider(
         "deps": "Transitive dependencies of this library",
         "import_path": "Import path for this library",
         "pubspec": "The pubspec.yaml file for this library (optional)",
-        "pub_deps": "Dependency report copied from checked-in or repository-generated pub_deps.json (optional)",
+        "lock": "pubspec.lock staged into the prepared workspace, from the checked-in or repository-generated lock (optional)",
         "pub_cache": "The assembled pub cache directory for this library (optional)",
         "transitive_pub_caches": "Depset of pub cache directories from all transitive dependencies",
         "assembled_cache": "Whether pub_cache contains the full merged dependency closure (assemble_dep_caches). Only such libraries can be embedded.",
@@ -207,7 +207,7 @@ def _maybe_stage_pub_package(ctx):
         )
     return None
 
-def _prepare_library_deps(ctx, flutter_toolchain, working_dir, pubspec_file, pub_deps_file, transitive_pub_caches):
+def _prepare_library_deps(ctx, flutter_toolchain, working_dir, pubspec_file, lock_file, transitive_pub_caches):
     """Assemble the pub cache and prepare the workspace for a library target.
 
     When the library assembles a full dependency cache (and is not itself a
@@ -239,7 +239,7 @@ def _prepare_library_deps(ctx, flutter_toolchain, working_dir, pubspec_file, pub
         flutter_toolchain,
         working_dir,
         pubspec_file,
-        pub_deps_file,
+        lock_file,
         dep_caches,
         generator_commands = ctx.attr.generator_commands,
         build_runner_common_args = ctx.attr.build_runner_common_args,
@@ -254,8 +254,8 @@ def _prepare_library_deps(ctx, flutter_toolchain, working_dir, pubspec_file, pub
         pub_tool_file = ctx.file._pub_tool,
     )
 
-def _render_pub_deps_generate_script(pubspec_file, flutter_bin, pub_tool):
-    """Generate shell script that refreshes pub_deps.json in the source workspace."""
+def _render_lock_update_script(pubspec_file, flutter_bin):
+    """Generate shell script that refreshes pubspec.lock in the source workspace."""
 
     pubspec_rel = pubspec_file.short_path
     return """#!/bin/bash
@@ -318,17 +318,6 @@ cleanup() {{
 }}
 trap cleanup EXIT
 
-PUB_TOOL="$(resolve_runfile "{pub_tool}")"
-if [ -z "$PUB_TOOL" ]; then
-    echo "✗ Unable to locate pub_tool.dart in runfiles: {pub_tool}" >&2
-    exit 1
-fi
-DART_BIN="$(cd "$(dirname "$FLUTTER_BIN")/.." && pwd -P)/bin/cache/dart-sdk/bin/dart"
-if [ ! -x "$DART_BIN" ]; then
-    echo "✗ Dart binary not found at $DART_BIN" >&2
-    exit 1
-fi
-
 export FLUTTER_SUPPRESS_ANALYTICS=true
 export FLUTTER_ALREADY_LOCKED=true
 export CI=true
@@ -372,42 +361,37 @@ fi
 
 cd "$PACKAGE_DIR"
 
-# Resolve first so pubspec.lock exists and matches the report below: the lock
-# is where the per-package sha256 pins come from, and a stale one would pin
-# hashes belonging to different versions than the report records.
+# The toolchain-pinned Flutter does the resolving, not whatever `flutter` the
+# user happens to have on PATH: the lock records both the resolved versions
+# and the sha256 pins that every download is later verified against, so it
+# must not vary with the host.
 if ! "$FLUTTER_BIN" --suppress-analytics --no-version-check pub get; then
     echo "✗ flutter pub get failed for $SOURCE_PACKAGE_DIR" >&2
     exit 1
 fi
 
-if ! "$FLUTTER_BIN" --suppress-analytics --no-version-check pub deps --json > "$TMP_DIR/pub_deps.raw.json"; then
-    echo "✗ flutter pub deps --json failed for $SOURCE_PACKAGE_DIR" >&2
+if [ ! -f "$PACKAGE_DIR/pubspec.lock" ]; then
+    echo "✗ flutter pub get did not write $PACKAGE_DIR/pubspec.lock" >&2
     exit 1
 fi
 
-"$DART_BIN" "$PUB_TOOL" merge-pub-deps \
-    "$TMP_DIR/pub_deps.raw.json" \
-    "$PACKAGE_DIR/pubspec.lock" \
-    "$TMP_DIR/pub_deps.json"
-
-DEST_FILE="$SOURCE_PACKAGE_DIR/pub_deps.json"
-if [ -f "$DEST_FILE" ] && cmp -s "$TMP_DIR/pub_deps.json" "$DEST_FILE"; then
-    echo "✓ pub_deps.json already up to date at $DEST_FILE"
+DEST_FILE="$SOURCE_PACKAGE_DIR/pubspec.lock"
+if [ -f "$DEST_FILE" ] && cmp -s "$PACKAGE_DIR/pubspec.lock" "$DEST_FILE"; then
+    echo "✓ pubspec.lock already up to date at $DEST_FILE"
     SCRIPT_COMPLETED=1
     exit 0
 fi
 
-cp "$TMP_DIR/pub_deps.json" "$DEST_FILE"
+cp "$PACKAGE_DIR/pubspec.lock" "$DEST_FILE"
 chmod 0644 "$DEST_FILE" 2>/dev/null || true
 echo "✓ Updated $DEST_FILE"
 SCRIPT_COMPLETED=1
 """.format(
         pubspec_rel = pubspec_rel,
         flutter_bin = flutter_bin,
-        pub_tool = pub_tool,
     )
 
-def _pub_deps_update_impl(ctx):
+def _pubspec_lock_update_impl(ctx):
     """Implementation for the generated .update helper."""
 
     flutter_toolchain, flutter_bin = _resolve_flutter_toolchain(ctx)
@@ -415,16 +399,15 @@ def _pub_deps_update_impl(ctx):
     update_script = ctx.actions.declare_file(ctx.label.name + "_update.sh")
     ctx.actions.write(
         output = update_script,
-        content = _render_pub_deps_generate_script(
+        content = _render_lock_update_script(
             ctx.file.pubspec,
             flutter_bin.short_path,
-            ctx.file._pub_tool.short_path,
         ),
         is_executable = True,
     )
 
     runfiles = ctx.runfiles(
-        files = [update_script, flutter_bin, ctx.file._pub_tool],
+        files = [update_script, flutter_bin],
         transitive_files = depset(
             direct = flutter_toolchain.flutterinfo.tool_files,
             transitive = [flutter_toolchain.flutterinfo.sdk_files],
@@ -439,22 +422,18 @@ def _pub_deps_update_impl(ctx):
         ),
     ]
 
-_pub_deps_update = rule(
-    implementation = _pub_deps_update_impl,
+_pubspec_lock_update = rule(
+    implementation = _pubspec_lock_update_impl,
     attrs = {
         "pubspec": attr.label(
             allow_single_file = True,
             mandatory = True,
-            doc = "pubspec.yaml whose package dependency report should be refreshed.",
-        ),
-        "_pub_tool": attr.label(
-            allow_single_file = True,
-            default = Label("//flutter/private:tools/pub_tool.dart"),
+            doc = "pubspec.yaml whose pubspec.lock should be refreshed.",
         ),
     },
     executable = True,
     toolchains = ["//flutter:toolchain_type"],
-    doc = "Creates an executable that refreshes pub_deps.json from pubspec.yaml.",
+    doc = "Creates an executable that refreshes pubspec.lock from pubspec.yaml using the toolchain-pinned Flutter SDK.",
 )
 
 _BUILD_RUNNER_MODES = [
@@ -986,9 +965,9 @@ def _flutter_library_impl(ctx):
     if not pubspec_file:
         fail("flutter_library requires the 'pubspec' attribute to be set")
 
-    pub_deps_file = ctx.file.pub_deps
-    if not pub_deps_file:
-        fail("flutter_library requires the 'pub_deps' attribute to point at a checked-in pub_deps.json")
+    lock_file = ctx.file.lock
+    if not lock_file and not ctx.attr.pub_payload:
+        fail("flutter_library requires the 'lock' attribute to point at a checked-in pubspec.lock")
 
     source_files = list(ctx.files.srcs) + list(ctx.files.data)
     dart_files = [f for f in source_files if f.extension == "dart"]
@@ -1014,7 +993,7 @@ def _flutter_library_impl(ctx):
                 workspace = None,
                 pub_get_log = None,
                 pub_cache = staged_cache,
-                pub_deps = pub_deps_file,
+                lock = lock_file,
                 dart_tool = None,
                 pubspec = pubspec_file,
                 dart_sources = depset(dart_files),
@@ -1025,14 +1004,14 @@ def _flutter_library_impl(ctx):
                 ),
                 assembled_cache = False,
             ),
-        # InstrumentedFilesInfo on flutter_test is inert unless the embedded
-        # library reports its sources too, so both halves are declared.
-        coverage_common.instrumented_files_info(
-            ctx,
-            dependency_attributes = ["deps"],
-            extensions = ["dart"],
-            source_attributes = ["srcs"],
-        ),
+            # InstrumentedFilesInfo on flutter_test is inert unless the embedded
+            # library reports its sources too, so both halves are declared.
+            coverage_common.instrumented_files_info(
+                ctx,
+                dependency_attributes = ["deps"],
+                extensions = ["dart"],
+                source_attributes = ["srcs"],
+            ),
         ]
 
     working_dir, _ = create_flutter_working_dir(
@@ -1046,18 +1025,18 @@ def _flutter_library_impl(ctx):
         remote_cache_trees = _remote_cache_trees(ctx),
     )
 
-    prepared_workspace, pub_get_output, pub_cache_dir, pub_deps, dart_tool_dir = _prepare_library_deps(
+    prepared_workspace, pub_get_output, pub_cache_dir, lock, dart_tool_dir = _prepare_library_deps(
         ctx,
         flutter_toolchain,
         working_dir,
         pubspec_file,
-        pub_deps_file,
+        lock_file,
         transitive_pub_caches,
     )
 
     output_files = [
         pub_get_output,
-        pub_deps,
+        lock,
         prepared_workspace,
         pub_cache_dir,
         dart_tool_dir,
@@ -1085,7 +1064,7 @@ def _flutter_library_impl(ctx):
             workspace = prepared_workspace,
             pub_get_log = pub_get_output,
             pub_cache = pub_cache_dir,
-            pub_deps = pub_deps,
+            lock = lock,
             dart_tool = dart_tool_dir,
             pubspec = pubspec_file,
             dart_sources = depset(dart_files),
@@ -1118,9 +1097,9 @@ _flutter_library_rule = rule(
             mandatory = True,
             doc = "pubspec.yaml describing this Flutter package.",
         ),
-        "pub_deps": attr.label(
+        "lock": attr.label(
             allow_single_file = True,
-            doc = "Checked-in pub_deps.json generated from this package's pubspec.yaml.",
+            doc = "Checked-in pubspec.lock generated from this package's pubspec.yaml.",
         ),
         "deps": attr.label_list(
             doc = "Additional flutter_library or dart_library dependencies.",
@@ -1295,8 +1274,11 @@ def flutter_library(
     if "codegen" in kwargs:
         fail("flutter_library no longer supports 'codegen'; use 'generator_commands' and/or 'build_runner_*' attributes.")
 
-    if "pub_deps" not in kwargs:
-        kwargs["pub_deps"] = "pub_deps.json"
+    # A generated pub-package leaf stages its own payload and never resolves
+    # anything, so it carries no lock; defaulting one in would declare an
+    # input that does not exist.
+    if "lock" not in kwargs and not kwargs.get("pub_payload"):
+        kwargs["lock"] = "pubspec.lock"
 
     has_explicit_build_runner_modes = "build_runner_modes" in kwargs
     build_runner_modes = _normalize_build_runner_modes(kwargs.get("build_runner_modes", []))
@@ -1337,7 +1319,7 @@ def flutter_library(
         if kwargs.get("testonly", False):
             update_args["testonly"] = True
 
-        _pub_deps_update(**update_args)
+        _pubspec_lock_update(**update_args)
 
 def _create_flutter_run_script(ctx, build_artifacts):
     """Render the runner script that powers `bazel run` for flutter_app targets."""
@@ -1514,7 +1496,7 @@ set -euo pipefail
 DEST="$1"
 SRC_WORKSPACE="$2"
 MANIFEST="$3"
-PUB_DEPS_SRC="$4"
+LOCK_SRC="$4"
 FAST_STAGING="$5"
 
 rm -rf "$DEST"
@@ -1525,9 +1507,9 @@ else
     chmod -R u+rwX "$DEST"
 fi
 
-if [ -f "$PUB_DEPS_SRC" ]; then
-    rm -f "$DEST/pub_deps.json"
-    cp "$PUB_DEPS_SRC" "$DEST/pub_deps.json"
+if [ -f "$LOCK_SRC" ]; then
+    rm -f "$DEST/pubspec.lock"
+    cp "$LOCK_SRC" "$DEST/pubspec.lock"
 fi
 
 if [ -s "$MANIFEST" ]; then
@@ -1547,7 +1529,7 @@ fi
     ctx.actions.run_shell(
         inputs = [
             library_info.workspace,
-            library_info.pub_deps,
+            library_info.lock,
             manifest,
         ] + ctx.files.srcs,
         outputs = [prepared_workspace],
@@ -1555,7 +1537,7 @@ fi
             prepared_workspace.path,
             library_info.workspace.path,
             manifest.path,
-            library_info.pub_deps.path,
+            library_info.lock.path,
             "1" if _fast_staging(ctx) else "0",
         ],
         command = copy_script,
@@ -1613,7 +1595,7 @@ fi
                     runner,
                     build_output,
                     build_artifacts,
-                    library_info.pub_deps,
+                    library_info.lock,
                     library_info.pub_cache,
                     library_info.dart_tool,
                 ],
@@ -2147,7 +2129,7 @@ fi
 
 WORKSPACE_SRC="<<WORKSPACE_SHORT>>"
 PUB_CACHE_SRC="<<PUB_CACHE_SHORT>>"
-PUB_DEPS_SRC="<<PUB_DEPS_SHORT>>"
+LOCK_SRC="<<LOCK_SHORT>>"
 DART_TOOL_SRC="<<DART_TOOL_SHORT>>"
 FLUTTER_BIN_REL="<<FLUTTER_BIN>>"
 
@@ -2169,7 +2151,7 @@ if [ -z "$WORKSPACE_ABS" ]; then
 fi
 
 PUB_CACHE_ABS="$(resolve_path "$PUB_CACHE_SRC" "<<PUB_CACHE_PATH>>")"
-PUB_DEPS_ABS="$(resolve_path "$PUB_DEPS_SRC" "<<PUB_DEPS_PATH>>")"
+LOCK_ABS="$(resolve_path "$LOCK_SRC" "<<LOCK_PATH>>")"
 DART_TOOL_ABS="$(resolve_path "$DART_TOOL_SRC" "<<DART_TOOL_PATH>>")"
 
 if [[ -z "${TEST_TMPDIR:-}" ]]; then
@@ -2244,9 +2226,9 @@ if [ -n "$DART_TOOL_ABS" ] && [ -d "$DART_TOOL_ABS" ]; then
     chmod -R u+w "$RUNTIME_WORKSPACE/.dart_tool" 2>/dev/null || true
 fi
 
-if [ -n "$PUB_DEPS_ABS" ] && [ -f "$PUB_DEPS_ABS" ]; then
-    cp "$PUB_DEPS_ABS" "$RUNTIME_WORKSPACE/pub_deps.json"
-    chmod u+w "$RUNTIME_WORKSPACE/pub_deps.json" 2>/dev/null || true
+if [ -n "$LOCK_ABS" ] && [ -f "$LOCK_ABS" ]; then
+    cp "$LOCK_ABS" "$RUNTIME_WORKSPACE/pubspec.lock"
+    chmod u+w "$RUNTIME_WORKSPACE/pubspec.lock" 2>/dev/null || true
 fi
 
 FLUTTER_BIN_DIR="$(dirname "$FLUTTER_BIN_ABS")"
@@ -2262,7 +2244,7 @@ mkdir -p "$HOME"
 export FLUTTER_ROOT
 export PATH="$FLUTTER_BIN_DIR:$PATH"
 
-# Regenerate package_config.json directly from the declared pub_deps.json
+# Regenerate package_config.json directly from the declared pubspec.lock
 # metadata. Do NOT re-run pub resolution here: dependency_overrides are
 # stripped from prepared workspaces, so an offline solve could legitimately
 # fail even though the pinned package set is complete and consistent.
@@ -2279,7 +2261,7 @@ if [ -z "$PUB_TOOL" ]; then
     echo "✗ Unable to locate the rules_flutter pub tool" | tee -a "$TEST_LOG"
     exit 1
 fi
-export PUB_DEPS_PATH="$RUNTIME_WORKSPACE/pub_deps.json"
+export PUBSPEC_LOCK_PATH="$RUNTIME_WORKSPACE/pubspec.lock"
 export PUB_CACHE_ABS="$PUB_CACHE_FOR_CONFIG"
 export WORKSPACE_ABS="$(cd "$RUNTIME_WORKSPACE" && pwd -P)"
 export PACKAGE_CONFIG_PATH="$RUNTIME_WORKSPACE/.dart_tool/package_config.json"
@@ -2296,11 +2278,11 @@ fi
     for sentinel, value in [
         ("<<WORKSPACE_SHORT>>", prepared_workspace.short_path),
         ("<<PUB_CACHE_SHORT>>", library_info.pub_cache.short_path),
-        ("<<PUB_DEPS_SHORT>>", library_info.pub_deps.short_path),
+        ("<<LOCK_SHORT>>", library_info.lock.short_path),
         ("<<DART_TOOL_SHORT>>", library_info.dart_tool.short_path),
         ("<<WORKSPACE_PATH>>", prepared_workspace.path),
         ("<<PUB_CACHE_PATH>>", library_info.pub_cache.path),
-        ("<<PUB_DEPS_PATH>>", library_info.pub_deps.path),
+        ("<<LOCK_PATH>>", library_info.lock.path),
         ("<<DART_TOOL_PATH>>", library_info.dart_tool.path),
         ("<<FLUTTER_BIN>>", flutter_bin),
         ("<<LOG_NAME>>", log_name),
@@ -2422,7 +2404,7 @@ def _runtime_runfiles(ctx, runner, prepared_workspace, library_info, flutter_too
             runner,
             prepared_workspace,
             library_info.pub_cache,
-            library_info.pub_deps,
+            library_info.lock,
             library_info.dart_tool,
             # The package_config regeneration runs this with the SDK's dart.
             ctx.file._pub_tool,
@@ -2623,7 +2605,7 @@ flutter_test = rule(
 # Build-action script that regenerates goldens hermetically. It materializes a
 # writable copy of the prepared workspace (protos and other generated_srcs
 # already mounted, so nothing needs to exist in the source tree), regenerates
-# package_config.json from the declared pub_deps.json (never re-resolving —
+# package_config.json from the declared pubspec.lock (never re-resolving —
 # dependency_overrides are stripped), then runs `flutter test --update-goldens`
 # and copies the produced `**/goldens/**` trees into the declared output dir.
 # Because it is a normal cached build action, an unchanged embed/test/lib graph
@@ -2637,7 +2619,7 @@ set -euo pipefail
 OUT_DIR="$1"
 WORKSPACE_SRC="$2"
 PUB_CACHE_SRC="$3"
-PUB_DEPS_SRC="$4"
+LOCK_SRC="$4"
 DART_TOOL_SRC="$5"
 FLUTTER_BIN_REL="$6"
 PUB_TOOL_REL="$7"
@@ -2682,9 +2664,9 @@ if [ -d "$DART_TOOL_SRC" ]; then
     chmod -R u+w "$RUNTIME_WORKSPACE/.dart_tool" 2>/dev/null || true
 fi
 
-if [ -f "$PUB_DEPS_SRC" ]; then
-    cp "$PUB_DEPS_SRC" "$RUNTIME_WORKSPACE/pub_deps.json"
-    chmod u+w "$RUNTIME_WORKSPACE/pub_deps.json" 2>/dev/null || true
+if [ -f "$LOCK_SRC" ]; then
+    cp "$LOCK_SRC" "$RUNTIME_WORKSPACE/pubspec.lock"
+    chmod u+w "$RUNTIME_WORKSPACE/pubspec.lock" 2>/dev/null || true
 fi
 
 FLUTTER_BIN_ABS="$PWD/$FLUTTER_BIN_REL"
@@ -2715,7 +2697,7 @@ if [ ! -x "$DART_BIN" ]; then
     echo "Dart binary not found at $DART_BIN" >&2
     exit 1
 fi
-export PUB_DEPS_PATH="$RUNTIME_WORKSPACE/pub_deps.json"
+export PUBSPEC_LOCK_PATH="$RUNTIME_WORKSPACE/pubspec.lock"
 export PUB_CACHE_ABS="$RUNTIME_PUB_CACHE"
 export WORKSPACE_ABS="$RUNTIME_WORKSPACE"
 export PACKAGE_CONFIG_PATH="$RUNTIME_WORKSPACE/.dart_tool/package_config.json"
@@ -2829,6 +2811,7 @@ echo "Updated $count golden directory(ies) in $PACKAGE_DIR"
 
 def _flutter_goldens_impl(ctx):
     """Regenerate goldens hermetically (cached) and write them back on run."""
+
     # A build action, so the exec path is the right one here.
     library_info, flutter_toolchain, flutter_bin_file = _single_embedded_library(ctx, "flutter_goldens")
     flutter_bin = flutter_bin_file.path
@@ -2848,7 +2831,7 @@ def _flutter_goldens_impl(ctx):
         direct = [
             prepared_workspace,
             library_info.pub_cache,
-            library_info.pub_deps,
+            library_info.lock,
             library_info.dart_tool,
             pub_tool,
         ] + flutter_toolchain.flutterinfo.tool_files,
@@ -2862,7 +2845,7 @@ def _flutter_goldens_impl(ctx):
             goldens_out.path,
             prepared_workspace.path,
             library_info.pub_cache.path,
-            library_info.pub_deps.path,
+            library_info.lock.path,
             library_info.dart_tool.path,
             flutter_bin,
             pub_tool.path,
@@ -3197,6 +3180,7 @@ def _dart_proto_aspect_impl(target, ctx):
         return [DartProtoAspectInfo(trees = depset(transitive = transitive))]
 
     flutter_toolchain = ctx.toolchains["//flutter:toolchain_type"]
+
     # The exec path: this runs in a build action, not at test time. The
     # previous code used the runfiles *manifest* path here, which only
     # coincided with the exec path under the default repository layout and
@@ -3209,7 +3193,7 @@ def _dart_proto_aspect_impl(target, ctx):
     wrapper_script = ctx.actions.declare_file(ctx.label.name + ".dart_pb_protoc_gen_dart.sh")
 
     # The plugin executes out of its own pub repository, whose fetch vendors
-    # the exact dependency closure its pub_deps.json pinned into .pub_cache —
+    # the exact dependency closure its pubspec.lock pinned into .pub_cache —
     # independent of whatever versions the consuming app resolves. The package
     # config resolving that closure is generated once per build by
     # //flutter/private:protoc_gen_dart_package_config, so the wrapper only
@@ -3380,7 +3364,7 @@ def _dart_library_impl(ctx):
 
     # If pubspec is provided, prepare dependency metadata and cache artifacts
     pubspec_file = ctx.file.pubspec
-    pub_deps = None
+    lock = None
     pub_get_output = None
     pub_cache_dir = None
     dart_tool_dir = None
@@ -3390,16 +3374,16 @@ def _dart_library_impl(ctx):
         fail("dart_library 'generated_srcs' requires the 'pubspec' attribute to be set")
 
     if pubspec_file:
-        pub_deps_input = ctx.file.pub_deps
-        if not pub_deps_input:
-            fail("dart_library with 'pubspec' requires the 'pub_deps' attribute to point at a checked-in pub_deps.json")
+        lock_input = ctx.file.lock
+        if not lock_input and not ctx.attr.pub_payload:
+            fail("dart_library with 'pubspec' requires the 'lock' attribute to point at a checked-in pubspec.lock")
 
         staged_cache = _maybe_stage_pub_package(ctx)
         if staged_cache != None:
             # Hosted pub package: stage its own payload only (one action, one
             # tree) instead of the full workspace/prepare path.
             pub_cache_dir = staged_cache
-            pub_deps = pub_deps_input
+            lock = lock_input
         else:
             # Create a working directory mirroring the package layout
             working_dir, _ = create_flutter_working_dir(
@@ -3413,16 +3397,16 @@ def _dart_library_impl(ctx):
                 remote_cache_trees = _remote_cache_trees(ctx),
             )
 
-            # Prepare dependency cache and package metadata from declared pub_deps.json.
-            prepared_workspace, pub_get_output, pub_cache_dir, pub_deps_file, dart_tool_dir = _prepare_library_deps(
+            # Prepare dependency cache and package metadata from declared pubspec.lock.
+            prepared_workspace, pub_get_output, pub_cache_dir, lock_file, dart_tool_dir = _prepare_library_deps(
                 ctx,
                 flutter_toolchain,
                 working_dir,
                 pubspec_file,
-                pub_deps_input,
+                lock_input,
                 transitive_pub_caches,
             )
-            pub_deps = pub_deps_file
+            lock = lock_file
 
     # Create the library info provider
     library_info = DartLibraryInfo(
@@ -3430,7 +3414,7 @@ def _dart_library_impl(ctx):
         deps = depset(direct = direct_srcs, transitive = transitive_deps),
         import_path = ctx.label.name,
         pubspec = pubspec_file,
-        pub_deps = pub_deps,
+        lock = lock,
         pub_cache = pub_cache_dir,
         transitive_pub_caches = depset(
             direct = [pub_cache_dir] if pub_cache_dir else [],
@@ -3442,7 +3426,7 @@ def _dart_library_impl(ctx):
     output_files = list(direct_srcs)
     if pubspec_file:
         output_files.append(pubspec_file)
-    for produced in [pub_deps, pub_get_output, pub_cache_dir, dart_tool_dir]:
+    for produced in [lock, pub_get_output, pub_cache_dir, dart_tool_dir]:
         if produced != None:
             output_files.append(produced)
 
@@ -3463,7 +3447,7 @@ def _dart_library_impl(ctx):
             workspace = prepared_workspace,
             pub_get_log = pub_get_output,
             pub_cache = pub_cache_dir,
-            pub_deps = pub_deps,
+            lock = lock,
             dart_tool = dart_tool_dir,
             pubspec = pubspec_file,
             dart_sources = depset(dart_files),
@@ -3493,9 +3477,9 @@ _dart_library_rule = rule(
             allow_single_file = True,
             doc = "Optional pubspec.yaml for dependency management",
         ),
-        "pub_deps": attr.label(
+        "lock": attr.label(
             allow_single_file = True,
-            doc = "Checked-in pub_deps.json generated from this package's pubspec.yaml.",
+            doc = "Checked-in pubspec.lock generated from this package's pubspec.yaml.",
         ),
         "generated_srcs": attr.label_keyed_string_dict(
             allow_files = True,
@@ -3585,8 +3569,11 @@ def dart_library(
     if "codegen" in kwargs:
         fail("dart_library no longer supports 'codegen'; use 'generator_commands' and/or 'build_runner_*' attributes.")
 
-    if "pubspec" in kwargs and kwargs["pubspec"] and "pub_deps" not in kwargs:
-        kwargs["pub_deps"] = "pub_deps.json"
+    # A generated pub-package leaf stages its own payload and never resolves
+    # anything, so it carries no lock; defaulting one in would declare an
+    # input that does not exist.
+    if "pubspec" in kwargs and kwargs["pubspec"] and "lock" not in kwargs and not kwargs.get("pub_payload"):
+        kwargs["lock"] = "pubspec.lock"
 
     has_explicit_build_runner_modes = "build_runner_modes" in kwargs
     build_runner_modes = _normalize_build_runner_modes(kwargs.get("build_runner_modes", []))
@@ -3635,4 +3622,4 @@ def dart_library(
     if kwargs.get("testonly", False):
         update_args["testonly"] = True
 
-    _pub_deps_update(**update_args)
+    _pubspec_lock_update(**update_args)

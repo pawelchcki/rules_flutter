@@ -1,5 +1,7 @@
 """Helpers for generating BUILD files for Dart/Flutter packages."""
 
+load("//flutter/private:pubspec_lock.bzl", "lock_direct_packages", "parse_pubspec_lock")
+
 _DEF_LOAD_STMT = 'load("@rules_flutter//flutter:defs.bzl", "dart_library", "flutter_library")'
 
 _DEF_VISIBILITY = '    visibility = ["//visibility:public"],'
@@ -39,16 +41,29 @@ def _sanitize_published_pubspec(repository_ctx, pubspec_rel):
     if needs_rewrite:
         repository_ctx.file(pubspec_rel, "\n".join(output_lines) + "\n")
 
-def _ensure_pub_deps(repository_ctx, package_name, package_dir, allow_fallback_on_failure = False, resolve_deps = True):
-    """Ensure pub_deps.json exists by running pub deps --json when necessary."""
+def _ensure_lock(repository_ctx, package_name, package_dir, resolve_deps = True):
+    """Ensure a `pubspec.lock` exists, running `pub get` when it does not.
+
+    Only repositories that execute out of their own vendored closure
+    (`pub.package` tags, `resolve_deps = True`) need a solve. Leaf packages
+    declared by a hub's lock are already pinned by that lock and never resolve
+    anything themselves, so they skip this entirely.
+    """
+
+    # Lock-hub leaves and Flutter SDK packages are immutable inputs. In
+    # particular, do not sanitize their pubspecs: that would mutate the
+    # downloaded SDK and can make two generated packages observe different
+    # repository contents depending on fetch order.
+    if not resolve_deps:
+        return False
 
     if package_dir in (".", ""):
         pubspec_rel = "pubspec.yaml"
-        pub_deps_rel = "pub_deps.json"
+        lock_rel = "pubspec.lock"
         pub_cache_rel = ".pub_cache"
     else:
         pubspec_rel = package_dir + "/pubspec.yaml"
-        pub_deps_rel = package_dir + "/pub_deps.json"
+        lock_rel = package_dir + "/pubspec.lock"
         pub_cache_rel = package_dir + "/.pub_cache"
 
     pubspec_path = repository_ctx.path(pubspec_rel)
@@ -57,28 +72,19 @@ def _ensure_pub_deps(repository_ctx, package_name, package_dir, allow_fallback_o
 
     _sanitize_published_pubspec(repository_ctx, pubspec_rel)
 
-    pub_deps_path = repository_ctx.path(pub_deps_rel)
-    if pub_deps_path.exists:
-        content = repository_ctx.read(pub_deps_rel)
-        if content.strip():
-            return False
-
-    # Scan-discovered dependency repositories don't need a real pub solve:
-    # their hosted deps come from the extension (cycle-broken, root-pinned)
-    # and nothing executes from their vendored closure. Skipping the solve
-    # removes a networked `dart pub deps` — which downloads the package's
-    # whole transitive closure — per repository (~300 for a large app).
-    if not resolve_deps:
-        _write_fallback_pub_deps(repository_ctx, package_name, package_dir, pub_deps_rel)
-        return True
+    # Flutter SDK packages ship their own lock, so the solve is skipped for
+    # them rather than re-derived.
+    lock_path = repository_ctx.path(lock_rel)
+    if lock_path.exists and repository_ctx.read(lock_rel).strip():
+        return False
 
     command, tool = _find_pub_command(repository_ctx)
     if not command:
-        repository_ctx.report_progress(
-            "No Dart or Flutter executable found for {}; falling back to pubspec.yaml dependency metadata".format(package_name),
+        fail(
+            ("No Dart or Flutter executable is available to resolve package '{pkg}'.\n" +
+             "A pub.package repository must resolve at fetch time because tools " +
+             "execute from its vendored .pub_cache.").format(pkg = package_name),
         )
-        _write_fallback_pub_deps(repository_ctx, package_name, package_dir, pub_deps_rel)
-        return True
 
     workdir = str(repository_ctx.path(package_dir if package_dir not in (".", "") else "."))
     run_env = {
@@ -108,109 +114,30 @@ def _ensure_pub_deps(repository_ctx, package_name, package_dir, allow_fallback_o
         "Resolving pub dependencies for {}".format(package_name),
     )
 
-    deps_result = repository_ctx.execute(
-        command + ["deps", "--json"],
+    result = repository_ctx.execute(
+        command + ["get"],
         working_directory = workdir,
         environment = run_env,
         quiet = True,
     )
-    if deps_result.return_code != 0:
-        stderr = deps_result.stderr or ""
-
-        # Packages such as `package:http` reference dev-only path dependencies that
-        # are not present in the published archive. In those cases, flutter pub deps
-        # fails with a path resolution error. Allow falling back to pubspec parsing
-        # so repository generation can continue.
-        lower_stderr = stderr.lower()
-        unsupported_path_dep = "path" in lower_stderr and (
-            "could not find package" in lower_stderr or
-            "which doesn't exist" in lower_stderr
-        )
-        unsupported_sdk_dep = "from sdk" in lower_stderr and (
-            "could not find package" in lower_stderr or
-            "doesn't exist" in lower_stderr or
-            "doesn't match any versions" in lower_stderr
-        )
-
-        # Pre-null-safety packages (e.g. `color` 3.0.0) ship SDK constraints a
-        # modern pub solver refuses outright; their metadata can still be read
-        # from pubspec.yaml.
-        unresolvable_sdk_constraint = (
-            "null safety" in lower_stderr or
-            "try using the dart sdk version" in lower_stderr
-        )
-        if unsupported_path_dep or unsupported_sdk_dep or unresolvable_sdk_constraint:
-            repository_ctx.report_progress(
-                "Skipping pub deps generation for {} due to unsupported dependency source; falling back to pubspec.yaml".format(package_name),
-            )
-            _write_fallback_pub_deps(repository_ctx, package_name, package_dir, pub_deps_rel)
-            return True
-        if allow_fallback_on_failure:
-            repository_ctx.report_progress(
-                "Skipping pub deps generation for {} after pub failed; falling back to pubspec.yaml".format(package_name),
-            )
-            _write_fallback_pub_deps(repository_ctx, package_name, package_dir, pub_deps_rel)
-            return True
-        fail("Failed to run `{tool} pub deps --json` for package '{pkg}' (dir: {dir}).\nstdout: {stdout}\nstderr: {stderr}".format(
+    if result.return_code != 0:
+        fail("Failed to run `{tool} pub get` for package '{pkg}' (dir: {dir}).\nstdout: {stdout}\nstderr: {stderr}".format(
             tool = tool,
             pkg = package_name,
             dir = package_dir,
-            stdout = deps_result.stdout,
-            stderr = stderr,
+            stdout = result.stdout,
+            stderr = result.stderr,
         ))
 
-    # Write the generated JSON payload (strip any leading log lines).
-    output = deps_result.stdout
-    json_start = -1
-    for idx in range(len(output)):
-        ch = output[idx]
-        if ch == "{" or ch == "[":
-            json_start = idx
-            break
-    if json_start == -1:
-        fail("`{tool} pub deps --json` for package '{pkg}' did not produce JSON output.\nstdout: {stdout}\nstderr: {stderr}".format(
+    # A successful solve always writes the lock. Asserting it rather than
+    # falling back keeps "resolved" from silently meaning "guessed".
+    if not repository_ctx.path(lock_rel).exists:
+        fail("`{tool} pub get` for package '{pkg}' did not write {lock}.".format(
             tool = tool,
             pkg = package_name,
-            stdout = deps_result.stdout,
-            stderr = deps_result.stderr,
+            lock = lock_rel,
         ))
-
-    json_text = output[json_start:]
-    if not json_text.endswith("\n"):
-        json_text += "\n"
-    repository_ctx.file(pub_deps_rel, json_text)
     return True
-
-def _write_fallback_pub_deps(repository_ctx, package_name, package_dir, pub_deps_rel):
-    """Write minimal dependency metadata from pubspec.yaml when pub cannot solve."""
-
-    metadata = _parse_pubspec_metadata(repository_ctx, package_dir)
-    root_name = metadata.get("name") or package_name
-    root_version = metadata.get("version") or "0.0.0"
-
-    packages = [
-        {
-            "name": root_name,
-            "version": root_version,
-            "source": "root",
-            "dependency": "root",
-            "description": {"path": "."},
-        },
-    ]
-
-    for dep in _parse_pubspec_dependencies(repository_ctx, package_dir):
-        entry = {
-            "name": dep["name"],
-            "source": dep["source"],
-            "dependency": "direct main",
-        }
-        if dep["source"] == "path":
-            entry["description"] = {"path": dep.get("path", "")}
-        elif dep["source"] == "sdk":
-            entry["description"] = dep.get("sdk", "")
-        packages.append(entry)
-
-    repository_ctx.file(pub_deps_rel, json.encode({"packages": packages}) + "\n")
 
 def _find_pub_command(repository_ctx):
     """Locate a flutter or dart executable and return the pub command prefix."""
@@ -245,7 +172,7 @@ def _find_pub_command(repository_ctx):
     # repository was left without its vendored .pub_cache.
     #
     # dart comes first deliberately: `dart pub` resolves `sdk: flutter`
-    # dependencies through FLUTTER_ROOT (exported by _ensure_pub_deps) without
+    # dependencies through FLUTTER_ROOT (exported by _ensure_lock) without
     # the flutter tool's artifact-cache refresh — which on non-macOS hosts
     # unconditionally rewrites the ios-usb artifact stamps and therefore can
     # never run against the sealed SDK cache.
@@ -279,7 +206,7 @@ def _pub_command_prefix(executable, tool):
         prefix.append("--no-version-check")
     return prefix + ["pub"]
 
-def generate_package_build(repository_ctx, package_name, package_dir = ".", sdk_repo = "@flutter_sdk", include_hosted_deps = True, include_pub_cache_data = False, hosted_deps = None, resolve_deps = True):
+def generate_package_build(repository_ctx, package_name, package_dir = ".", sdk_repo = "@flutter_sdk", include_hosted_deps = True, include_pub_cache_data = False, resolve_deps = True):
     """Generate a BUILD.bazel for the given package directory.
 
     Args:
@@ -289,39 +216,29 @@ def generate_package_build(repository_ctx, package_name, package_dir = ".", sdk_
         sdk_repo: Optional repository label used to resolve SDK-provided
             dependencies (e.g. `@flutter_sdk`). When omitted, a sensible
             default for the current host platform is used.
-        include_hosted_deps: When true, emit hosted pub.dev dependencies from
-            pub_deps.json as external repositories. Flutter SDK packages pass
-            False because their hosted deps are already vendored in the SDK and
-            should not pull from pub.dev.
+        include_hosted_deps: When true, the package is a hosted pub.dev leaf
+            that stages its own payload. Flutter SDK packages pass False
+            because their dependencies are already vendored in the SDK.
         include_pub_cache_data: When true and the package contains a local
             `.pub_cache`, expose it as data so package preparation can publish
             those vendored artifacts transitively.
-        hosted_deps: Optional explicit list of hosted package names to emit as
-            deps (already cycle-broken by the pub module extension). When None,
-            hosted deps are derived from the package's own pub_deps.json.
-        resolve_deps: Whether to run a real `pub deps --json` resolution at
-            fetch time. Scan-discovered dependency repositories pass False
-            and use pubspec-parsed fallback metadata instead; tool
-            repositories registered via pub.package tags keep True because
-            they execute from their vendored closure.
+        resolve_deps: Whether to run a real `pub get` at fetch time. Leaf
+            repositories declared by a hub's pubspec.lock pass False — the
+            lock already pinned them and nothing executes from their closure;
+            tool repositories registered via pub.package tags keep True.
     """
 
-    _ensure_pub_deps(
+    has_lock = _ensure_lock(
         repository_ctx,
         package_name,
         package_dir,
-        allow_fallback_on_failure = not include_hosted_deps,
         resolve_deps = resolve_deps,
-    )
+    ) or _package_lock_exists(repository_ctx, package_dir)
     rule_kind = _determine_rule_kind(repository_ctx, package_dir)
     srcs = _collect_lib_sources(repository_ctx, package_dir)
     metadata_files = _collect_metadata_files(repository_ctx, package_dir)
-    deps = _collect_direct_deps(
-        repository_ctx,
-        package_dir,
-        sdk_repo,
-        include_hosted_deps = include_hosted_deps,
-        hosted_deps = hosted_deps,
+    deps = (
+        _collect_sdk_deps(repository_ctx, package_dir, sdk_repo) if has_lock else _collect_pubspec_sdk_deps(repository_ctx, package_dir, sdk_repo)
     )
     pub_cache_files_target = None
     if include_pub_cache_data and _package_pub_cache_exists(repository_ctx, package_dir):
@@ -331,13 +248,17 @@ def generate_package_build(repository_ctx, package_name, package_dir = ".", sdk_
         "# Generated BUILD file for package: {}".format(package_name),
         _DEF_LOAD_STMT,
         "",
-        # The dependency metadata is consumed directly by rules_flutter (e.g.
-        # the shared protoc-gen-dart package_config), so it needs a target.
-        'exports_files(["pub_deps.json"])',
-        "",
+    ]
+
+    if has_lock:
+        # The lock is consumed directly by rules_flutter (e.g. the shared
+        # protoc-gen-dart package_config), so it needs a target of its own.
+        lines.extend(['exports_files(["pubspec.lock"])', ""])
+
+    lines.extend([
         "{}(".format(rule_kind),
         '    name = "{}",'.format(package_name),
-    ]
+    ])
 
     if srcs:
         lines.append("    srcs = [")
@@ -345,8 +266,14 @@ def generate_package_build(repository_ctx, package_name, package_dir = ".", sdk_
             lines.append('        "{}",'.format(src))
         lines.append("    ],")
 
-    lines.append('    pubspec = "pubspec.yaml",')
-    lines.append('    pub_deps = "pub_deps.json",')
+    # A lockless SDK package is already part of FLUTTER_ROOT. Giving it a
+    # pubspec without a lock asks the rule macro to synthesize pubspec.lock and
+    # run dependency preparation, neither of which is valid for packages such
+    # as sky_engine and flutter_gpu.
+    if has_lock or include_hosted_deps:
+        lines.append('    pubspec = "pubspec.yaml",')
+    if has_lock:
+        lines.append('    lock = "pubspec.lock",')
 
     if deps:
         lines.append("    deps = [")
@@ -419,7 +346,7 @@ def generate_package_build(repository_ctx, package_name, package_dir = ".", sdk_
             '            "BUILD.bazel",',
             '            "PUB_PACKAGE_INFO",',
             '            "REPO.bazel",',
-            '            "pub_deps.json",',
+            '            "pubspec.lock",',
             "        ],",
             "        allow_empty = True,",
             "    ),",
@@ -529,30 +456,6 @@ def _determine_rule_kind(repository_ctx, package_dir):
         return "dart_library"
     return "flutter_library"
 
-def _parse_pubspec_metadata(repository_ctx, package_dir):
-    """Extract root package metadata from pubspec.yaml."""
-
-    pubspec_rel = "pubspec.yaml" if package_dir in (".", "") else package_dir + "/pubspec.yaml"
-    pubspec_path = repository_ctx.path(pubspec_rel)
-    if not pubspec_path.exists:
-        return {}
-
-    metadata = {}
-    for raw_line in repository_ctx.read(pubspec_rel).splitlines():
-        stripped = raw_line.strip()
-        if not stripped or stripped.startswith("#"):
-            continue
-        if ":" not in stripped:
-            continue
-        key, value = stripped.split(":", 1)
-        key = key.strip()
-        if key in ["name", "version"]:
-            metadata[key] = value.strip().strip("'\"")
-        if "name" in metadata and "version" in metadata:
-            break
-
-    return metadata
-
 def _walk_files(root_path):
     """Return every file under root_path, as root-relative slash-separated paths.
 
@@ -609,199 +512,107 @@ def _collect_metadata_files(repository_ctx, package_dir):
             found.append(name)
     return found
 
-def _collect_direct_deps(repository_ctx, package_dir, sdk_repo, include_hosted_deps = True, hosted_deps = None):
-    """Return Bazel labels for direct dependencies sourced from pub or the SDK.
+def _package_lock_exists(repository_ctx, package_dir):
+    """Whether the package directory carries a pubspec.lock."""
+    rel = "pubspec.lock" if package_dir in (".", "") else package_dir + "/pubspec.lock"
+    return repository_ctx.path(rel).exists
+
+def _collect_sdk_deps(repository_ctx, package_dir, sdk_repo):
+    """Return Bazel labels for the package's SDK-provided direct dependencies.
+
+    Hosted dependencies deliberately produce no labels. A `pubspec.lock` is a
+    complete transitive closure, so the hub generated for it already carries
+    every hosted package; making leaves depend on each other would only
+    re-import the pub universe's genuine cycles into a Bazel target graph that
+    cannot express them.
+
+    Sibling SDK packages are different: they publish `.pub_cache` data that
+    must reach consumers through the target graph, so they stay explicit —
+    but only their `direct main` deps. An SDK package's dev-dependencies are
+    irrelevant to consumers and genuinely circular (flutter dev-depends on
+    flutter_test, which depends on flutter).
 
     Args:
         repository_ctx: Repository rule context.
         package_dir: Relative location of the package being generated.
         sdk_repo: Repository label to use for Flutter SDK provided packages.
-        include_hosted_deps: Whether hosted pub.dev dependencies should be
-            emitted as external repos (True) or skipped (False).
-        hosted_deps: Optional explicit hosted package names (cycle-broken by
-            the pub extension); overrides self-derived hosted deps.
     """
 
-    deps_rel = "pub_deps.json" if package_dir in (".", "") else package_dir + "/pub_deps.json"
-    deps_path = repository_ctx.path(deps_rel)
-    packages = None
-    if deps_path.exists:
-        packages = _parse_pub_deps(repository_ctx.read(deps_rel))
-
-    if not packages:
-        fallback_packages = _parse_pubspec_dependencies(repository_ctx, package_dir)
-    else:
-        fallback_packages = None
+    rel = "pubspec.lock" if package_dir in (".", "") else package_dir + "/pubspec.lock"
+    packages = parse_pubspec_lock(repository_ctx.read(rel), origin = rel)
 
     deps = []
-    if include_hosted_deps and hosted_deps != None:
-        for pkg in hosted_deps:
-            deps.append("@{}//:{}".format(_sanitize_repo_name(pkg), pkg))
-
-    if packages:
-        for pkg, info in packages.items():
-            dep_kind = info.get("dependency", "") or ""
-            if not dep_kind.startswith("direct"):
-                continue
-
-            source = info.get("source")
-            if source == "hosted":
-                if not include_hosted_deps or hosted_deps != None:
-                    continue
-                repo_name = _sanitize_repo_name(pkg)
-                deps.append("@{}//:{}".format(repo_name, pkg))
-            elif source == "sdk":
-                label = _sdk_dep_label(package_dir, pkg, sdk_repo)
-                if label:
-                    deps.append(label)
-    elif fallback_packages:
-        for entry in fallback_packages:
-            pkg = entry["name"]
-            source = entry["source"]
-            if source == "hosted":
-                if not include_hosted_deps or hosted_deps != None:
-                    continue
-                repo_name = _sanitize_repo_name(pkg)
-                deps.append("@{}//:{}".format(repo_name, pkg))
-            elif source == "sdk":
-                label = _sdk_dep_label(package_dir, pkg, sdk_repo)
-                if label:
-                    deps.append(label)
-
+    for pkg in lock_direct_packages(packages).values():
+        if pkg.source != "sdk" or pkg.dependency != "direct main":
+            continue
+        label = _sdk_dep_label(package_dir, pkg.name, sdk_repo)
+        if label:
+            deps.append(label)
     return sorted(deps)
 
-def _parse_flow_map(text):
-    """Parse a single-level YAML flow map like `{sdk: flutter, version: ^1.0}`."""
-    body = text.strip()
-    if body.startswith("{"):
-        body = body[1:]
-    if body.endswith("}"):
-        body = body[:-1]
-    result = {}
-    for part in body.split(","):
-        if ":" not in part:
-            continue
-        key, value = part.split(":", 1)
-        result[key.strip().strip("'\"")] = value.strip().strip("'\"")
-    return result
+def _collect_pubspec_sdk_deps(repository_ctx, package_dir, sdk_repo):
+    """Read direct `sdk: flutter` deps when an SDK package has no lock.
 
-def _parse_pubspec_dependencies(repository_ctx, package_dir):
-    """Fallback parser to extract dependencies from pubspec.yaml when pub_deps.json is unavailable."""
-
-    pubspec_rel = "pubspec.yaml" if package_dir in (".", "") else package_dir + "/pubspec.yaml"
-    pubspec_path = repository_ctx.path(pubspec_rel)
-    if not pubspec_path.exists:
+    This intentionally recognizes only the top-level `dependencies` mapping;
+    dev dependencies and hosted/path packages do not belong in the generated
+    SDK target graph.
+    """
+    rel = "pubspec.yaml" if package_dir in (".", "") else package_dir + "/pubspec.yaml"
+    if not repository_ctx.path(rel).exists:
         return []
 
-    content = repository_ctx.read(pubspec_rel).splitlines()
-    deps = []
-    in_deps = False
-    deps_indent = 0
-    current_name = ""
-    current_indent = 0
-    current_block = None
+    result = parse_pubspec_sdk_flutter_dependencies(repository_ctx.read(rel))
 
-    for raw_line in content:
+    labels = []
+    for pkg in result:
+        label = _sdk_dep_label(package_dir, pkg, sdk_repo)
+        if label:
+            labels.append(label)
+    return sorted(labels)
+
+def parse_pubspec_sdk_flutter_dependencies(content):
+    """Return direct `sdk: flutter` dependency names from a pubspec string.
+
+    Args:
+        content: The pubspec.yaml text to inspect.
+
+    Returns:
+        A sorted list of direct Flutter SDK dependency names.
+    """
+    lines = content.splitlines()
+    deps_indent = -1
+    current_name = None
+    current_indent = -1
+    result = []
+
+    for raw_line in lines:
         stripped = raw_line.strip()
-        indent = len(raw_line) - len(raw_line.lstrip(" "))
-
         if not stripped or stripped.startswith("#"):
             continue
+        indent = len(raw_line) - len(raw_line.lstrip(" "))
 
-        if not in_deps:
+        if deps_indent < 0:
             if stripped == "dependencies:":
-                in_deps = True
                 deps_indent = indent
             continue
-
         if indent <= deps_indent:
-            if current_name:
-                if current_block != None and "path" in current_block:
-                    deps.append({"name": current_name, "source": "path", "path": current_block.get("path")})
-                elif current_block != None and current_block.get("sdk"):
-                    deps.append({"name": current_name, "source": "sdk", "sdk": current_block.get("sdk")})
-                elif current_name:
-                    deps.append({"name": current_name, "source": "hosted"})
-            current_name = ""
-            current_block = None
-
-            # End of the dependencies block.
             break
 
-        if current_name and indent > current_indent:
-            if ":" in stripped:
-                sub_key, sub_value = stripped.split(":", 1)
-                if current_block == None:
-                    current_block = {}
-                current_block[sub_key.strip()] = sub_value.strip().strip("'\"")
+        if current_name != None and indent > current_indent:
+            if stripped == "sdk: flutter":
+                result.append(current_name)
             continue
 
         if ":" not in stripped:
             continue
+        name, value = stripped.split(":", 1)
+        current_name = name.strip()
+        current_indent = indent
+        value = value.strip().replace(" ", "")
+        if value in ("{sdk:flutter}", "{sdk:'flutter'}", '{sdk:"flutter"}'):
+            result.append(current_name)
 
-        name, remainder = stripped.split(":", 1)
-        name = name.strip()
-        remainder = remainder.strip()
-        entry_indent = indent
-
-        if not name:
-            continue
-
-        if current_name:
-            if current_block != None and "path" in current_block:
-                deps.append({"name": current_name, "source": "path", "path": current_block.get("path")})
-            elif current_block != None and current_block.get("sdk"):
-                deps.append({"name": current_name, "source": "sdk", "sdk": current_block.get("sdk")})
-            else:
-                deps.append({"name": current_name, "source": "hosted"})
-            current_block = None
-        current_name = name
-        current_indent = entry_indent
-
-        if remainder:
-            if remainder.startswith("{"):
-                # Flow-style dependency map, e.g. `flutter: {sdk: flutter}` or
-                # `pkg: {path: ../pkg}`.
-                flow = _parse_flow_map(remainder)
-                if "path" in flow:
-                    deps.append({"name": current_name, "source": "path", "path": flow.get("path")})
-                elif flow.get("sdk"):
-                    deps.append({"name": current_name, "source": "sdk", "sdk": flow.get("sdk")})
-                else:
-                    deps.append({"name": current_name, "source": "hosted"})
-            else:
-                deps.append({"name": current_name, "source": "hosted"})
-            current_name = ""
-            current_block = None
-        else:
-            current_block = {}
-
-    if current_name:
-        if current_block != None and "path" in current_block:
-            deps.append({"name": current_name, "source": "path", "path": current_block.get("path")})
-        elif current_block != None and current_block.get("sdk"):
-            deps.append({"name": current_name, "source": "sdk", "sdk": current_block.get("sdk")})
-        elif current_name:
-            deps.append({"name": current_name, "source": "hosted"})
-
-    return deps
-
-def _sanitize_repo_name(pkg):
-    """Convert a package name to a canonical repository identifier."""
-
-    pieces = ["pub_"]
-    for idx in range(len(pkg)):
-        ch = pkg[idx]
-        if (
-            ("a" <= ch and ch <= "z") or
-            ("A" <= ch and ch <= "Z") or
-            ("0" <= ch and ch <= "9") or
-            ch == "_"
-        ):
-            pieces.append(ch)
-        else:
-            pieces.append("_")
-    return "".join(pieces)
+    return sorted(result)
 
 def _sdk_dep_label(package_dir, pkg, sdk_repo):
     path = _sdk_package_path(pkg)
@@ -820,42 +631,3 @@ def _sdk_package_path(pkg):
         # `_macros` is provided by the Dart SDK internals and does not live under flutter/packages.
         return None
     return "flutter/packages/{}".format(pkg)
-
-def _parse_pub_deps(content):
-    """Parse flutter pub deps --json output into a dict of package metadata."""
-
-    data = json.decode(content)
-    packages = {}
-    for entry in data.get("packages", []):
-        name = entry.get("name")
-        if not name:
-            continue
-
-        source = entry.get("source")
-        dependency = entry.get("dependency") or entry.get("kind")
-        version = entry.get("version")
-        description = entry.get("description")
-        url = _description_url(description)
-        if source == "hosted" and not url:
-            url = "https://pub.dev"
-
-        packages[name] = {
-            "dependency": dependency,
-            "source": source,
-            "version": version,
-            "url": url,
-        }
-
-    return packages
-
-def _description_url(description):
-    if type(description) == "string":
-        return description
-    if type(description) == "dict":
-        return (
-            description.get("url") or
-            description.get("base_url") or
-            description.get("hosted_url") or
-            description.get("hosted-url")
-        )
-    return None

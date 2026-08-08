@@ -787,6 +787,9 @@ def _generate_flutter_packages(repository_ctx):
                 package_dir = package_dir,
                 include_hosted_deps = False,
                 include_pub_cache_data = True,
+                # SDK packages never resolve: their dependencies are vendored
+                # in the SDK, and the ones that matter ship their own lock.
+                resolve_deps = False,
             )
 
             package_labels.append("//{}:{}_files".format(package_dir, package_name))

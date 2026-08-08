@@ -1,25 +1,29 @@
 package flutter
 
 import (
-	"encoding/json"
 	"os"
 	"strings"
 
 	"gopkg.in/yaml.v3"
 )
 
-// PubDeps represents the structure of flutter pub deps --json output.
-type PubDeps struct {
-	Packages []PubDepsPackage `json:"packages"`
+// PubspecLock represents the structure of a pubspec.lock file.
+type PubspecLock struct {
+	Packages map[string]LockPackage `yaml:"packages"`
+	SDKs     map[string]string      `yaml:"sdks"`
 }
 
-// PubDepsPackage represents a single package entry in pub_deps.json.
-type PubDepsPackage struct {
-	Name        string      `json:"name"`
-	Dependency  string      `json:"dependency"`
-	Description interface{} `json:"description"`
-	Source      string      `json:"source"`
-	Version     string      `json:"version"`
+// LockPackage represents a single entry under a lock's `packages:` key.
+//
+// Description stays an interface{} because pub writes it either as a nested
+// map (hosted, path, git) or as a bare scalar (`description: flutter` for sdk
+// sources). yaml.v3 decodes those to map[string]interface{} and string
+// respectively.
+type LockPackage struct {
+	Dependency  string      `yaml:"dependency"`
+	Description interface{} `yaml:"description"`
+	Source      string      `yaml:"source"`
+	Version     string      `yaml:"version"`
 }
 
 // PubspecYaml represents the structure of a pubspec.yaml file
@@ -29,19 +33,19 @@ type PubspecYaml struct {
 	Environment  map[string]interface{} `yaml:"environment"`
 }
 
-// ParsePubDeps parses a pub_deps.json file and returns the parsed structure
-func ParsePubDeps(path string) (*PubDeps, error) {
+// ParsePubspecLock parses a pubspec.lock file and returns the parsed structure
+func ParsePubspecLock(path string) (*PubspecLock, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
 	}
 
-	var deps PubDeps
-	if err := json.Unmarshal(data, &deps); err != nil {
+	var lock PubspecLock
+	if err := yaml.Unmarshal(data, &lock); err != nil {
 		return nil, err
 	}
 
-	return &deps, nil
+	return &lock, nil
 }
 
 // ParsePubspecYaml parses a pubspec.yaml file and returns the parsed structure
@@ -59,17 +63,18 @@ func ParsePubspecYaml(path string) (*PubspecYaml, error) {
 	return &pubspec, nil
 }
 
-// GetDirectDependencies returns all direct dependencies from pub_deps.json.
-// This includes main, dev, and overridden dependencies while still excluding transitives.
-func GetDirectDependencies(depsFile *PubDeps) map[string]PubDepsPackage {
-	deps := make(map[string]PubDepsPackage)
+// GetDirectDependencies returns all direct dependencies from a pubspec.lock.
+// This includes main, dev, and overridden dependencies while still excluding
+// transitives — the lock spells those "direct main" / "direct dev" /
+// "direct overridden" / "transitive".
+func GetDirectDependencies(lock *PubspecLock) map[string]LockPackage {
+	deps := make(map[string]LockPackage)
 
-	if depsFile == nil {
+	if lock == nil {
 		return deps
 	}
 
-	for _, pkg := range depsFile.Packages {
-		name := pkg.Name
+	for name, pkg := range lock.Packages {
 		if name == "" {
 			continue
 		}
@@ -82,26 +87,6 @@ func GetDirectDependencies(depsFile *PubDeps) map[string]PubDepsPackage {
 	}
 
 	return deps
-}
-
-// SanitizeRepoName converts a package name to a valid Bazel repository name
-// Matches the logic in flutter/extensions.bzl:_sanitize_repo_name
-func SanitizeRepoName(pkg string) string {
-	var result strings.Builder
-	result.WriteString("pub_")
-
-	for _, ch := range pkg {
-		if (ch >= 'a' && ch <= 'z') ||
-			(ch >= 'A' && ch <= 'Z') ||
-			(ch >= '0' && ch <= '9') ||
-			ch == '_' {
-			result.WriteRune(ch)
-		} else {
-			result.WriteRune('_')
-		}
-	}
-
-	return result.String()
 }
 
 // HasFlutterEnvironment checks if pubspec.yaml has environment.flutter set

@@ -59,16 +59,24 @@ build_test(
 
 build_test(
     name = "single_pub_dependency_build_test",
-    targets = ["@pub_intl_utils//:intl_utils"],
+    targets = ["@flutter_app_deps//:intl_utils"],
 )
 
 build_test(
     name = "pub_tooling_dependency_build_test",
     targets = [
-        "@pub_analyzer//:analyzer",
+        "@codegen_app_deps//:analyzer",
         "@pub_path//:path",
         "@pub_protoc_plugin//:protoc_plugin",
     ],
+)
+
+# sky_engine ships without pubspec.lock in the pinned SDK. Its generated
+# target must remain lockless (flutter_gpu parsing is covered by the focused
+# Starlark unit test because it is absent from some supported SDK versions).
+build_test(
+    name = "lockless_sdk_package_build_test",
+    targets = ["@flutter_sdk//flutter/bin/cache/pkg/sky_engine:sky_engine"],
 )
 
 sh_test(
@@ -81,6 +89,7 @@ test_suite(
     name = "integration_tests",
     tests = [
         ":gazelle_generation_test",
+        ":lockless_sdk_package_build_test",
         ":pub_tooling_dependency_build_test",
         ":sdk_cache_sealed_test",
         ":single_pub_dependency_build_test",

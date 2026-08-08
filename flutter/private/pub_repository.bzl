@@ -47,33 +47,22 @@ Alternative to sha256; at most one of the two may be set.""",
         default = "@flutter_sdk//:bin/dart",
         doc = "Dart launcher from the toolchain SDK, used when the Flutter launcher is unavailable.",
     ),
-    "hosted_deps": attr.string_list(
-        default = [],
-        doc = """Hosted package names to emit as target deps. Provided by the pub
-module extension with dependency cycles already broken; only honored when
-hosted_deps_explicit is set.""",
-    ),
-    "hosted_deps_explicit": attr.bool(
-        default = False,
-        doc = "Whether hosted_deps was computed by the extension (vs self-derived).",
-    ),
     "keep_vendored_cache": attr.bool(
         default = True,
         doc = """Whether to keep the fetch-time vendored .pub_cache closure in the
 repository after dependency resolution. The pub extension keeps it only for
 pub.package-registered repositories, which may be executed directly from the
-repository (e.g. protoc_plugin); for scan-discovered dependency repositories
-the closure is deleted after pub_deps.json is generated.""",
+repository (e.g. protoc_plugin); for leaf dependency repositories declared by
+a hub's pubspec.lock the closure is never fetched at all.""",
     ),
     "resolve_deps": attr.bool(
         default = True,
-        doc = """Whether to run a real `pub deps --json` resolution at fetch time.
-The pub extension passes False for scan-discovered dependency repositories —
-their hosted deps and version pins already come from the extension, so the
-networked solve (which downloads the package's whole transitive closure) is
-skipped in favor of pubspec-parsed fallback metadata. Tool repositories
-registered via pub.package tags keep True because they execute from their
-vendored closure.""",
+        doc = """Whether to run a real `pub get` resolution at fetch time.
+The pub extension passes False for leaf repositories declared by a hub's
+pubspec.lock — that lock already pinned them, so the networked solve (which
+downloads the package's whole transitive closure) is skipped entirely. Tool
+repositories registered via pub.package tags keep True because they execute
+from their vendored closure.""",
     ),
 }
 
@@ -147,7 +136,6 @@ def _pub_dev_repository_impl(repository_ctx):
         repository_ctx,
         package_name,
         sdk_repo = repository_ctx.attr.sdk_repo,
-        hosted_deps = repository_ctx.attr.hosted_deps if repository_ctx.attr.hosted_deps_explicit else None,
         resolve_deps = repository_ctx.attr.resolve_deps,
     )
 

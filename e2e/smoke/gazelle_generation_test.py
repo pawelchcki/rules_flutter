@@ -48,11 +48,14 @@ def main() -> int:
 
         fixture_files = [
             "BUILD.bazel.golden",
+            # Seeds the flutter_pub_hub directive; gazelle preserves it and
+            # generates the rules underneath.
+            "BUILD.bazel.seed",
             "MODULE.bazel",
             "lib/main.dart",
             "protos/api/v1/BUILD.bazel.golden",
             "protos/api/v1/service.proto",
-            "pub_deps.json",
+            "pubspec.lock",
             "pubspec.yaml",
         ]
         for rel in fixture_files:
@@ -60,6 +63,8 @@ def main() -> int:
             dest = project_dir / rel
             dest.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(src, dest)
+
+        shutil.copy2(project_dir / "BUILD.bazel.seed", project_dir / "BUILD.bazel")
 
         try:
             subprocess.run(

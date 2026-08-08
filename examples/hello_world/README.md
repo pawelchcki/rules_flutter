@@ -18,10 +18,12 @@ toolchains.
 ## Adding a pub dependency
 
 1. Add the package to [`pubspec.yaml`](pubspec.yaml).
-2. `bazel run //:lib.update` — re-resolves and rewrites `pub_deps.json`.
-3. In `MODULE.bazel`, assign the pub extension and list the new repository:
-   `pub = use_extension(...)` + `use_repo(pub, "pub_<package>")`.
-4. Reference `@pub_<package>//:<package>` in the `deps` of `:lib`.
+2. `bazel run //:lib.update` — re-resolves and rewrites `pubspec.lock`.
+3. The lock is already declared in `MODULE.bazel` as
+   `pub.lock(name = "hello_world_deps", file = "//:pubspec.lock")`, so the new
+   package joins that hub automatically.
+4. Add `"@hello_world_deps//:all"` to the `deps` of `:lib` (or
+   `"@hello_world_deps//:<package>"` for a single package).
 
 ## Layout
 
@@ -29,7 +31,7 @@ toolchains.
 | ----------------------- | -------------------------------------------------- |
 | `MODULE.bazel`          | Toolchain registration + pub repositories          |
 | `BUILD.bazel`           | `flutter_library` + `flutter_test` + `flutter_app` |
-| `pub_deps.json`         | Checked-in dependency resolution (generated)       |
+| `pubspec.lock`          | Checked-in dependency resolution (generated)       |
 | `lib/`, `test/`, `web/` | A standard Flutter counter app                     |
 
 Note: in this repository's CI the example builds against the working tree

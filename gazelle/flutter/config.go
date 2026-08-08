@@ -18,6 +18,12 @@ const (
 
 	// DirectiveSDKRepo overrides the repository label used for Flutter SDK deps
 	DirectiveSDKRepo = "flutter_sdk_repo"
+
+	// DirectivePubHub names the hub repository generated for this package's
+	// pubspec.lock by the pub module extension's `pub.lock` tag. Hosted
+	// dependencies are reached through that hub, and the hub name is chosen
+	// in MODULE.bazel, so gazelle cannot infer it.
+	DirectivePubHub = "flutter_pub_hub"
 )
 
 // FlutterConfig contains Flutter-specific configuration
@@ -33,6 +39,9 @@ type FlutterConfig struct {
 
 	// SDKRepo is the repository prefix used for sdk-based dependencies
 	SDKRepo string
+
+	// PubHub is the hub repository holding this package's hosted pub closure
+	PubHub string
 }
 
 // GetFlutterConfig returns the FlutterConfig for a given config.Config
@@ -54,6 +63,7 @@ func (fc *FlutterConfig) KnownDirectives() []string {
 		DirectiveLibraryName,
 		DirectiveGenerate,
 		DirectiveSDKRepo,
+		DirectivePubHub,
 	}
 }
 
@@ -72,6 +82,8 @@ func (fc *FlutterConfig) Configure(c *config.Config, rel string, f *rule.File) {
 			fc.LibraryName = d.Value
 		case DirectiveGenerate:
 			fc.Generate = d.Value == "true" || d.Value == "yes" || d.Value == "1"
+		case DirectivePubHub:
+			fc.PubHub = d.Value
 		case DirectiveSDKRepo:
 			if d.Value != "" {
 				fc.SDKRepo = d.Value
@@ -89,6 +101,7 @@ func (fc *FlutterConfig) Clone() *FlutterConfig {
 		LibraryName: fc.LibraryName,
 		Generate:    fc.Generate,
 		SDKRepo:     fc.SDKRepo,
+		PubHub:      fc.PubHub,
 	}
 }
 

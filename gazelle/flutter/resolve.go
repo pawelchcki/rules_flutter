@@ -1,10 +1,7 @@
 package flutter
 
 import (
-	"strings"
-
 	"github.com/bazelbuild/bazel-gazelle/config"
-	"github.com/bazelbuild/bazel-gazelle/label"
 	"github.com/bazelbuild/bazel-gazelle/rule"
 )
 
@@ -70,28 +67,6 @@ func (fl *flutterLang) Loads() []rule.LoadInfo {
 			Symbols: []string{"flutter_library", "flutter_app", "flutter_test", "dart_library"},
 		},
 	}
-}
-
-// resolveFlutterImport resolves a Dart package import to a Bazel label
-func resolveFlutterImport(imp string) (label.Label, bool) {
-	// Parse package: imports
-	// Format: package:package_name/path/to/file.dart
-	if !strings.HasPrefix(imp, "package:") {
-		return label.Label{}, false
-	}
-
-	// Extract package name
-	imp = strings.TrimPrefix(imp, "package:")
-	parts := strings.SplitN(imp, "/", 2)
-	if len(parts) == 0 {
-		return label.Label{}, false
-	}
-
-	pkgName := parts[0]
-
-	// Map to repository label
-	repoName := SanitizeRepoName(pkgName)
-	return label.New(repoName, "", pkgName), true
 }
 
 // Fix is not implemented for Flutter

@@ -1,4 +1,5 @@
 load(":exec_posture_test.bzl", "exec_posture_test_suite")
+load(":pubspec_lock_test.bzl", "pubspec_lock_test_suite")
 load(":version_select_test.bzl", "version_select_test_suite")
 load(":versions_test.bzl", "versions_test_suite")
 
@@ -10,6 +11,9 @@ version_select_test_suite(name = "version_select_test")
 
 # Unit tests for the execution-posture helpers
 exec_posture_test_suite(name = "exec_posture_test")
+
+# Unit tests for the pubspec.lock parser
+pubspec_lock_test_suite(name = "pubspec_lock_test")
 
 # Toolchain-focused smoke tests that still live in the main workspace
 test_suite(
@@ -30,6 +34,7 @@ test_suite(
     name = "all_tests",
     tests = [
         ":exec_posture_test",
+        ":pubspec_lock_test",
         ":toolchain_tests",
         ":version_select_test",
         ":versions_test",

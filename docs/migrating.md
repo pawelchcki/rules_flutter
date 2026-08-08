@@ -35,7 +35,7 @@ The target end-state:
 
 - One pinned Flutter SDK, downloaded with integrity verification and sealed
   read-only, resolved through a Bazel toolchain — no host Flutter install.
-- pub.dev dependencies pinned in checked-in `pub_deps.json` files and served
+- pub.dev dependencies pinned in checked-in `pubspec.lock` files and served
   from Bazel repositories; builds and tests run offline.
 - Codegen (build_runner, intl, protoc) runs inside build actions; generated
   sources are gitignored, with a `bazel run` refresher for the IDE analyzer.
@@ -80,22 +80,27 @@ CI with no host Flutter install.
 ## Phase 2: Pin pub.dev dependencies
 
 `rules_flutter` manages hosted packages through a `pub` module extension that
-reads the `pub_deps.json` manifests you declare and creates one Bazel
-repository per hosted package (named `pub_<package>`).
+reads the `pubspec.lock` files you declare — the same locks `pub` writes — and
+turns each into a **hub** repository holding that lock's whole hosted closure.
 
-Add the extension to `MODULE.bazel` and declare every manifest explicitly:
+Add the extension to `MODULE.bazel` and declare every lock explicitly:
 
 ```starlark
 pub = use_extension("@rules_flutter//flutter:extensions.bzl", "pub")
-pub.deps_manifest(files = ["//app:pub_deps.json"])
+pub.lock(
+    name = "app_deps",
+    file = "//app:pubspec.lock",
+)
 use_repo(pub)  # bazel mod tidy fills this in
 ```
 
-Declaring the manifests (rather than letting the extension go looking for
-them) is what lets Bazel invalidate the extension when one is added, removed
-or edited, and it is what makes `bazel mod tidy` able to maintain `use_repo`.
-A manifest in a directory that is not a Bazel package is spelled relative to
-the nearest enclosing package, e.g. `//:sub_dir/pub_deps.json`.
+Declaring the locks (rather than letting the extension go looking for them) is
+what lets Bazel invalidate the extension when one is added, removed or edited,
+and it is what makes `bazel mod tidy` able to maintain `use_repo`. A lock in a
+directory that is not a Bazel package is spelled relative to the nearest
+enclosing package, e.g. `//:sub_dir/pubspec.lock`.
+
+A module that genuinely has no locks declares `pub.no_locks()` instead.
 
 Then, for each package directory with a `pubspec.yaml`, define a library (the
 next phase covers the full target; a minimal one is enough to get the
@@ -111,15 +116,30 @@ flutter_library(
 )
 ```
 
-Generate and maintain the dependency report:
+Generate and maintain the lock:
 
 ```bash
-bazel run //app:lib.update   # writes app/pub_deps.json next to pubspec.yaml
+bazel run //app:lib.update   # writes app/pubspec.lock next to pubspec.yaml
 bazel mod tidy               # syncs the use_repo(pub, ...) list
 ```
 
-Check `pub_deps.json` in. Rerun both commands whenever `pubspec.yaml` changes;
-the `.update` helper is a no-op when the report is already current.
+The `.update` helper resolves with the toolchain-pinned Flutter SDK rather
+than whatever `flutter` is on `PATH`, so the lock — including the per-package
+`sha256` pins every download is verified against — does not vary by machine.
+
+Check `pubspec.lock` in and depend on the hub:
+
+```starlark
+flutter_library(
+    name = "lib",
+    srcs = glob(["lib/**"]),
+    pubspec = "pubspec.yaml",
+    deps = ["@app_deps//:all"],
+)
+```
+
+Rerun both commands whenever `pubspec.yaml` changes; the `.update` helper is a
+no-op when the lock is already current.
 
 Common snags in this phase:
 
@@ -175,9 +195,9 @@ flutter_library(
 
 With `build_runner_modes = ["build"]`, `build_runner build` executes inside
 the action with no network: the entrypoint is resolved from the prepared
-package config (no implicit `pub get`), a `pubspec.lock` is synthesized from
-`pub_deps.json` when the package does not already ship one, and
-`--delete-conflicting-outputs` is applied by default.
+package config (no implicit `pub get`), the checked-in `pubspec.lock` is
+staged into the prepared workspace, and `--delete-conflicting-outputs` is
+applied by default.
 Delete the generated files from git and add them to `.gitignore` — they never
 need to be checked in again. See `e2e/smoke/codegen_app` for a working example
 combining `copy_with_extension_gen` and `flutter_gen_runner`.
@@ -338,7 +358,7 @@ dart_format_test(
 ```
 
 `flutter_test` and `flutter_analyze_test` run from a materialized copy of the
-prepared workspace with the package config regenerated from `pub_deps.json`;
+prepared workspace with the package config regenerated from `pubspec.lock`;
 `dart_format_test` simply runs the toolchain's `dart format --output=none
 --set-exit-if-changed` over its `srcs`. Either way: no pub resolution, no
 network. The CI lint job becomes:

@@ -14,7 +14,9 @@ load("@hermetic_android_toolchains//ndk:repositories.bzl", "ANDROID_NDK_LICENSE_
 load("@hermetic_android_toolchains//private:utils.bzl", "ANDROID_PLATFORMS")
 load("@hermetic_android_toolchains//sdk:repositories.bzl", "ANDROID_SDK_LICENSE_ENV", "hermetic_android_sdk_platform_repository", "hermetic_android_sdk_repository")
 load("//flutter/private:android_repositories.bzl", "android_toolchains_repository", "gradle_repository")
+load("//flutter/private:pub_lock_hub.bzl", "pub_lock_hub")
 load("//flutter/private:pub_repository.bzl", "pub_dev_repository")
+load("//flutter/private:pubspec_lock.bzl", "lock_hosted_packages", "parse_pubspec_lock")
 load("//flutter/private:version_select.bzl", "highest_version")
 load("//flutter/private:versions.bzl", "TOOL_VERSIONS")
 load(":repositories.bzl", "flutter_register_toolchains")
@@ -228,20 +230,30 @@ pub_package = tag_class(attrs = {
     "sha256": attr.string(doc = "Expected SHA-256 of the package archive (optional; pins the download)"),
 })
 
-pub_deps_manifest = tag_class(attrs = {
-    "files": attr.label_list(doc = """\
-Labels of `pub_deps.json` manifests whose packages become `@pub_*`
-repositories. Declaring the tag at all is the opt-in signal; `files = []` is
-the explicit opt-out for a module that has no manifests.
+pub_lock = tag_class(attrs = {
+    "name": attr.string(doc = """\
+Name of the hub repository generated for this lock. Depend on
+`@<name>//:all` to get the lock's entire package closure, or on
+`@<name>//:<package>` for one package of it.
+""", mandatory = True),
+    "file": attr.label(doc = """\
+Label of the `pubspec.lock` whose packages become repositories.
 
-These labels are read, never analyzed, so they need no BUILD file of their
-own: a manifest in a directory that is not a Bazel package is spelled
-relative to the nearest enclosing package, e.g. `//:sub_dir/pub_deps.json`.
-""", default = []),
+The label is read, never analyzed, so it needs no BUILD file of its own: a
+lock in a directory that is not a Bazel package is spelled relative to the
+nearest enclosing package, e.g. `//:sub_dir/pubspec.lock`.
+""", mandatory = True, allow_single_file = True),
 })
 
-def _sanitize_repo_name(package):
-    """Generate a deterministic repository name for a package."""
+pub_no_locks = tag_class(attrs = {}, doc = """\
+Explicit acknowledgement that this module declares no `pubspec.lock`.
+
+The pub extension refuses to silently do nothing, so a module with no locks
+says so rather than omitting every tag.
+""")
+
+def _sanitize(package):
+    """Reduce a package name to characters legal in a repository name."""
 
     def _is_valid_char(ch):
         return (
@@ -255,97 +267,14 @@ def _sanitize_repo_name(package):
     for idx in range(len(package)):
         ch = package[idx]
         sanitized.append(ch if _is_valid_char(ch) else "_")
-    return "pub_" + "".join(sanitized)
-
-def _parse_pub_deps_json(content):
-    """Return mapping of package -> metadata from pub_deps.json payload."""
-
-    data = json.decode(content)
-    packages = {}
-    for entry in data.get("packages", []):
-        name = entry.get("name")
-        if not name:
-            continue
-
-        source = entry.get("source")
-        version = entry.get("version")
-        description = entry.get("description")
-        url = _extract_description_url(description)
-        if source == "hosted" and version:
-            packages[name] = {
-                "version": version,
-                "url": url or "https://pub.dev",
-                "sha256": entry.get("sha256") or "",
-                "dependencies": [dep for dep in entry.get("dependencies", []) if type(dep) == "string"],
-            }
-
-    return packages
-
-def _prune_dependency_cycles(edges):
-    """Return edges with back edges removed via iterative DFS.
-
-    The pub universe contains genuine dependency cycles (e.g. dio <->
-    dio_web_adapter) that Bazel target graphs cannot express. Dropping the
-    back edge keeps cache propagation intact for any consumer that reaches
-    the cycle through its conventional entry point.
-    """
-    UNVISITED = 0
-    ON_STACK = 1
-    DONE = 2
-
-    state = {name: UNVISITED for name in edges.keys()}
-    pruned = {name: [] for name in edges.keys()}
-
-    for root in sorted(edges.keys()):
-        if state[root] != UNVISITED:
-            continue
-
-        # Each stack frame is [node, next_child_index].
-        stack = [[root, 0]]
-        state[root] = ON_STACK
-        for _ in range(1000000):  # bounded loop: Starlark has no while
-            if not stack:
-                break
-            frame = stack[-1]
-            node, idx = frame[0], frame[1]
-            children = edges[node]
-            if idx >= len(children):
-                state[node] = DONE
-                stack.pop()
-                continue
-            frame[1] = idx + 1
-            child = children[idx]
-            if child not in state:
-                continue
-            if state[child] == ON_STACK:
-                # Back edge: dropping it breaks the cycle.
-                continue
-            pruned[node].append(child)
-            if state[child] == UNVISITED:
-                state[child] = ON_STACK
-                stack.append([child, 0])
-
-    return pruned
-
-def _extract_description_url(description):
-    if type(description) == "string":
-        return description
-    if type(description) == "dict":
-        return (
-            description.get("url") or
-            description.get("base_url") or
-            description.get("hosted_url") or
-            description.get("hosted-url")
-        )
-    return None
+    return "".join(sanitized)
 
 def _register_repo(repo_map, repo_name, package, version, origin, from_root = True, tagged = False, sha256 = ""):
-    """Merge repository metadata ensuring consistency across lockfiles/tags.
+    """Merge pub.package registrations, ensuring consistency across modules.
 
-    Root-module registrations (pub_deps.json scans and root pub.package tags)
-    take precedence: a conflicting non-root tag — e.g. a ruleset pinning a
-    default tooling version — is silently ignored when the root already pinned
-    the package. A repository registered through any pub.package tag is marked
+    Root-module registrations take precedence: a conflicting non-root tag —
+    e.g. a ruleset pinning a default tooling version — is silently ignored
+    when the root already pinned the package. A repository registered through any pub.package tag is marked
     `tagged` (it keeps its fetch-time vendored .pub_cache so it can be
     executed from the repository), regardless of which registration's version
     wins.
@@ -419,81 +348,109 @@ def _register_repo(repo_map, repo_name, package, version, origin, from_root = Tr
         "sha256": sha256,
     }
 
-_NO_MANIFEST_TAGS_ERROR = """\
-The pub extension found no `deps_manifest` tag in the root module.
+_NO_LOCK_TAGS_ERROR = """\
+The pub extension found no `lock` tag in the root module.
 
-rules_flutter no longer scans the workspace for `pub_deps.json`; every
-manifest must be declared explicitly, which is what lets Bazel invalidate the
-extension when one is added or removed.
+Every `pubspec.lock` must be declared explicitly, which is what lets Bazel
+invalidate the extension when one is added, changed or removed.
 
-Find your manifests:
+Find your locks:
 
-    find . -name pub_deps.json -not -path './bazel-*'
+    find . -name pubspec.lock -not -path './bazel-*'
 
-then declare them in MODULE.bazel:
+then declare one hub per lock in MODULE.bazel:
 
     pub = use_extension("@rules_flutter//flutter:extensions.bzl", "pub")
-    pub.deps_manifest(files = [
-        "//my_app:pub_deps.json",
-    ])
+    pub.lock(name = "my_app_deps", file = "//my_app:pubspec.lock")
+    use_repo(pub, "my_app_deps")
 
-A manifest whose directory is not a Bazel package (no BUILD file) is spelled
-relative to the nearest enclosing package, e.g. `//:my_app/pub_deps.json`.
+and depend on the closure from the library that owns the lock:
 
-If this module genuinely has no manifests, acknowledge that explicitly with:
+    flutter_library(
+        name = "lib",
+        pubspec = "pubspec.yaml",
+        lock = "pubspec.lock",
+        deps = ["@my_app_deps//:all"],
+    )
 
-    pub.deps_manifest(files = [])
+A lock whose directory is not a Bazel package (no BUILD file) is spelled
+relative to the nearest enclosing package, e.g. `//:my_app/pubspec.lock`.
+
+If this module genuinely has no locks, acknowledge that explicitly with:
+
+    pub.no_locks()
 """
 
 def _pub_extension(module_ctx):
     """Extension implementation for pub.dev packages."""
     repos = {}
-    seen_manifests = {}
-    dep_edges = {}
-    root_declared_manifest_tag = False
+    hubs = {}
+    dev_hubs = {}
+    seen_locks = {}
+    root_declared_lock_tag = False
 
     for mod in module_ctx.modules:
-        for tag in mod.tags.deps_manifest:
-            if mod.is_root:
-                root_declared_manifest_tag = True
-            for label in tag.files:
-                label_key = str(label)
-                if label_key in seen_manifests:
-                    continue
-                seen_manifests[label_key] = True
+        if mod.is_root and (mod.tags.lock or mod.tags.no_locks):
+            root_declared_lock_tag = True
+        for tag in mod.tags.lock:
+            if tag.name in hubs:
+                fail("Two pub.lock tags both declare the hub repository '{}'.".format(tag.name))
 
-                deps_path = module_ctx.path(label)
-
-                # module_ctx.path() happily returns a path for a source file
-                # that does not exist; without this guard the read below fails
-                # with a bare I/O error naming an execroot path.
-                if not deps_path.exists:
-                    fail(
-                        "pub.deps_manifest declares {}, but no such file exists (looked at {}).".format(
-                            label_key,
-                            str(deps_path),
-                        ),
-                    )
-                module_ctx.watch(deps_path)
-                packages = _parse_pub_deps_json(module_ctx.read(deps_path))
-                for package, info in packages.items():
-                    repo_name = _sanitize_repo_name(package)
-                    _register_repo(
-                        repos,
-                        repo_name,
-                        package,
-                        info.get("version"),
+            label_key = str(tag.file)
+            if label_key in seen_locks:
+                fail(
+                    "pub.lock declares {} twice, as '{}' and '{}'. One lock is one hub.".format(
                         label_key,
-                        from_root = mod.is_root,
-                        sha256 = info.get("sha256") or "",
-                    )
-                    merged = {dep: True for dep in dep_edges.get(package, [])}
-                    for dep in info.get("dependencies", []):
-                        merged[dep] = True
-                    dep_edges[package] = sorted(merged.keys())
+                        seen_locks[label_key],
+                        tag.name,
+                    ),
+                )
+            seen_locks[label_key] = tag.name
 
-    if not root_declared_manifest_tag:
-        fail(_NO_MANIFEST_TAGS_ERROR)
+            lock_path = module_ctx.path(tag.file)
+
+            # module_ctx.path() happily returns a path for a source file that
+            # does not exist; without this guard the read below fails with a
+            # bare I/O error naming an execroot path.
+            if not lock_path.exists:
+                fail(
+                    "pub.lock declares {}, but no such file exists (looked at {}).".format(
+                        label_key,
+                        str(lock_path),
+                    ),
+                )
+            module_ctx.watch(lock_path)
+            packages = lock_hosted_packages(
+                parse_pubspec_lock(module_ctx.read(lock_path), origin = label_key),
+            )
+
+            spokes = {}
+            for package, info in packages.items():
+                # Leaf repositories are addressed only from the hub, which is
+                # generated by this same extension, so their names never need
+                # to be use_repo'd and are free to carry the hub prefix that
+                # keeps two locks' versions of a package apart.
+                spoke = "{}__{}".format(tag.name, _sanitize(package))
+                spokes[package] = spoke
+                repos[spoke] = {
+                    "package": package,
+                    "version": info.version,
+                    "sha256": info.sha256,
+                    "origins": [label_key],
+                    "tagged": False,
+                    "from_root": mod.is_root,
+                }
+            hubs[tag.name] = struct(origin = label_key, spokes = spokes)
+
+            # A hub declared through a dev_dependency proxy does not exist in
+            # a consumer's graph, so reporting it as a non-dev direct dep
+            # would have `bazel mod tidy` write a use_repo that breaks every
+            # consumer.
+            if mod.is_root and module_ctx.is_dev_dependency(tag):
+                dev_hubs[tag.name] = True
+
+    if not root_declared_lock_tag:
+        fail(_NO_LOCK_TAGS_ERROR)
 
     for mod in module_ctx.modules:
         for pkg in mod.tags.package:
@@ -509,56 +466,45 @@ def _pub_extension(module_ctx):
                 sha256 = pkg.sha256,
             )
 
-    # Restrict recorded edges to hosted packages that actually have repos and
-    # break dependency cycles so the generated target graph is a DAG.
-    known_packages = {meta["package"]: True for meta in repos.values()}
-    hosted_edges = {
-        package: [dep for dep in deps if dep in known_packages]
-        for package, deps in dep_edges.items()
-    }
-    pruned_edges = _prune_dependency_cycles(hosted_edges)
-
     for repo_name in sorted(repos.keys()):
         meta = repos[repo_name]
-        package = meta["package"]
-        if package in pruned_edges:
-            pub_dev_repository(
-                name = repo_name,
-                package = package,
-                version = meta["version"],
-                hosted_deps = pruned_edges[package],
-                hosted_deps_explicit = True,
-                keep_vendored_cache = meta["tagged"],
-                resolve_deps = meta["tagged"],
-                sha256 = meta["sha256"],
-            )
-        else:
-            pub_dev_repository(
-                name = repo_name,
-                package = package,
-                version = meta["version"],
-                keep_vendored_cache = meta["tagged"],
-                resolve_deps = meta["tagged"],
-                sha256 = meta["sha256"],
-            )
+        pub_dev_repository(
+            name = repo_name,
+            package = meta["package"],
+            version = meta["version"],
+            keep_vendored_cache = meta["tagged"],
+            resolve_deps = meta["tagged"],
+            sha256 = meta["sha256"],
+        )
 
-    # `bazel mod tidy` maintains use_repo() from this. The extension cannot
-    # see BUILD files, so it deliberately over-approximates and reports every
-    # generated repository as a direct dep. Under-approximating breaks the
-    # build: `@pub_analyzer`, `@pub_path` and `@pub_protoc_plugin` are all
-    # referenced from BUILD files while being transitive (or registered by a
-    # non-root module's pub.package tag), so any narrower rule would have
-    # tidy prune them.
+    for hub_name in sorted(hubs.keys()):
+        hub = hubs[hub_name]
+        pub_lock_hub(
+            name = hub_name,
+            origin = hub.origin,
+            spokes = hub.spokes,
+        )
+
+    # `bazel mod tidy` maintains use_repo() from this. Leaf repositories are
+    # reached only through their hub's aliases, so the direct deps are exactly
+    # the hubs plus the pub.package repositories, which BUILD files reference
+    # by name to execute them as tools.
+    direct = [name for name, meta in repos.items() if meta["tagged"]] + [
+        name
+        for name in hubs.keys()
+        if name not in dev_hubs
+    ]
     return module_ctx.extension_metadata(
-        root_module_direct_deps = sorted(repos.keys()),
-        root_module_direct_dev_deps = [],
+        root_module_direct_deps = sorted(direct),
+        root_module_direct_dev_deps = sorted(dev_hubs.keys()),
         reproducible = True,
     )
 
 pub = module_extension(
     implementation = _pub_extension,
     tag_classes = {
-        "deps_manifest": pub_deps_manifest,
+        "lock": pub_lock,
+        "no_locks": pub_no_locks,
         "package": pub_package,
     },
 )

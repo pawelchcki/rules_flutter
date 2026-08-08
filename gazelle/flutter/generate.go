@@ -35,15 +35,14 @@ func (fl *flutterLang) GenerateRules(args language.GenerateArgs) language.Genera
 		return language.GenerateResult{}
 	}
 
-	hasPubDeps := false
-	var pubDeps *PubDeps
+	hasLock := false
+	var lock *PubspecLock
 	for _, f := range args.RegularFiles {
-		if f == "pub_deps.json" {
-			hasPubDeps = true
-			depsPath := filepath.Join(args.Dir, f)
-			deps, err := ParsePubDeps(depsPath)
+		if f == "pubspec.lock" {
+			hasLock = true
+			parsed, err := ParsePubspecLock(filepath.Join(args.Dir, f))
 			if err == nil {
-				pubDeps = deps
+				lock = parsed
 			}
 			break
 		}
@@ -75,8 +74,8 @@ func (fl *flutterLang) GenerateRules(args language.GenerateArgs) language.Genera
 
 	r := rule.NewRule(ruleKind, fc.LibraryName)
 	r.SetAttr("pubspec", "pubspec.yaml")
-	if hasPubDeps {
-		r.SetAttr("pub_deps", "pub_deps.json")
+	if hasLock {
+		r.SetAttr("lock", "pubspec.lock")
 	}
 
 	if hasLib {
@@ -86,8 +85,8 @@ func (fl *flutterLang) GenerateRules(args language.GenerateArgs) language.Genera
 		}
 	}
 
-	if hasPubDeps && pubDeps != nil {
-		deps := generateDeps(pubDeps, fc, args.Rel)
+	if hasLock && lock != nil {
+		deps := generateDeps(lock, fc, args.Rel)
 		if len(deps) > 0 {
 			r.SetAttr("deps", deps)
 		}
@@ -137,24 +136,25 @@ func walkDir(dir string, baseDir string) []string {
 	return files
 }
 
-// generateDeps creates a list of dependency labels from pub_deps.json
-func generateDeps(depsFile *PubDeps, fc *FlutterConfig, rel string) []string {
-	directDeps := GetDirectDependencies(depsFile)
+// generateDeps creates a list of dependency labels from a pubspec.lock.
+//
+// Hosted packages do not get one label each. A lock is a complete transitive
+// closure, so the pub extension turns it into a single hub repository whose
+// `:all` target carries the whole thing; the individual leaves are not
+// importable by name. The hub is named in MODULE.bazel, so it reaches gazelle
+// through the flutter_pub_hub directive.
+func generateDeps(lock *PubspecLock, fc *FlutterConfig, rel string) []string {
+	directDeps := GetDirectDependencies(lock)
 	if len(directDeps) == 0 {
 		return nil
 	}
 
 	deps := make([]string, 0, len(directDeps))
+	hasHosted := false
 	for pkg, meta := range directDeps {
-		depKind := meta.Dependency
-		if !strings.HasPrefix(depKind, "direct") {
-			continue
-		}
-
 		switch meta.Source {
 		case "hosted":
-			repoName := SanitizeRepoName(pkg)
-			deps = append(deps, fmt.Sprintf("@%s//:%s", repoName, pkg))
+			hasHosted = true
 		case "sdk":
 			if sdkLabel := sdkDependencyLabel(pkg, fc); sdkLabel != "" {
 				deps = append(deps, sdkLabel)
@@ -166,13 +166,17 @@ func generateDeps(depsFile *PubDeps, fc *FlutterConfig, rel string) []string {
 		}
 	}
 
+	if hasHosted && fc != nil && fc.PubHub != "" {
+		deps = append(deps, fmt.Sprintf("@%s//:all", fc.PubHub))
+	}
+
 	// Sort for consistent output
 	sort.Strings(deps)
 	return deps
 }
 
 // pathDependencyLabel returns the Bazel label for a local path dependency.
-func pathDependencyLabel(pkg PubDepsPackage, fc *FlutterConfig, rel string) string {
+func pathDependencyLabel(pkg LockPackage, fc *FlutterConfig, rel string) string {
 	pathValue := ""
 	switch desc := pkg.Description.(type) {
 	case string:
@@ -225,7 +229,7 @@ func sdkPackagePath(pkg string) string {
 // Imports extracts import statements from Flutter/Dart source files
 func (fl *flutterLang) Imports(c *config.Config, r *rule.Rule, f *rule.File) []resolve.ImportSpec {
 	// For now, we don't need to parse Dart imports
-	// The dependencies are extracted from pub_deps.json
+	// The dependencies are extracted from pubspec.lock
 	return []resolve.ImportSpec{}
 }
 

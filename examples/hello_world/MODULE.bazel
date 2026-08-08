@@ -15,11 +15,14 @@ use_repo(
 
 register_toolchains("@flutter_toolchains//:all")
 
-# One repository per hosted pub package, discovered from the checked-in
-# pub_deps.json. After editing pubspec.yaml, run `bazel run //:lib.update`,
-# then expose direct deps here (`pub = use_extension(...)` +
-# `use_repo(pub, "pub_<package>")`) and reference them as
-# @pub_<package>//:<package>. No use_repo entries are needed while the app
-# only uses SDK packages.
+# One hub repository per checked-in pubspec.lock, carrying that lock's whole
+# hosted package closure. After editing pubspec.yaml, run
+# `bazel run //:lib.update` to refresh the lock, then depend on the closure
+# with `deps = ["@hello_world_deps//:all"]`. This app only uses SDK packages,
+# so nothing references the hub yet.
 pub = use_extension("@rules_flutter//flutter:extensions.bzl", "pub")
-pub.deps_manifest(files = ["//:pub_deps.json"])
+pub.lock(
+    name = "hello_world_deps",
+    file = "//:pubspec.lock",
+)
+use_repo(pub, "hello_world_deps", "pub_fixnum", "pub_meta", "pub_path", "pub_protobuf", "pub_protoc_plugin")

@@ -3,8 +3,8 @@ load("//flutter:defs.bzl", "flutter_app", "flutter_library")
 load(
     ":defs_analysis_test.bzl",
     "android_offline_test",
-    "android_toolchain_roots_test",
     "android_online_test",
+    "android_toolchain_roots_test",
     "build_command_test",
     "embed_guard_test",
 )

@@ -6,30 +6,32 @@ import (
 )
 
 func TestGenerateDepsIncludesAllDirectDependencies(t *testing.T) {
-	deps := &PubDeps{
-		Packages: []PubDepsPackage{
-			{Name: "vector_math", Dependency: "direct main", Source: "hosted"},
-			{Name: "flutter_test", Dependency: "direct dev", Source: "sdk"},
-			{Name: "flutter", Dependency: "direct main", Source: "sdk"},
-			{Name: "flutter_lints", Dependency: "direct dev", Source: "hosted"},
-			{
-				Name:        "local_models",
+	lock := &PubspecLock{
+		Packages: map[string]LockPackage{
+			"vector_math": {Dependency: "direct main", Source: "hosted"},
+			// A bare scalar description, which is how pub writes sdk sources.
+			"flutter_test": {Dependency: "direct dev", Source: "sdk", Description: "flutter"},
+			"flutter":      {Dependency: "direct main", Source: "sdk", Description: "flutter"},
+			"flutter_lints": {Dependency: "direct dev", Source: "hosted"},
+			"local_models": {
 				Dependency:  "direct main",
 				Source:      "path",
 				Description: map[string]interface{}{"path": "../local_models"},
 			},
-			{Name: "collection", Dependency: "transitive", Source: "hosted"},
+			"collection": {Dependency: "transitive", Source: "hosted"},
 		},
 	}
 
-	fc := &FlutterConfig{SDKRepo: "@flutter_sdk"}
-	got := generateDeps(deps, fc, "apps/example")
+	fc := &FlutterConfig{SDKRepo: "@flutter_sdk", PubHub: "example_deps"}
+	got := generateDeps(lock, fc, "apps/example")
+
+	// Every hosted package collapses into the single hub label: the lock is a
+	// complete closure, so the hub carries all of it.
 	want := []string{
 		"//apps/local_models:lib",
+		"@example_deps//:all",
 		"@flutter_sdk//flutter/packages/flutter:flutter",
 		"@flutter_sdk//flutter/packages/flutter_test:flutter_test",
-		"@pub_flutter_lints//:flutter_lints",
-		"@pub_vector_math//:vector_math",
 	}
 
 	if !reflect.DeepEqual(got, want) {
@@ -37,17 +39,30 @@ func TestGenerateDepsIncludesAllDirectDependencies(t *testing.T) {
 	}
 }
 
-func TestGetDirectDependenciesIncludesAllDirectKinds(t *testing.T) {
-	deps := &PubDeps{
-		Packages: []PubDepsPackage{
-			{Name: "direct-main", Dependency: "direct main"},
-			{Name: "direct-dev", Dependency: "direct dev"},
-			{Name: "direct-overridden", Dependency: "direct overridden"},
-			{Name: "transitive", Dependency: "transitive"},
+func TestGenerateDepsOmitsHubWhenDirectiveUnset(t *testing.T) {
+	lock := &PubspecLock{
+		Packages: map[string]LockPackage{
+			"vector_math": {Dependency: "direct main", Source: "hosted"},
 		},
 	}
 
-	got := GetDirectDependencies(deps)
+	got := generateDeps(lock, &FlutterConfig{SDKRepo: "@flutter_sdk"}, "apps/example")
+	if len(got) != 0 {
+		t.Fatalf("without flutter_pub_hub there is no label to emit, got %v", got)
+	}
+}
+
+func TestGetDirectDependenciesIncludesAllDirectKinds(t *testing.T) {
+	lock := &PubspecLock{
+		Packages: map[string]LockPackage{
+			"direct-main":       {Dependency: "direct main"},
+			"direct-dev":        {Dependency: "direct dev"},
+			"direct-overridden": {Dependency: "direct overridden"},
+			"transitive":        {Dependency: "transitive"},
+		},
+	}
+
+	got := GetDirectDependencies(lock)
 	if len(got) != 3 {
 		t.Fatalf("expected 3 direct dependencies, got %d", len(got))
 	}

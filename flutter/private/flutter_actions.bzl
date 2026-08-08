@@ -24,7 +24,7 @@ _br_hash() {
     fi
 }
 _br_cache_key() {
-    { printf '%s\\0' <<LABEL>>; cat "$FLUTTER_ROOT/version" 2>/dev/null || true; cat "$WORKSPACE_DIR_ABS/pub_deps.json"; } | _br_hash
+    { printf '%s\\0' <<LABEL>>; cat "$FLUTTER_ROOT/version" 2>/dev/null || true; cat "$WORKSPACE_DIR_ABS/pubspec.lock"; } | _br_hash
 }
 _br_lock_acquire() {
     # $1 = lock dir. Returns 0 if acquired, 1 after a bounded wait; a miss
@@ -601,7 +601,7 @@ def flutter_pub_get_action(
         flutter_toolchain,
         working_dir,
         pubspec_file,
-        pub_deps_file,
+        lock_file,
         dependency_pub_caches = [],
         generator_commands = [],
         build_runner_common_args = [],
@@ -614,14 +614,14 @@ def flutter_pub_get_action(
         build_runner_cache = "",
         fast_staging = False,
         pub_tool_file = None):
-    """Prepare Flutter/Dart dependencies from declared pub_deps.json metadata.
+    """Prepare Flutter/Dart dependencies from declared pubspec.lock metadata.
 
     Args:
         ctx: The rule context.
         flutter_toolchain: The resolved Flutter toolchain.
         working_dir: Directory containing the staged package sources.
         pubspec_file: The pubspec.yaml file for the library.
-        pub_deps_file: Checked-in or repository-generated pub_deps.json.
+        lock_file: Checked-in or repository-generated pubspec.lock.
         dependency_pub_caches: Files or depsets with pub cache directories from dependencies.
         generator_commands: Optional list of one-shot code generation commands
             (package:script).
@@ -651,9 +651,11 @@ def flutter_pub_get_action(
             across builds. Empty (default) keeps the action fully hermetic and
             byte-identical; when set, the action inherits the client shell
             environment and restores/saves the cache under a lock.
+        pub_tool_file: Optional declared pub_tool executable used by the
+            generated dependency-preparation action.
 
     Returns:
-        Tuple of (prepared_workspace, pub_get_output, pub_cache_dir, pub_deps, dart_tool_dir).
+        Tuple of (prepared_workspace, pub_get_output, pub_cache_dir, lock, dart_tool_dir).
     """
 
     # Only meaningful when this action actually runs build_runner.
@@ -680,7 +682,7 @@ def flutter_pub_get_action(
         pub_cache_dir = preassembled_cache
     else:
         pub_cache_dir = ctx.actions.declare_directory(ctx.label.name + "_pub_cache")
-    pub_deps = ctx.actions.declare_file(ctx.label.name + "_pub_deps.json")
+    lock = ctx.actions.declare_file(ctx.label.name + "_pubspec.lock")
     dart_tool_dir = ctx.actions.declare_directory(ctx.label.name + "_dart_tool")
     prepared_workspace = ctx.actions.declare_directory(ctx.label.name + "_prepared_flutter_workspace")
 
@@ -694,7 +696,7 @@ def flutter_pub_get_action(
 
     # Opt-in build_runner incremental-state cache (//flutter:build_runner_cache).
     # Restores/saves .dart_tool/build under a portable mkdir-lock, keyed by
-    # target + Flutter version + pub_deps digest. Copies are best-effort (a
+    # target + Flutter version + lock digest. Copies are best-effort (a
     # miss or torn cache just forces a full rebuild), so no lock leaks on
     # failure and correctness never depends on the cache. Values are plain
     # bash (sentinel-substituted, not .format()ed) so their $()/${} survive.
@@ -759,7 +761,7 @@ set -euo pipefail
 WORKSPACE_SRC="{workspace_src}"
 WORKSPACE_DIR="{workspace_dir}"
 PUB_CACHE_DIR="{pub_cache_dir}"
-PUB_DEPS_INPUT="{pub_deps_input}"
+LOCK_INPUT="{lock_input}"
 DART_TOOL_DIR="{dart_tool_dir}"
 FLUTTER_BIN="{flutter_bin}"
 IS_PUB_PACKAGE="{is_pub_package}"
@@ -769,10 +771,10 @@ WORKSPACE_SRC_ABS="$ORIGINAL_PWD/$WORKSPACE_SRC"
 WORKSPACE_DIR_ABS="$ORIGINAL_PWD/$WORKSPACE_DIR"
 PUB_CACHE_DIR_ABS="$ORIGINAL_PWD/$PUB_CACHE_DIR"
 DART_TOOL_DIR_ABS="$ORIGINAL_PWD/$DART_TOOL_DIR"
-if [[ "$PUB_DEPS_INPUT" == /* ]]; then
-    PUB_DEPS_INPUT_ABS="$PUB_DEPS_INPUT"
+if [[ "$LOCK_INPUT" == /* ]]; then
+    LOCK_INPUT_ABS="$LOCK_INPUT"
 else
-    PUB_DEPS_INPUT_ABS="$ORIGINAL_PWD/$PUB_DEPS_INPUT"
+    LOCK_INPUT_ABS="$ORIGINAL_PWD/$LOCK_INPUT"
 fi
 
 # Copy staged workspace into prepared output directory
@@ -852,35 +854,32 @@ export PATH="$FLUTTER_ROOT/bin:$PATH"
 
 cd "$WORKSPACE_DIR_ABS"
 
-echo "=== Using declared pub_deps.json ==="
-if [ ! -s "$PUB_DEPS_INPUT_ABS" ]; then
-    echo "✗ FATAL ERROR: pub_deps.json input is missing or empty: $PUB_DEPS_INPUT_ABS" >&2
-    echo "Run the generated .update target or provide a checked-in pub_deps.json." >&2
+echo "=== Using declared pubspec.lock ==="
+if [ ! -s "$LOCK_INPUT_ABS" ]; then
+    echo "✗ FATAL ERROR: pubspec.lock input is missing or empty: $LOCK_INPUT_ABS" >&2
+    echo "Run the generated .update target or provide a checked-in pubspec.lock." >&2
     exit 1
 fi
 # rm first: the staged workspace may already carry a (possibly hardlinked)
-# pub_deps.json, and overwriting it in place would truncate a shared inode.
-rm -f pub_deps.json
-cp "$PUB_DEPS_INPUT_ABS" pub_deps.json
-chmod u+rw pub_deps.json
+# pubspec.lock, and overwriting it in place would truncate a shared inode.
+rm -f pubspec.lock
+cp "$LOCK_INPUT_ABS" pubspec.lock
+chmod u+rw pubspec.lock
 
-export PUB_DEPS_PATH="$WORKSPACE_DIR_ABS/pub_deps.json"
-pub_tool normalize-pub-deps
+export PUBSPEC_LOCK_PATH="$WORKSPACE_DIR_ABS/pubspec.lock"
 
-if [ ! -s pub_deps.json ]; then
-    echo "✗ FATAL ERROR: pub_deps.json is empty" >&2
-    exit 1
-fi
+# Only a library that assembles the full dependency closure can be held to it.
+# Generated pub-package and SDK-package targets resolve out of FLUTTER_ROOT or
+# stage only their own payload, so their cache is partial by design.
+export REQUIRE_COMPLETE_PUB_CACHE="{require_complete_cache}"
 
 export PUB_CACHE_ABS="$PUB_CACHE_DIR_ABS"
 export WORKSPACE_ABS="$WORKSPACE_DIR_ABS"
 export PACKAGE_CONFIG_PATH="$WORKSPACE_DIR_ABS/.dart_tool/package_config.json"
 export ROOT_PACKAGE_NAME="$PACKAGE_NAME"
 export ROOT_LANGUAGE_SPEC="$LANGUAGE_SPEC"
-export SYNTHESIZE_PUBSPEC_LOCK=1
 mkdir -p "$(dirname "$PACKAGE_CONFIG_PATH")"
 pub_tool package-config
-unset SYNTHESIZE_PUBSPEC_LOCK
 
 GENERATOR_COMMANDS=({generator_commands})
 if [ ${{#GENERATOR_COMMANDS[@]}} -gt 0 ]; then
@@ -903,9 +902,9 @@ fi
 BUILD_RUNNER_COMMON_ARGS=({build_runner_common_args})
 BUILD_RUNNER_BUILD_ARGS=({build_runner_build_args})
 if [ "{run_build_runner_build}" = "1" ]; then
-    if ! pub_tool has-package "$WORKSPACE_ABS/pub_deps.json" build_runner
+    if ! pub_tool has-package "$WORKSPACE_ABS/pubspec.lock" build_runner
     then
-        echo "✗ FATAL ERROR: build_runner requested but not present in pub_deps.json" >&2
+        echo "✗ FATAL ERROR: build_runner requested but not present in pubspec.lock" >&2
         exit 1
     fi
 
@@ -955,8 +954,9 @@ echo "=== Dependency preparation complete ==="
         pub_cache_assembly = pub_cache_assembly,
         stage_tree_helpers = STAGE_TREE_HELPERS,
         fast_staging = "1" if fast_staging else "0",
-        pub_deps = pub_deps.path,
-        pub_deps_input = pub_deps_file.path,
+        lock = lock.path,
+        lock_input = lock_file.path,
+        require_complete_cache = "1" if ctx.attr.assemble_dep_caches and not ctx.attr.pub_package else "",
         dart_tool_dir = dart_tool_dir.path,
         flutter_bin = flutter_bin,
         generator_commands = " ".join(generator_args),
@@ -969,8 +969,8 @@ echo "=== Dependency preparation complete ==="
         build_runner_cache_save = build_runner_cache_save,
     )
 
-    prepare_direct_inputs = [working_dir, pubspec_file, pub_deps_file, pub_tool_file] + dep_pub_cache_files + flutter_toolchain.flutterinfo.tool_files
-    prepare_outputs = [pub_get_output, pub_deps, dart_tool_dir, prepared_workspace]
+    prepare_direct_inputs = [working_dir, pubspec_file, lock_file, pub_tool_file] + dep_pub_cache_files + flutter_toolchain.flutterinfo.tool_files
+    prepare_outputs = [pub_get_output, lock, dart_tool_dir, prepared_workspace]
     if preassembled_cache != None:
         # Consumed read-only; produced by flutter_assemble_pub_cache_action.
         prepare_direct_inputs.append(preassembled_cache)
@@ -989,7 +989,7 @@ echo "=== Dependency preparation complete ==="
 cd "$ORIGINAL_PWD"
 
 mkdir -p "$(dirname "{pub_get_output}")"
-mkdir -p "$(dirname "{pub_deps}")"
+mkdir -p "$(dirname "{lock}")"
 mkdir -p "{dart_tool_dir}"
 
 LOG_FILE="{pub_get_output}"
@@ -998,11 +998,11 @@ echo "Flutter binary: {flutter_bin}" >> "$LOG_FILE"
 echo "Workspace output: {workspace_dir}" >> "$LOG_FILE"
 echo "" >> "$LOG_FILE"
 
-if [ -f "$WORKSPACE_DIR_ABS/pub_deps.json" ]; then
-    cp "$WORKSPACE_DIR_ABS/pub_deps.json" "{pub_deps}"
-    echo "✓ Copied declared pub_deps.json" >> "$LOG_FILE"
+if [ -f "$WORKSPACE_DIR_ABS/pubspec.lock" ]; then
+    cp "$WORKSPACE_DIR_ABS/pubspec.lock" "{lock}"
+    echo "✓ Copied declared pubspec.lock" >> "$LOG_FILE"
 else
-    echo "✗ pub_deps.json missing after preparation" >> "$LOG_FILE"
+    echo "✗ pubspec.lock missing after preparation" >> "$LOG_FILE"
     exit 1
 fi
 
@@ -1022,7 +1022,7 @@ fi
 echo "Status: Prepared dependencies from declared metadata" >> "$LOG_FILE"
 """.format(
             pub_get_output = pub_get_output.path,
-            pub_deps = pub_deps.path,
+            lock = lock.path,
             pub_cache_finalize = pub_cache_finalize,
             dart_tool_dir = dart_tool_dir.path,
             flutter_bin = flutter_bin,
@@ -1045,7 +1045,7 @@ echo "Status: Prepared dependencies from declared metadata" >> "$LOG_FILE"
         env = {"RULES_FLUTTER_BUILD_RUNNER_CACHE": build_runner_cache} if use_build_runner_cache else None,
     )
 
-    return prepared_workspace, pub_get_output, pub_cache_dir, pub_deps, dart_tool_dir
+    return prepared_workspace, pub_get_output, pub_cache_dir, lock, dart_tool_dir
 
 ANDROID_TARGETS = ["apk", "appbundle"]
 
@@ -1222,6 +1222,8 @@ def flutter_build_action(
             caching stays enabled; Android/iOS have stricter requirements)
         fast_staging: Whether //flutter:fast_staging is set; staged-tree copies
             use clones/hardlinks instead of byte copies (see STAGE_TREE_HELPERS)
+        pub_tool_file: Optional declared pub_tool executable used by the
+            generated Flutter build action.
 
     Returns:
         Tuple of (build_output, build_artifacts_dir)
@@ -1312,6 +1314,12 @@ export PUB_CACHE="$RW_PUB_CACHE"
 export PUB_CACHE_DIR_ABS="$RW_PUB_CACHE"
 export PUB_CACHE_ABS="$RW_PUB_CACHE"
 
+# Path dependencies are staged in cache/path/<package>. Point the mutable
+# build pubspec at those declared inputs so pub's offline plugin-tooling pass
+# does not try to traverse the original source-relative path outside this
+# package's prepared workspace.
+"$DART_BIN_LOCAL" "$PUB_TOOL_ABS" rewrite-path-deps
+
 echo "Running flutter pub get --offline to regenerate plugin tooling..."
 if ! "$FLUTTER_BIN_ABS" --suppress-analytics --no-version-check pub get --offline; then
     echo "✗ FATAL ERROR: flutter pub get --offline failed" >&2
@@ -1382,7 +1390,7 @@ fi
     # the sandbox and survives the action.
     scratch_home = 'export HOME="$(mktemp -d "${TMPDIR:-/tmp}/rules_flutter_home.XXXXXX")"'
     if target == "ios":
-        home_export = 'export HOME="${HOME:-}"\nif [ -z "$HOME" ]; then\n    ' + scratch_home + '\nfi'
+        home_export = 'export HOME="${HOME:-}"\nif [ -z "$HOME" ]; then\n    ' + scratch_home + "\nfi"
     else:
         home_export = scratch_home
 
@@ -1402,6 +1410,15 @@ fi
         android_gradle_env = 'export GRADLE_USER_HOME="$BUILD_WORKSPACE_TMP/.gradle_home"' + """
 mkdir -p "$GRADLE_USER_HOME"
 export GRADLE_OPTS="-Dorg.gradle.daemon=false ${GRADLE_OPTS:-}"
+# flutter build upgrades Android project files in place. Fast staging
+# hardlinks ordinary workspace files to read-only inputs, so detach this small
+# mutable subtree before Flutter touches it.
+if [ "$FAST_STAGING" = "1" ] && [ -d android ]; then
+    cp -R android .rules_flutter_android_mutable
+    chmod -R u+rwX .rules_flutter_android_mutable
+    rm -rf android
+    mv .rules_flutter_android_mutable android
+fi
 mkdir -p android
 printf 'sdk.dir=%s\\nflutter.sdk=%s\\n' "$ANDROID_HOME" "$FLUTTER_ROOT" > android/local.properties
 """
@@ -1545,18 +1562,19 @@ if [ ! -x "$DART_BIN_LOCAL" ]; then
     echo "✗ FATAL ERROR: Dart binary not found at $DART_BIN_LOCAL" >&2
     exit 1
 fi
-if [ ! -s pub_deps.json ]; then
-    echo "✗ FATAL ERROR: pub_deps.json missing from prepared workspace" >&2
+PUB_TOOL_ABS="$ORIGINAL_PWD/{pub_tool}"
+if [ ! -s pubspec.lock ]; then
+    echo "✗ FATAL ERROR: pubspec.lock missing from prepared workspace" >&2
     exit 1
 fi
 
-export PUB_DEPS_PATH="$PWD/pub_deps.json"
+export PUBSPEC_LOCK_PATH="$PWD/pubspec.lock"
 export PUB_CACHE_ABS="$PUB_CACHE_DIR_ABS"
 export WORKSPACE_ABS="$PWD"
 export PACKAGE_CONFIG_PATH="$PWD/.dart_tool/package_config.json"
 mkdir -p "$(dirname "$PACKAGE_CONFIG_PATH")"
 rm -f "$PACKAGE_CONFIG_PATH" "$PWD/.dart_tool/package_graph.json"
-"$DART_BIN_LOCAL" "$ORIGINAL_PWD/{pub_tool}" package-config
+"$DART_BIN_LOCAL" "$PUB_TOOL_ABS" package-config
 echo "✓ Package config regenerated from declared metadata"
 echo ""
 {mobile_pub_get}

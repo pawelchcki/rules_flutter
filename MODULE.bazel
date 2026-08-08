@@ -74,7 +74,7 @@ register_toolchains("//flutter/tests/analysis:fixture_android_toolchain")
 # workspaces and break proto generation at execution time.
 pub = use_extension("//flutter:extensions.bzl", "pub")
 
-# The only pub_deps.json in this module belongs to the analysis test fixture,
+# The only pubspec.lock in this module belongs to the analysis test fixture,
 # so it rides a dev_dependency proxy: its tags are dropped when rules_flutter
 # is not the root module, and consumers therefore never inherit the fixture's
 # package pins. The repositories it generates are still imported through the
@@ -84,7 +84,11 @@ pub_dev = use_extension(
     "pub",
     dev_dependency = True,
 )
-pub_dev.deps_manifest(files = ["//flutter/tests/analysis:pub_deps.json"])
+pub_dev.lock(
+    name = "analysis_fixture_deps",
+    file = "//flutter/tests/analysis:pubspec.lock",
+)
+use_repo(pub_dev, "analysis_fixture_deps")
 
 pub.package(
     name = "pub_fixnum",

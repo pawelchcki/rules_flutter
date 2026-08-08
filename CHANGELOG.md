@@ -9,13 +9,10 @@ it reaches 1.0.
 
 ### Added
 
-- `pub_deps.json` now records a `sha256` for every hosted package, taken from
-  the `pubspec.lock` that `bazel run //<pkg>:<lib>.update` resolves. Every
-  hosted package download is therefore pinned, and the "downloaded without a
-  pinned hash" warning no longer appears on a clean fetch. Rerun `.update` to
-  record hashes into an existing manifest.
 - The `pub` extension now returns `extension_metadata`, so `bazel mod tidy`
-  maintains the `use_repo(pub, ...)` list instead of you.
+  maintains the `use_repo(pub, ...)` list instead of you — and reports its
+  repositories _exactly_ rather than over-approximating, so tidy prunes as
+  well as adds.
 
 ### Breaking
 
@@ -24,23 +21,57 @@ it reaches 1.0.
   persistent Gradle-home configuration have been removed. Android actions are
   sandboxable, remotely cacheable, and remote-execution eligible by default.
 - Raised the Bazel minimum to 8.4.2 and the module compatibility level to 3.
-- **The `pub` extension no longer scans the workspace for `pub_deps.json`.**
-  Every manifest must be declared explicitly with the new `pub.deps_manifest`
-  tag:
+- **`pub_deps.json` is gone; `pubspec.lock` is the source of truth.** The
+  bespoke generated manifest, the workspace scan that discovered it, and the
+  `pub.deps_manifest` tag that briefly replaced that scan are all removed.
+  Declare each lock instead, one hub repository per lock:
 
   ```starlark
   pub = use_extension("@rules_flutter//flutter:extensions.bzl", "pub")
-  pub.deps_manifest(files = ["//app:pub_deps.json"])
+  pub.lock(
+      name = "app_deps",
+      file = "//app:pubspec.lock",
+  )
+  use_repo(pub, "app_deps")
   ```
 
-  The scan could not be invalidated (adding a new `pub_deps.json` did not
-  re-run the extension), needed a host `python3`, and made it impossible for
-  the extension to report its repositories to `bazel mod tidy`. All three are
-  fixed. A root module with no `deps_manifest` tag now fails with an
-  actionable message; `files = []` is the explicit opt-out.
+  and depend on the closure rather than on packages one at a time:
 
-  Manifests declared by non-root modules are now honored as well, with root
-  module pins still winning.
+  ```starlark
+  flutter_library(
+      name = "lib",
+      pubspec = "pubspec.yaml",
+      lock = "pubspec.lock",          # was pub_deps = "pub_deps.json"
+      deps = ["@app_deps//:all"],     # was a list of @pub_<package>//:<package>
+  )
+  ```
+
+  `pubspec.lock` is what `pub` already maintains: it carries the resolved
+  versions _and_ the `sha256` that pins every download, so a clean fetch no
+  longer warns about unpinned hashes. Because a lock is a complete
+  single-version-per-package solution, the hub can carry the whole closure and
+  no dependency edges between packages are needed — which removes the cycle
+  pruning the pub universe used to force on us, and lets two apps pin
+  different versions of the same package. `bazel run //<pkg>:<lib>.update`
+  now writes `pubspec.lock` and nothing else.
+
+  Migration: run `.update` in each package to produce its lock, delete the
+  `pub_deps.json` files, replace `deps_manifest` with one `pub.lock` per lock,
+  rewrite `@pub_*` library deps to the hub, and run `bazel mod tidy`. Tools
+  registered with `pub.package` (e.g. `@pub_protoc_plugin`) are unchanged and
+  stay outside every hub. A root module with no locks must say so explicitly
+  with `pub.no_locks()`.
+
+  The `pub_tool` subcommands `merge-pub-deps` and `normalize-pub-deps` are
+  removed with the format, as is the synthesized `pubspec.lock` build_runner
+  used to receive — it now gets the genuine article.
+
+  Gazelle: the `pub_deps` attribute becomes `lock`, and the new
+  `# gazelle:flutter_pub_hub <name>` directive tells the plugin which hub to
+  emit for hosted dependencies. Direct-dependency generation also starts
+  working correctly, since `pubspec.lock` spells dependency kinds
+  `direct main` / `direct dev` / `transitive` — the vocabulary the plugin's
+  filter always expected.
 
 ## [0.2.1] - 2026-07-14
 

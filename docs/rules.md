@@ -146,7 +146,7 @@ Runs Flutter tests using a prepared flutter_library workspace.
 <pre>
 load("@rules_flutter//flutter:defs.bzl", "DartLibraryInfo")
 
-DartLibraryInfo(<a href="#DartLibraryInfo-srcs">srcs</a>, <a href="#DartLibraryInfo-deps">deps</a>, <a href="#DartLibraryInfo-import_path">import_path</a>, <a href="#DartLibraryInfo-pubspec">pubspec</a>, <a href="#DartLibraryInfo-pub_deps">pub_deps</a>, <a href="#DartLibraryInfo-pub_cache">pub_cache</a>, <a href="#DartLibraryInfo-transitive_pub_caches">transitive_pub_caches</a>,
+DartLibraryInfo(<a href="#DartLibraryInfo-srcs">srcs</a>, <a href="#DartLibraryInfo-deps">deps</a>, <a href="#DartLibraryInfo-import_path">import_path</a>, <a href="#DartLibraryInfo-pubspec">pubspec</a>, <a href="#DartLibraryInfo-lock">lock</a>, <a href="#DartLibraryInfo-pub_cache">pub_cache</a>, <a href="#DartLibraryInfo-transitive_pub_caches">transitive_pub_caches</a>,
                 <a href="#DartLibraryInfo-assembled_cache">assembled_cache</a>)
 </pre>
 
@@ -160,7 +160,7 @@ Information about a Dart library
 | <a id="DartLibraryInfo-deps"></a>deps |  Transitive dependencies of this library    |
 | <a id="DartLibraryInfo-import_path"></a>import_path |  Import path for this library    |
 | <a id="DartLibraryInfo-pubspec"></a>pubspec |  The pubspec.yaml file for this library (optional)    |
-| <a id="DartLibraryInfo-pub_deps"></a>pub_deps |  Dependency report copied from checked-in or repository-generated pub_deps.json (optional)    |
+| <a id="DartLibraryInfo-lock"></a>lock |  pubspec.lock staged into the prepared workspace, from the checked-in or repository-generated lock (optional)    |
 | <a id="DartLibraryInfo-pub_cache"></a>pub_cache |  The assembled pub cache directory for this library (optional)    |
 | <a id="DartLibraryInfo-transitive_pub_caches"></a>transitive_pub_caches |  Depset of pub cache directories from all transitive dependencies    |
 | <a id="DartLibraryInfo-assembled_cache"></a>assembled_cache |  Whether pub_cache contains the full merged dependency closure (assemble_dep_caches). Only such libraries can be embedded.    |
@@ -211,7 +211,7 @@ Generated Dart sources produced from .proto files.
 <pre>
 load("@rules_flutter//flutter:defs.bzl", "FlutterLibraryInfo")
 
-FlutterLibraryInfo(<a href="#FlutterLibraryInfo-workspace">workspace</a>, <a href="#FlutterLibraryInfo-pub_get_log">pub_get_log</a>, <a href="#FlutterLibraryInfo-pub_cache">pub_cache</a>, <a href="#FlutterLibraryInfo-pub_deps">pub_deps</a>, <a href="#FlutterLibraryInfo-dart_tool">dart_tool</a>, <a href="#FlutterLibraryInfo-pubspec">pubspec</a>, <a href="#FlutterLibraryInfo-dart_sources">dart_sources</a>,
+FlutterLibraryInfo(<a href="#FlutterLibraryInfo-workspace">workspace</a>, <a href="#FlutterLibraryInfo-pub_get_log">pub_get_log</a>, <a href="#FlutterLibraryInfo-pub_cache">pub_cache</a>, <a href="#FlutterLibraryInfo-lock">lock</a>, <a href="#FlutterLibraryInfo-dart_tool">dart_tool</a>, <a href="#FlutterLibraryInfo-pubspec">pubspec</a>, <a href="#FlutterLibraryInfo-dart_sources">dart_sources</a>,
                    <a href="#FlutterLibraryInfo-other_sources">other_sources</a>, <a href="#FlutterLibraryInfo-transitive_pub_caches">transitive_pub_caches</a>, <a href="#FlutterLibraryInfo-assembled_cache">assembled_cache</a>)
 </pre>
 
@@ -224,7 +224,7 @@ Outputs from flutter_library needed to build or test Flutter targets.
 | <a id="FlutterLibraryInfo-workspace"></a>workspace |  Prepared Flutter workspace tree artifact containing project sources and pub outputs.    |
 | <a id="FlutterLibraryInfo-pub_get_log"></a>pub_get_log |  Captured log from dependency preparation (pub deps, cache assembly, and generation commands).    |
 | <a id="FlutterLibraryInfo-pub_cache"></a>pub_cache |  Tree artifact containing the assembled pub cache for this library.    |
-| <a id="FlutterLibraryInfo-pub_deps"></a>pub_deps |  JSON dependency report copied from checked-in or repository-generated pub_deps.json.    |
+| <a id="FlutterLibraryInfo-lock"></a>lock |  pubspec.lock staged into the prepared workspace, from the checked-in or repository-generated lock.    |
 | <a id="FlutterLibraryInfo-dart_tool"></a>dart_tool |  Tree artifact containing the generated .dart_tool/package_config.json.    |
 | <a id="FlutterLibraryInfo-pubspec"></a>pubspec |  The pubspec.yaml file for this library.    |
 | <a id="FlutterLibraryInfo-dart_sources"></a>dart_sources |  Depset of Dart source files that make up the library.    |

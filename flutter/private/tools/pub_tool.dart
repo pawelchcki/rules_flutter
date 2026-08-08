@@ -4,15 +4,13 @@
 // into a host `python3`, removing an undeclared host tool from the build.
 //
 // Subcommands:
-//   package-config     write .dart_tool/package_config.json (+ package_graph.json,
-//                      optionally pubspec.lock) from pub_deps.json metadata
+//   package-config     write .dart_tool/package_config.json and
+//                      package_graph.json from the workspace's pubspec.lock
 //   resolve-entrypoint print a `package:executable` command's bin/<exe>.dart path
 //   pubspec-info       print "name|version|sdk constraint" for a pubspec.yaml
 //   strip-pubspec      remove whole top-level sections from a pubspec.yaml
-//   normalize-pub-deps strip leading junk from pub_deps.json and validate it
-//   merge-pub-deps     rewrite a raw `pub deps --json` report into pub_deps.json,
-//                      folding each hosted package's sha256 in from pubspec.lock
-//   has-package        exit 0 iff pub_deps.json lists the named package
+//   rewrite-path-deps  point path dependencies at their staged cache copies
+//   has-package        exit 0 iff a pubspec.lock lists the named package
 
 import 'dart:convert';
 import 'dart:io';
@@ -51,6 +49,20 @@ String? readLanguageSpec(String rootPath) {
         !stripped.startsWith('flutter_test:') &&
         !stripped.startsWith('dart:')) {
       break;
+    }
+  }
+  return null;
+}
+
+/// The `name:` of a pubspec.yaml, or null when there is none.
+String? readPubspecName(String rootPath) {
+  final pubspec = File('$rootPath/pubspec.yaml');
+  if (!pubspec.existsSync()) return null;
+  for (final line in pubspec.readAsLinesSync()) {
+    final stripped = line.trim();
+    if (stripped.startsWith('#')) continue;
+    if (stripped.startsWith('name:')) {
+      return unquote(stripped.substring('name:'.length));
     }
   }
   return null;
@@ -143,8 +155,135 @@ String relativeTo(String target, String base) {
 List<String> _absoluteParts(String path) =>
     path.split('/').where((p) => p.isNotEmpty && p != '.').toList();
 
+/// One `packages:` entry of a `pubspec.lock`.
+class LockPackage {
+  LockPackage(this.name);
+
+  final String name;
+  String dependency = '';
+  String source = '';
+  String version = '';
+
+  /// Nested `description:` map. Empty when the description is a bare scalar.
+  final Map<String, String> description = <String, String>{};
+
+  /// `description: dart` — the scalar form used by sdk sources.
+  String scalar = '';
+
+  String get path => description['path'] ?? '';
+  String get url => description['url'] ?? '';
+}
+
+/// Parse a `pubspec.lock`.
+///
+/// pub writes the lock with fixed two-space indentation and a stable key
+/// order, and this tool runs with no package config (so no `package:yaml`).
+/// A line-based scanner keyed on that indentation is therefore both
+/// sufficient and the only option. `flutter/private/pubspec_lock.bzl` is the
+/// Starlark counterpart and is kept structurally parallel; change them
+/// together.
+///
+///     packages:
+///       collection:
+///         dependency: transitive
+///         description:
+///           name: collection
+///           sha256: "a1ace0a..."
+///           url: "https://pub.dev"
+///         source: hosted
+///         version: "1.19.0"
+Map<String, LockPackage> readLock(String lockPath) {
+  final file = File(lockPath);
+  if (!file.existsSync()) fail('pubspec.lock not found: $lockPath');
+
+  final packages = <String, LockPackage>{};
+  var section = '';
+  var sawPackages = false;
+  LockPackage? current;
+  var inDescription = false;
+
+  for (final line in file.readAsLinesSync()) {
+    final stripped = line.trim();
+    if (stripped.isEmpty || stripped.startsWith('#')) continue;
+    final indent = line.length - line.replaceFirst(RegExp(r'^ *'), '').length;
+
+    if (indent == 0) {
+      section = stripped.split(':').first;
+      if (section == 'packages') sawPackages = true;
+      current = null;
+      inDescription = false;
+      continue;
+    }
+    if (section != 'packages') continue;
+
+    if (indent == 2) {
+      inDescription = false;
+      if (!stripped.endsWith(':')) {
+        current = null;
+        continue;
+      }
+      final name = stripped.substring(0, stripped.length - 1);
+      current = LockPackage(name);
+      packages[name] = current;
+      continue;
+    }
+    if (current == null) continue;
+
+    final colon = stripped.indexOf(':');
+    if (colon < 0) continue;
+    final key = stripped.substring(0, colon);
+    final value = unquote(stripped.substring(colon + 1));
+
+    if (indent == 4) {
+      if (key == 'description') {
+        inDescription = value.isEmpty;
+        current.scalar = value;
+      } else {
+        inDescription = false;
+        if (key == 'dependency') current.dependency = value;
+        if (key == 'source') current.source = value;
+        if (key == 'version') current.version = value;
+      }
+    } else if (indent >= 6 && inDescription) {
+      current.description[key] = value;
+    }
+  }
+
+  if (!sawPackages) {
+    fail('$lockPath is not a pubspec.lock (no top-level `packages:` key)');
+  }
+  return packages;
+}
+
+/// Names listed under `dependencies:` / `dev_dependencies:` of a pubspec.yaml.
+///
+/// `pubspec.lock` records no dependency edges, but `package_graph.json` (read
+/// by newer flutter_tools) needs them. Every resolved package's directory is
+/// present by construction — it is what `package_config.json` points at — so
+/// the edges are read back from the pubspecs there.
+Map<String, List<String>> readDependencyNames(String rootPath) {
+  final result = {'dependencies': <String>[], 'dev_dependencies': <String>[]};
+  final pubspec = File('$rootPath/pubspec.yaml');
+  if (!pubspec.existsSync()) return result;
+
+  String? section;
+  for (final line in pubspec.readAsLinesSync()) {
+    if (line.trim().isEmpty || line.trimLeft().startsWith('#')) continue;
+    final indent = line.length - line.trimLeft().length;
+    final stripped = line.trim();
+    if (indent == 0) {
+      final key = stripped.split(':').first;
+      section = result.containsKey(key) ? key : null;
+    } else if (section != null && indent <= 2) {
+      final colon = stripped.indexOf(':');
+      if (colon > 0) result[section]!.add(stripped.substring(0, colon));
+    }
+  }
+  return result;
+}
+
 void packageConfig() {
-  final depsPath = env('PUB_DEPS_PATH');
+  final lockPath = env('PUBSPEC_LOCK_PATH');
   final cacheRoot = env('PUB_CACHE_ABS');
   final workspaceRoot = env('WORKSPACE_ABS');
   final configPath = env('PACKAGE_CONFIG_PATH');
@@ -162,9 +301,11 @@ void packageConfig() {
     return spec == null ? defaultLanguage : parseLanguage(spec);
   }
 
-  final data =
-      json.decode(File(depsPath).readAsStringSync()) as Map<String, dynamic>;
-  final entries = (data['packages'] as List?) ?? const [];
+  final entries = readLock(lockPath);
+
+  // Directory each package resolved to, in the order they were added — the
+  // package_graph.json edges below are read back from the pubspecs there.
+  final resolvedRoots = <String, String>{};
 
   final packages = <Map<String, dynamic>>[];
   void addPackage(String? name, String? rootPath) {
@@ -175,6 +316,7 @@ void packageConfig() {
         !Directory(rootPath).existsSync()) {
       return;
     }
+    resolvedRoots[name] = rootPath;
     var rel = relativeTo(rootPath, configDir);
     if (rel != '.' && !rel.endsWith('/')) rel = '$rel/';
     packages.add({
@@ -187,19 +329,33 @@ void packageConfig() {
 
   final pathDepLocations = pathDepsFromPubspec(workspaceRoot);
 
-  for (final raw in entries) {
-    final entry = raw as Map<String, dynamic>;
-    final name = entry['name'] as String?;
-    final source = entry['source'];
-    final version = entry['version'] as String?;
-    final description = entry['description'];
-    if (name == null || name.isEmpty) continue;
+  // A lock describes the root's closure but has no entry for the root itself,
+  // so its identity comes from the pubspec that is already an action input.
+  // Only the name is needed: package_config entries carry no version.
+  final rootName = Platform.environment['ROOT_PACKAGE_NAME']?.isNotEmpty == true
+      ? Platform.environment['ROOT_PACKAGE_NAME'] as String
+      : readPubspecName(workspaceRoot);
+  if (rootName == null || rootName.isEmpty) {
+    fail('Unable to determine the root package name from '
+        '$workspaceRoot/pubspec.yaml or ROOT_PACKAGE_NAME');
+  }
+  addPackage(rootName, workspaceRoot);
 
-    if (source == 'hosted' && version != null && version.isNotEmpty) {
-      addPackage(name, '$cacheRoot/hosted/pub.dev/$name-$version');
-    } else if (source == 'root') {
-      addPackage(name, workspaceRoot);
-    } else if (source == 'sdk') {
+  final missing = <String>[];
+  for (final entry in entries.values) {
+    final name = entry.name;
+    final version = entry.version;
+
+    if (entry.source == 'hosted' && version.isNotEmpty) {
+      final dir = '$cacheRoot/hosted/pub.dev/$name-$version';
+      addPackage(name, dir);
+
+      // addPackage silently skips a directory that is not there, which would
+      // otherwise surface much later as an opaque Dart "Target of URI doesn't
+      // exist". For a library that assembles the full closure, that is the
+      // hub's core invariant and worth failing on — see the guard below.
+      if (!resolvedRoots.containsKey(name)) missing.add('$name ($dir)');
+    } else if (entry.source == 'sdk') {
       final flutterRoot = env('FLUTTER_ROOT');
       if (name == 'sky_engine') {
         addPackage(name, '$flutterRoot/bin/cache/pkg/$name');
@@ -208,7 +364,7 @@ void packageConfig() {
       } else {
         addPackage(name, '$flutterRoot/packages/$name');
       }
-    } else if (source == 'path') {
+    } else if (entry.source == 'path') {
       // A path dependency lives outside the depending package's directory, so
       // it cannot be staged inside that package's prepared workspace tree. The
       // depended-on flutter_library republishes its workspace into the
@@ -218,19 +374,24 @@ void packageConfig() {
       if (Directory(staged).existsSync()) {
         addPackage(name, staged);
       } else {
-        var pathValue = '';
-        if (description is String) {
-          pathValue = description;
-        } else if (description is Map) {
-          pathValue = (description['path'] as String?) ?? '';
-        }
+        var pathValue = entry.path;
         if (pathValue.isEmpty) pathValue = pathDepLocations[name] ?? '';
         if (pathValue.isNotEmpty) {
-          addPackage(
-              name, File('$workspaceRoot/$pathValue').absolute.path);
+          addPackage(name, File('$workspaceRoot/$pathValue').absolute.path);
         }
       }
+    } else if (entry.source == 'git') {
+      fail('$lockPath pins $name from a git source, which rules_flutter does '
+          'not support. Use a hosted or path dependency.');
     }
+  }
+
+  if (missing.isNotEmpty &&
+      Platform.environment['REQUIRE_COMPLETE_PUB_CACHE'] == '1') {
+    fail('The assembled pub cache is missing ${missing.length} package(s) '
+        'pinned by $lockPath:\n  ${missing.join('\n  ')}\n'
+        'The library\'s deps must include the hub for this lock '
+        '(@<hub>//:all).');
   }
 
   _writeJson(configPath, {
@@ -240,82 +401,28 @@ void packageConfig() {
     'packages': packages,
   });
 
-  // Synthesize a minimal pubspec.lock when the package does not ship one:
-  // build_runner's package graph requires it to classify dependencies
-  // (direct main / direct dev / transitive), which pub_deps.json records as
-  // "kind". Opt-in, because read-only workspaces must not be written to.
-  final lockPath = '$workspaceRoot/pubspec.lock';
-  if (Platform.environment['SYNTHESIZE_PUBSPEC_LOCK'] == '1' &&
-      !File(lockPath).existsSync()) {
-    const kinds = {
-      'direct': 'direct main',
-      'dev': 'direct dev',
-      'transitive': 'transitive',
-    };
-    final lines = <String>[
-      '# Generated by rules_flutter from pub_deps.json.',
-      'packages:',
-    ];
-    for (final raw in entries) {
-      final entry = raw as Map<String, dynamic>;
-      final name = entry['name'] as String?;
-      final source = entry['source'];
-      final version = (entry['version'] as String?) ?? '0.0.0';
-      if (name == null || name.isEmpty || source == 'root') continue;
-      lines.add('  $name:');
-      lines.add(
-          '    dependency: "${kinds[entry['kind'] ?? 'transitive'] ?? 'transitive'}"');
-      if (source == 'sdk') {
-        lines.add('    source: sdk');
-        lines.add('    description: "flutter"');
-      } else if (source == 'path') {
-        final description = entry['description'];
-        var pathValue = '';
-        if (description is String) {
-          pathValue = description;
-        } else if (description is Map) {
-          pathValue = (description['path'] as String?) ?? '';
-        }
-        if (pathValue.isEmpty) pathValue = pathDepLocations[name] ?? '';
-        lines.add('    source: path');
-        lines.add('    description:');
-        lines.add('      path: "$pathValue"');
-        lines.add('      relative: true');
-      } else {
-        lines.add('    source: hosted');
-        lines.add('    description:');
-        lines.add('      name: "$name"');
-        lines.add('      url: "https://pub.dev"');
-      }
-      lines.add('    version: "$version"');
-    }
-    lines.add('sdks:');
-    lines.add('  dart: ">=3.0.0 <4.0.0"');
-    File(lockPath).writeAsStringSync('${lines.join('\n')}\n');
-  }
-
   // Newer flutter_tools also require .dart_tool/package_graph.json (normally
-  // written by `pub get`).
-  String? rootName;
+  // written by `pub get`). The lock records no edges, so they are read back
+  // from each resolved package's own pubspec.yaml.
   final graphPackages = <Map<String, dynamic>>[];
-  for (final raw in entries) {
-    final entry = raw as Map<String, dynamic>;
-    final name = entry['name'] as String?;
-    if (name == null || name.isEmpty) continue;
-    if (entry['source'] == 'root') rootName = name;
+  for (final name in resolvedRoots.keys) {
+    final declared = readDependencyNames(resolvedRoots[name] as String);
     final node = <String, dynamic>{
       'name': name,
-      'version': (entry['version'] as String?) ?? '0.0.0',
-      'dependencies': ((entry['dependencies'] as List?) ?? const [])
-          .whereType<String>()
+      'version': name == rootName ? '0.0.0' : entries[name]?.version ?? '0.0.0',
+      'dependencies': declared['dependencies']!
+          .where(resolvedRoots.containsKey)
           .toList(),
     };
-    if (entry['source'] == 'root') node['devDependencies'] = <String>[];
+    if (name == rootName) {
+      node['devDependencies'] =
+          declared['dev_dependencies']!.where(resolvedRoots.containsKey).toList();
+    }
     graphPackages.add(node);
   }
   _writeJson('$configDir/package_graph.json', {
     'configVersion': 1,
-    'roots': rootName == null ? <String>[] : [rootName],
+    'roots': [rootName],
     'packages': graphPackages,
   });
 }
@@ -431,118 +538,42 @@ void stripPubspec() {
   file.writeAsStringSync(output.isEmpty ? '' : '${output.join('\n')}\n');
 }
 
-void normalizePubDeps() {
-  final path = env('PUB_DEPS_PATH');
-  final file = File(path);
+void rewritePathDeps() {
+  final workspace = env('WORKSPACE_ABS');
+  final cache = env('PUB_CACHE_ABS');
+  final file = File('$workspace/pubspec.yaml');
   if (!file.existsSync()) return;
-  var payload = file.readAsStringSync();
-  final start = payload.indexOf(RegExp(r'[\[{]'));
-  if (start > 0) {
-    payload = payload.substring(start);
-    file.writeAsStringSync(payload);
-  }
-  final data = json.decode(payload);
-  if (data is! Map || data['packages'] is! List) {
-    fail('pub_deps.json must contain a packages list');
-  }
-}
 
-/// Parse the `sha256` of every hosted package out of a `pubspec.lock`.
-///
-/// pub writes the lock with fixed two-space indentation and a stable key
-/// order, and this tool runs with no package config (so no `package:yaml`).
-/// A line-based scanner keyed on that indentation is therefore both
-/// sufficient and the only option, in the style of [readLanguageSpec]:
-///
-///     packages:
-///       collection:
-///         dependency: transitive
-///         description:
-///           name: collection
-///           sha256: "a1ace0a..."
-///           url: "https://pub.dev"
-///         source: hosted
-///         version: "1.19.0"
-Map<String, String> readLockHashes(String lockPath) {
-  final file = File(lockPath);
-  final hashes = <String, String>{};
-  if (!file.existsSync()) return hashes;
-
-  var inPackages = false;
-  String? package;
-  var inDescription = false;
+  final output = <String>[];
+  var inDeps = false;
+  String? current;
   for (final line in file.readAsLinesSync()) {
-    if (line.trimRight().isEmpty || line.trimLeft().startsWith('#')) continue;
-    final indent = line.length - line.replaceFirst(RegExp(r'^ *'), '').length;
     final stripped = line.trim();
-
-    if (indent == 0) {
-      inPackages = stripped == 'packages:';
-      package = null;
-      inDescription = false;
-      continue;
+    final indent = line.length - line.trimLeft().length;
+    if (indent == 0 && stripped.isNotEmpty && !stripped.startsWith('#')) {
+      inDeps = stripped == 'dependencies:' || stripped == 'dev_dependencies:';
+      current = null;
+    } else if (inDeps && indent <= 2 && stripped.endsWith(':')) {
+      current = stripped.substring(0, stripped.length - 1);
     }
-    if (!inPackages) continue;
 
-    if (indent == 2) {
-      package = stripped.endsWith(':')
-          ? stripped.substring(0, stripped.length - 1)
-          : null;
-      inDescription = false;
-      continue;
+    if (inDeps && current != null && indent > 2 && stripped.startsWith('path:')) {
+      final staged = Directory('$cache/path/$current');
+      if (staged.existsSync()) {
+        output.add('${' ' * indent}path: "${staged.absolute.path}"');
+        continue;
+      }
     }
-    if (indent == 4) {
-      inDescription = stripped == 'description:';
-      continue;
-    }
-    if (indent >= 6 && inDescription && package != null && stripped.startsWith('sha256:')) {
-      final value = unquote(stripped.substring('sha256:'.length));
-      if (value.isNotEmpty) hashes[package as String] = value;
-    }
+    output.add(line);
   }
-  return hashes;
-}
-
-/// merge-pub-deps <raw pub deps json> <pubspec.lock> <output pub_deps.json>
-///
-/// The lock's `description.sha256` *is* the sha256 of the `.tar.gz` that
-/// `pub_dev_repository` downloads, so recording it here pins every fetch by
-/// construction. The caller must run `pub get` first: a stale lock would pin
-/// hashes that do not match the versions in the report.
-void mergePubDeps(List<String> args) {
-  if (args.length != 3) {
-    fail('merge-pub-deps takes <raw json> <pubspec.lock> <output>');
-  }
-  var payload = File(args[0]).readAsStringSync();
-  final start = payload.indexOf(RegExp(r'[\[{]'));
-  if (start < 0) fail('pub deps did not produce JSON');
-  if (start > 0) payload = payload.substring(start);
-
-  final data = json.decode(payload);
-  if (data is! Map || data['packages'] is! List) {
-    fail('pub deps JSON missing packages list');
-  }
-
-  final hashes = readLockHashes(args[1]);
-  for (final raw in (data as Map)['packages'] as List) {
-    if (raw is! Map) continue;
-    if (raw['source'] != 'hosted') continue;
-    final sha = hashes[raw['name']];
-    if (sha != null) raw['sha256'] = sha;
-  }
-  _writeJson(args[2], data);
+  file.writeAsStringSync('${output.join('\n')}\n');
 }
 
 void hasPackage(List<String> args) {
   if (args.length != 2) {
-    fail('has-package takes <pub_deps.json> <package name>');
+    fail('has-package takes <pubspec.lock> <package name>');
   }
-  final data =
-      json.decode(File(args[0]).readAsStringSync()) as Map<String, dynamic>;
-  for (final raw in (data['packages'] as List?) ?? const []) {
-    if ((raw as Map)['name'] == args[1]) exit(0);
-  }
-  exit(1);
+  exit(readLock(args[0]).containsKey(args[1]) ? 0 : 1);
 }
 
 void main(List<String> args) {
@@ -557,10 +588,8 @@ void main(List<String> args) {
       pubspecInfo();
     case 'strip-pubspec':
       stripPubspec();
-    case 'normalize-pub-deps':
-      normalizePubDeps();
-    case 'merge-pub-deps':
-      mergePubDeps(rest);
+    case 'rewrite-path-deps':
+      rewritePathDeps();
     case 'has-package':
       hasPackage(rest);
     default:

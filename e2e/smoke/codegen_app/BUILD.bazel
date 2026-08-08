@@ -10,12 +10,9 @@ flutter_library(
     data = glob(["assets/**"]),
     pubspec = "pubspec.yaml",
     deps = [
+        "@codegen_app_deps//:all",
         "@flutter_sdk//flutter/packages/flutter",
         "@flutter_sdk//flutter/packages/flutter_test",
-        "@pub_build_runner//:build_runner",
-        "@pub_copy_with_extension//:copy_with_extension",
-        "@pub_copy_with_extension_gen//:copy_with_extension_gen",
-        "@pub_flutter_gen_runner//:flutter_gen_runner",
     ],
 )
 

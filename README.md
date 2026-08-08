@@ -136,49 +136,54 @@ SDK from scripts: it is unnecessary and the sealed cache will reject it. See
 
 ## Managing pub.dev dependencies
 
-`rules_flutter` ships a `pub` module extension that reads the `pub_deps.json`
-manifests you declare and creates one Bazel repository per hosted package. Add
-it next to the Flutter extension and list your manifests:
+`rules_flutter` ships a `pub` module extension that reads the `pubspec.lock`
+files you declare — the same locks `pub` itself writes — and turns each into a
+**hub** repository carrying that lock's whole hosted package closure. Add it
+next to the Flutter extension and declare one hub per lock:
 
 ```starlark
 pub = use_extension("@rules_flutter//flutter:extensions.bzl", "pub")
-pub.deps_manifest(files = ["//app:pub_deps.json"])
-
-# Repositories follow the pub_<package> naming convention; each exposes a
-# target named after the package (e.g. @pub_fixnum//:fixnum).
-use_repo(pub, "pub_fixnum", "pub_intl_utils", "pub_protobuf")
+pub.lock(
+    name = "app_deps",
+    file = "//app:pubspec.lock",
+)
+use_repo(pub, "app_deps")
 ```
 
-Each Flutter/Dart package in your workspace keeps a `pub_deps.json` (the pinned
-dependency report from `flutter pub deps --json`) next to its `pubspec.yaml`.
-The `flutter_library` and `dart_library` macros emit a runnable `{name}.update`
-helper that regenerates it (`dart_library` only when a `pubspec` is set), so
-the maintenance loop when dependencies change is:
+Depend on `@app_deps//:all` to get the closure, or on `@app_deps//:<package>`
+for one package of it. Because a lock is a complete, single-version-per-package
+solution by construction, the hub is exactly the set of packages the app
+resolves to — no dependency edges between packages are needed, and the
+pub universe's genuine cycles (e.g. `dio <-> dio_web_adapter`) simply never
+enter the Bazel graph. Each lock gets its own hub, so two apps may pin
+different versions of the same package.
+
+Each Flutter/Dart package in your workspace keeps a `pubspec.lock` next to its
+`pubspec.yaml`. The `flutter_library` and `dart_library` macros emit a runnable
+`{name}.update` helper that refreshes it with the **toolchain-pinned** Flutter
+SDK (`dart_library` only when a `pubspec` is set), so the maintenance loop when
+dependencies change is:
 
 ```bash
 # 1. Edit pubspec.yaml.
-# 2. Refresh the pinned dependency report (also creates it the first time):
+# 2. Re-resolve (also creates the lock the first time):
 bazel run //my_app:lib.update
-# 3. Expose any NEW direct dependencies to your module: add them to the
-#    pub extension's use_repo list in MODULE.bazel, e.g.
-#    use_repo(pub, "pub_freezed", ...). (`bazel mod tidy` keeps the list
-#    formatted and prunes empty stanzas, but the pub extension does not yet
-#    report metadata that would let it add entries automatically.)
+# 3. Keep use_repo in sync. The extension reports its hubs exactly, so this
+#    now adds and prunes entries on its own.
 bazel mod tidy
-# 4. Commit pubspec.yaml, pub_deps.json, and MODULE.bazel together.
+# 4. Commit pubspec.yaml, pubspec.lock, and MODULE.bazel together.
 ```
 
-Optional `pub.package` tags pin versions or add packages that no
-`pub_deps.json` references:
+Optional `pub.package` tags add packages that no lock references — typically
+tools executed during the build, which keep their own fetch-time closure and
+therefore sit outside every hub:
 
 ```starlark
 pub.package(name = "pub_freezed", package = "freezed", version = "2.4.5")
 ```
 
-Root-module registrations take precedence: if a dependency ruleset pins a
-package version that conflicts with your `pub_deps.json`, the root module's pin
-wins. The extension also prunes genuine dependency cycles in the pub universe
-(e.g. `dio <-> dio_web_adapter`) so the generated target graph stays a DAG.
+A module with no locks at all says so explicitly with `pub.no_locks()`; the
+extension refuses to silently do nothing.
 
 ## Defining libraries: flutter_library
 
@@ -196,7 +201,7 @@ flutter_library(
     srcs = ["lib/main.dart"],
     data = glob(["l10n/**"]),                     # assets/l10n inputs for codegen
     pubspec = "pubspec.yaml",
-    # pub_deps defaults to the sibling "pub_deps.json".
+    # lock defaults to the sibling "pubspec.lock".
     generator_commands = ["intl_utils:generate"],  # one-shot codegen (see below)
     generated_srcs = {
         # dart_proto_library outputs mounted under lib/generated (see below).
@@ -206,8 +211,7 @@ flutter_library(
         "@flutter_sdk//flutter/packages/flutter",
         "@flutter_sdk//flutter/packages/flutter_localizations",
         "@flutter_sdk//flutter/packages/flutter_test",
-        "@pub_intl_utils//:intl_utils",
-        "@pub_protobuf//:protobuf",
+        "@app_deps//:all",
     ],
 )
 ```
@@ -215,15 +219,15 @@ flutter_library(
 - **`srcs`** are the package sources (`lib/`, etc.); **`data`** carries
   additional files (assets, l10n ARB files) needed for code generation or
   embedding.
-- **`pubspec`** is required; **`pub_deps`** defaults to `pub_deps.json` in the
+- **`pubspec`** is required; **`lock`** defaults to `pubspec.lock` in the
   same package and must be checked in (see the dependency loop above).
-- **`deps`** accepts other `flutter_library`/`dart_library` targets, pub
-  repositories (`@pub_*//:*`), and the SDK-vendored packages under
-  `@flutter_sdk//flutter/packages/...`.
+- **`deps`** accepts other `flutter_library`/`dart_library` targets, the hub
+  for this package's lock (`@<hub>//:all`), and the SDK-vendored packages
+  under `@flutter_sdk//flutter/packages/...`.
 - The macro also emits the `{name}.update` helper described above
   (`create_update_target = False` opts out).
 
-Plain Dart packages use `dart_library` the same way; `pubspec`/`pub_deps` are
+Plain Dart packages use `dart_library` the same way; `pubspec`/`lock` are
 optional there (see [`e2e/smoke/dart_package`](e2e/smoke/dart_package)).
 
 ## Code generation
@@ -244,9 +248,9 @@ bindings for the smoke app.
 
 - `build_runner_modes = ["build"]` runs `build_runner build` **inside the
   Bazel action**, fully offline: the entrypoint is resolved from the prepared
-  package config (no implicit `pub get`), a `pubspec.lock` is synthesized from
-  `pub_deps.json` for the package graph when the package does not ship one,
-  and `--delete-conflicting-outputs` is applied by default. Generated sources
+  package config (no implicit `pub get`), the checked-in `pubspec.lock` is
+  staged into the prepared workspace so build_runner reads a genuine lock, and
+  `--delete-conflicting-outputs` is applied by default. Generated sources
   (e.g. `*.g.dart`, `assets.gen.dart`)
   therefore never need to be checked in — see
   [`e2e/smoke/codegen_app`](e2e/smoke/codegen_app) for a working example
@@ -442,18 +446,18 @@ bazel run //my_app:app.web -- 9000  # serve the built bundle locally
 Each platform attribute accepts either overlay files (a label or list of
 labels, treated as `srcs`) or a dict spec with any of these keys:
 
-| Key            | Meaning                                                                                                                                                                    |
-| :------------- | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `srcs`         | Files overlaid into the build workspace for this platform (e.g. `web/`, `android/`, `ios/` directories).                                                                   |
-| `dart_defines` | Dict of `--dart-define` key/value pairs, read in Dart via `String.fromEnvironment`.                                                                                        |
-| `build_args`   | Extra arguments appended verbatim to `flutter build`.                                                                                                                      |
-| `mode`         | Build mode: `release` (default), `profile`, or `debug`.                                                                                                                    |
-| `env`          | Extra environment variables exported in the build action.                                                                                                                  |
-| `android_maven_repo` | Complete vendored Maven/plugin/Flutter-engine closure required by `apk`/`appbundle`.                                                                                |
-| `android_test` | `apk` only: additionally build the instrumentation APK (see [Mobile builds](#mobile-builds)).                                                                              |
-| `build_name`   | Overrides the pubspec version name (`--build-name`).                                                                                                                       |
-| `build_number` | Label of a `string_flag`; its value (when non-empty) is passed as `--build-number`.                                                                                        |
-| `tags`         | Extra tags for this platform's target, added to the macro-level `tags` (e.g. `["manual"]` to keep mobile targets out of wildcard builds on machines without the host SDK). |
+| Key                  | Meaning                                                                                                                                                                    |
+| :------------------- | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `srcs`               | Files overlaid into the build workspace for this platform (e.g. `web/`, `android/`, `ios/` directories).                                                                   |
+| `dart_defines`       | Dict of `--dart-define` key/value pairs, read in Dart via `String.fromEnvironment`.                                                                                        |
+| `build_args`         | Extra arguments appended verbatim to `flutter build`.                                                                                                                      |
+| `mode`               | Build mode: `release` (default), `profile`, or `debug`.                                                                                                                    |
+| `env`                | Extra environment variables exported in the build action.                                                                                                                  |
+| `android_maven_repo` | Complete vendored Maven/plugin/Flutter-engine closure required by `apk`/`appbundle`.                                                                                       |
+| `android_test`       | `apk` only: additionally build the instrumentation APK (see [Mobile builds](#mobile-builds)).                                                                              |
+| `build_name`         | Overrides the pubspec version name (`--build-name`).                                                                                                                       |
+| `build_number`       | Label of a `string_flag`; its value (when non-empty) is passed as `--build-number`.                                                                                        |
+| `tags`               | Extra tags for this platform's target, added to the macro-level `tags` (e.g. `["manual"]` to keep mobile targets out of wildcard builds on machines without the host SDK). |
 
 `dart_defines`, `build_args`, `mode`, and `env`
 can also be set at the macro level, shared by all platforms. Per-platform
@@ -555,7 +559,7 @@ Opt out with `create_dev_target = False`; pass fixed args via
 ## Mobile builds
 
 Web builds and tests are fully hermetic (package configs are regenerated from
-`pub_deps.json` with no pub resolution and no network). Mobile builds are
+`pubspec.lock` with no pub resolution and no network). Mobile builds are
 different: they drive Gradle/Xcode, so the actions are **declared
 non-hermetic** (`no-sandbox`, `requires-network`, `no-remote-exec`; mnemonics
 `FlutterBuildAndroid` and `FlutterBuildIos`, the latter also
@@ -800,7 +804,7 @@ Flutter action ran; the dependency-preparation action also tees its output to
 `bazel-bin/<pkg>/<target>_pub_prepare.log`. See the
 [Troubleshooting section of docs/hermeticity.md](docs/hermeticity.md#troubleshooting)
 for the common failures (toolchain not registered, unknown version, SDK
-integrity mismatch, stale `pub_deps.json`, sealed-cache write, slow remote
+integrity mismatch, stale `pubspec.lock`, sealed-cache write, slow remote
 execution) and how to resolve each.
 
 ## Working on rules_flutter

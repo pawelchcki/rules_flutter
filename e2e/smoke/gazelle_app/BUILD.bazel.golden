@@ -1,13 +1,18 @@
 load("@rules_flutter//flutter:defs.bzl", "flutter_library")
 
+# Hosted pub dependencies come from the hub the pub extension generates for
+# this package's pubspec.lock; the hub's name is chosen in MODULE.bazel, so
+# gazelle has to be told it.
+# gazelle:flutter_pub_hub gazelle_app_deps
+
 flutter_library(
     name = "lib",
     srcs = ["lib/main.dart"],
-    pub_deps = "pub_deps.json",
+    lock = "pubspec.lock",
     pubspec = "pubspec.yaml",
     deps = [
         "@flutter_sdk//flutter/packages/flutter",
         "@flutter_sdk//flutter/packages/flutter_test",
-        "@pub_cupertino_icons//:cupertino_icons",
+        "@gazelle_app_deps//:all",
     ],
 )

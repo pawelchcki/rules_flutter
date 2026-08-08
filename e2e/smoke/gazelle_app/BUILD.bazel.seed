@@ -1,0 +1,4 @@
+# Hosted pub dependencies come from the hub the pub extension generates for
+# this package's pubspec.lock; the hub's name is chosen in MODULE.bazel, so
+# gazelle has to be told it.
+# gazelle:flutter_pub_hub gazelle_app_deps

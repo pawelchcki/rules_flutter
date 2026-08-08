@@ -23,7 +23,7 @@ if [ ! -x "$DART_BIN" ]; then
     exit 1
 fi
 
-export PUB_DEPS_PATH="$PWD/{pub_deps}"
+export PUBSPEC_LOCK_PATH="$PWD/{lock}"
 export PUB_CACHE_ABS="$PWD/{package_root}/.pub_cache"
 export WORKSPACE_ABS="$PWD/{package_root}"
 export PACKAGE_CONFIG_PATH="$PWD/{config}"
@@ -31,8 +31,8 @@ mkdir -p "$(dirname "$PACKAGE_CONFIG_PATH")"
 
 exec "$DART_BIN" "$PWD/{pub_tool}" package-config
 """.format(
-        pub_deps = ctx.file.pub_deps.path,
-        package_root = ctx.file.pub_deps.dirname,
+        lock = ctx.file.lock.path,
+        package_root = ctx.file.lock.dirname,
         config = config.path,
         flutter_bin = flutter_bin.path,
         pub_tool = ctx.file._pub_tool.path,
@@ -58,10 +58,10 @@ dart_package_config = rule(
             mandatory = True,
             doc = "All files of the pub repository, including its vendored .pub_cache.",
         ),
-        "pub_deps": attr.label(
+        "lock": attr.label(
             mandatory = True,
             allow_single_file = True,
-            doc = "The repository's pub_deps.json, whose directory is the package root.",
+            doc = "The repository's pubspec.lock, whose directory is the package root.",
         ),
         "_pub_tool": attr.label(
             default = Label("//flutter/private:tools/pub_tool.dart"),

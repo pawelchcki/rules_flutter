@@ -62,20 +62,22 @@ afterwards:
 ### Pub dependencies: no network at build time
 
 Hosted packages are fetched as individual Bazel repositories by the `pub`
-module extension, which reads the `pub_deps.json` manifests declared through
-`pub.deps_manifest`. Network
+module extension, which reads the `pubspec.lock` files declared through
+`pub.lock` and turns each into a hub repository carrying that lock's whole
+hosted closure. Network
 access happens only at repository fetch time. At build time, the
 `FlutterPrepareDeps` action assembles a per-target pub cache purely by copying:
 it merges the pub caches propagated by dependency targets into a fresh
 `hosted/pub.dev/<name>-<version>` layout. It then writes
-`.dart_tool/package_config.json` directly from the declared `pub_deps.json`
-metadata and synthesizes a `pubspec.lock` when the package does not ship one.
+`.dart_tool/package_config.json` directly from the declared `pubspec.lock`
+metadata, and stages the checked-in lock itself into the prepared workspace so
+build_runner reads a genuine, pub-authored lock.
 Downstream build and test actions regenerate `package_config.json` (plus the
 `package_graph.json` newer flutter_tools require) from the same metadata with
 sandbox-correct paths. No `pub get` runs and no resolver touches the network
 anywhere on this path.
 
-`pub_deps.json` is maintained by the generated run helper — `bazel run
+`pubspec.lock` is maintained by the generated run helper — `bazel run
 //your/pkg:app_lib.update`, then `bazel mod tidy` — which is the *only* place
 networked dependency resolution happens. (Mobile builds later re-run an
 offline solve against the assembled cache — see the table below — but never
@@ -95,14 +97,14 @@ default.
 
 `dart_proto_library` is hermetic for the same reason: the protoc plugin
 executes out of its own pub repository, whose fetch vendored the exact
-dependency closure pinned by its `pub_deps.json`, with a package config
+dependency closure pinned by its `pubspec.lock`, with a package config
 generated at runtime from that metadata.
 
 ### Web builds
 
 `{name}.web` runs `flutter build web --no-pub` under Bazel's default
 sandboxing with no special execution requirements. Inside the action,
-`package_config.json` is regenerated from `pub_deps.json` with sandbox-correct
+`package_config.json` is regenerated from `pubspec.lock` with sandbox-correct
 paths — again without invoking pub — and the sealed SDK plus the assembled pub
 cache are the only toolchain state the build sees. The action performs no
 network access — by construction (no step on this path is networked) rather
@@ -115,7 +117,7 @@ than enforced by a network-blocking execution requirement.
 
 - For the first two, the prepared workspace, pub cache, and `.dart_tool` tree
   are copied into `$TEST_TMPDIR`, `package_config.json` is regenerated from
-  `pub_deps.json`, and `HOME` is set to `$TEST_TMPDIR/flutter_home`.
+  `pubspec.lock`, and `HOME` is set to `$TEST_TMPDIR/flutter_home`.
   `ANDROID_HOME` / `ANDROID_SDK_ROOT` are explicitly cleared.
 - `flutter_test` runs `flutter test --no-pub`; `flutter_analyze_test` runs
   `flutter analyze --no-pub`.
@@ -168,7 +170,7 @@ in `flutter_actions.bzl`:
 | `{name}.apk` / `{name}.appbundle` | The Flutter SDK, all Dart dependencies (the plugin-registrant regeneration runs `flutter pub get --offline` against a *mutable copy* of the assembled cache — pub writes bookkeeping such as `active_roots` into `PUB_CACHE`, so the read-only input is copied first; still no network for pub), `dart_defines`/`build_args`, `JAVA_HOME` from Bazel's java runtime toolchain. | Gradle downloads its distribution and Maven dependencies (`requires-network`); the Android SDK is the host installation consumed through rules_android's `@androidsdk//:sdk_path` (discovered via `ANDROID_HOME`); the action runs `no-sandbox`, `no-remote-exec`, with the client shell environment. | rules_android wraps the host SDK in a symlink tree that omits directories AGP 8 needs (`ndk/<version>`, `licenses/`), so the action resolves the *real* host SDK behind the wrapper — a tree that cannot be staged into a sandbox. Gradle has no offline story for a cold `GRADLE_USER_HOME`. |
 | `{name}.ios` | The Flutter SDK, all Dart dependencies (same offline `pub get` against a mutable cache copy), `dart_defines`/`build_args`. | Host Xcode (`xcodebuild`) and CocoaPods are declared prerequisites; `pod install` (driven by the Flutter tool) fetches pod specs and binary pods over the network; the action runs `requires-darwin`, `no-sandbox`, `no-remote-exec`, with the client shell environment. Under `--incompatible_strict_action_env` the action probes common CocoaPods install locations (`/opt/homebrew/bin`, `/usr/local/bin`, `~/.gem/bin`, ruby gem bindirs) before failing. | Relying on host Xcode is standard practice for Bazel Apple builds; CocoaPods manages its own spec repo and caches under `HOME`. |
 | `flutter_test` / `flutter_analyze_test` / `dart_format_test` | Everything: the first two copy the prepared workspace and pub cache into `$TEST_TMPDIR` with a scratch `HOME` and `--no-pub`; `dart_format_test` runs `dart format` directly over the runfiles copies of its `srcs`. No network in any of them. | Nothing declared. | Tests only consume already-prepared inputs. |
-| `{name}.dev`, `{name}.update`, `build_runner` run helpers | The Flutter SDK they invoke (sealed and pinned; the `flutter`-driven `.dev`/`.update` helpers additionally set `FLUTTER_ALREADY_LOCKED` + `--no-version-check`, while the build_runner helpers invoke `dart` directly and rely on the seal). | These are `bazel run` helpers that operate on your **source** workspace by design: the dev server serves your live sources, and `.update` re-resolves dependencies (the whole point). `.update` works in a temporary copy of the workspace and writes back only `pub_deps.json`. | Developer-loop tooling, intentionally outside the build graph. |
+| `{name}.dev`, `{name}.update`, `build_runner` run helpers | The Flutter SDK they invoke (sealed and pinned; the `flutter`-driven `.dev`/`.update` helpers additionally set `FLUTTER_ALREADY_LOCKED` + `--no-version-check`, while the build_runner helpers invoke `dart` directly and rely on the seal). | These are `bazel run` helpers that operate on your **source** workspace by design: the dev server serves your live sources, and `.update` re-resolves dependencies (the whole point). `.update` works in a temporary copy of the workspace and writes back only `pubspec.lock`. | Developer-loop tooling, intentionally outside the build graph. |
 
 Desktop targets (`macos`, `linux`, `windows`) run with the default sandboxed
 configuration and no declared exceptions, but they depend on host platform
@@ -318,7 +320,7 @@ build --sandbox_writable_path=/home/me/.cache/rules_flutter_build_runner
 ```
 
 The action restores the cache before build_runner and saves it after, keyed
-by target label + Flutter version + `pub_deps.json` digest, under a portable
+by target label + Flutter version + `pubspec.lock` digest, under a portable
 lock. Every step is best-effort: an unwritable cache directory, a lost lock,
 or a failed copy all degrade to a cold build_runner run (a failed copy
 removes its partial destination, so a torn tree is never reused), and
@@ -461,7 +463,7 @@ generation printed.
   not match the fetched archive (a stale table entry, a version that was never
   published for that platform, or a wrong hand-supplied `integrity`). Confirm
   the archive exists at the printed URL and regenerate/verify its hash.
-- **A `pub_deps.json` is stale or a hosted package is missing** — after editing
+- **A `pubspec.lock` is stale or a hosted package is missing** — after editing
   a `pubspec.yaml`, run `bazel run //my_app:lib.update` to refresh the pinned
   dependency report, then `bazel mod tidy` to update `use_repo`. A brand-new
   manifest additionally needs a `pub.deps_manifest` entry in `MODULE.bazel`.
@@ -478,7 +480,7 @@ generation printed.
   its full cache (the default) instead.
 - **`build_runner` output looks stale with the incremental cache enabled** —
   the opt-in cache (`RULES_FLUTTER_BUILD_RUNNER_CACHE`) is keyed by label + SDK
-  version + `pub_deps` digest and degrades to a clean rebuild on mismatch, so a
+  version + `lock` digest and degrades to a clean rebuild on mismatch, so a
   stale result is unexpected; clear the cache directory to force a rebuild and
   file an issue.
 
