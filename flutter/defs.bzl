@@ -4,7 +4,6 @@ load("@bazel_skylib//lib:paths.bzl", "paths")
 load("@bazel_skylib//rules:common_settings.bzl", "BuildSettingInfo", "string_flag")
 load("@protobuf//bazel/common:proto_common.bzl", "proto_common")
 load("@protobuf//bazel/common:proto_info.bzl", "ProtoInfo")
-load("//flutter:android_toolchain.bzl", "AndroidToolchainInfo")
 load(
     "//flutter/private:flutter_actions.bzl",
     "PACKAGE_CONFIG_FROM_PUB_DEPS_PY",

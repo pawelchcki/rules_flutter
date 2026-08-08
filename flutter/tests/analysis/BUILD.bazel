@@ -1,5 +1,5 @@
-load("//flutter:defs.bzl", "flutter_app", "flutter_library")
 load("//flutter:android_toolchain.bzl", "android_toolchain")
+load("//flutter:defs.bzl", "flutter_app", "flutter_library")
 load(
     ":defs_analysis_test.bzl",
     "android_offline_test",
@@ -154,7 +154,10 @@ android_offline_test(
 
 android_online_test(
     name = "android_online_apk_test",
-    expected_substrings = ["RULES_FLUTTER_MAVEN_MIRROR", "GRADLE_USER_HOME/init.d"],
+    expected_substrings = [
+        "RULES_FLUTTER_MAVEN_MIRROR",
+        "GRADLE_USER_HOME/init.d",
+    ],
     target_under_test = ":fixture_android_offline_app.apk",
 )
 

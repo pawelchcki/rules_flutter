@@ -18,8 +18,18 @@ archive_override(
     strip_prefix = "hermetic_android_toolchains-c6a9f203fbe1d4e72ecfc8d6ea47b81c844435ff",
     urls = ["https://github.com/keith/hermetic_android_toolchains/archive/c6a9f203fbe1d4e72ecfc8d6ea47b81c844435ff.tar.gz"],
 )
+
 bazel_dep(name = "rules_android", version = "0.7.3")
 bazel_dep(name = "rules_android_ndk", version = "0.1.5")
+
+# The SDK/NDK repositories the android_toolchain extension instantiates
+# generate BUILD files that load @rules_java and @rules_cc. Those labels
+# resolve in *this* module's repo mapping, because this module's extension
+# created the repositories -- so they have to be visible here, not only from
+# hermetic_android_toolchains.
+bazel_dep(name = "rules_cc", version = "0.2.17")
+bazel_dep(name = "rules_java", version = "9.3.0")
+bazel_dep(name = "rules_shell", version = "0.6.1")
 
 # Floor for the transitively-resolved apple_support: protobuf's C++ tools are
 # compiled with its wrapped_clang on macOS, and older versions ship a
@@ -54,6 +64,7 @@ use_repo(
 )
 
 register_toolchains("@flutter_toolchains//:all")
+
 register_toolchains("//flutter/tests/analysis:fixture_android_toolchain")
 
 # These tags must stay non-dev: pub.package-registered repositories keep

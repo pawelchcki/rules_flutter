@@ -10,13 +10,14 @@ names (the latest version will be picked for each name) and can register them as
 effectively overriding the default named toolchain due to toolchain resolution precedence.
 """
 
-load("//flutter/private:pub_repository.bzl", "pub_dev_repository")
+load("@hermetic_android_toolchains//ndk:repositories.bzl", "ANDROID_NDK_LICENSE_ENV", "hermetic_android_ndk_platform_repository", "hermetic_android_ndk_repository")
+load("@hermetic_android_toolchains//private:utils.bzl", "ANDROID_PLATFORMS")
+load("@hermetic_android_toolchains//sdk:repositories.bzl", "ANDROID_SDK_LICENSE_ENV", "hermetic_android_sdk_platform_repository", "hermetic_android_sdk_repository")
 load("//flutter/private:android_repositories.bzl", "android_toolchains_repository", "gradle_repository")
+load("//flutter/private:pub_repository.bzl", "pub_dev_repository")
 load("//flutter/private:version_select.bzl", "highest_version")
 load("//flutter/private:versions.bzl", "TOOL_VERSIONS")
 load(":repositories.bzl", "flutter_register_toolchains")
-load("@hermetic_android_toolchains//ndk:repositories.bzl", "ANDROID_NDK_LICENSE_ENV", "hermetic_android_ndk_repository")
-load("@hermetic_android_toolchains//sdk:repositories.bzl", "ANDROID_SDK_LICENSE_ENV", "hermetic_android_sdk_repository")
 
 _DEFAULT_NAME = "flutter"
 
@@ -136,15 +137,43 @@ def _toolchain_extension(module_ctx):
         sdk_repo = "{}_android_sdk".format(android.name)
         gradle_repo = "{}_gradle".format(android.name)
         ndk_repo = ""
+
+        # The SDK and NDK are each a hub repository over one repository per
+        # host platform. The hub is what the toolchain depends on; it selects
+        # among the platform repositories at analysis time, so a build only ever
+        # fetches the archive for the host it is running on. Creating the
+        # platform repositories is the caller's job, not the hub rule's --
+        # `platform_repositories` is mandatory on both hubs.
+        sdk_platform_repos = {}
+        for platform in sorted(ANDROID_PLATFORMS.keys()):
+            platform_repo = "{}_{}".format(sdk_repo, platform)
+            hermetic_android_sdk_platform_repository(
+                name = platform_repo,
+                platform = platform,
+                version = android.sdk_version,
+                build_tools_version = android.build_tools_version,
+            )
+            sdk_platform_repos[platform] = platform_repo
         hermetic_android_sdk_repository(
             name = sdk_repo,
+            platform_repositories = sdk_platform_repos,
             version = android.sdk_version,
             build_tools_version = android.build_tools_version,
         )
         if android.ndk_version:
             ndk_repo = "{}_android_ndk".format(android.name)
+            ndk_platform_repos = {}
+            for platform in sorted(ANDROID_PLATFORMS.keys()):
+                platform_repo = "{}_{}".format(ndk_repo, platform)
+                hermetic_android_ndk_platform_repository(
+                    name = platform_repo,
+                    platform = platform,
+                    version = android.ndk_version,
+                )
+                ndk_platform_repos[platform] = platform_repo
             hermetic_android_ndk_repository(
                 name = ndk_repo,
+                platform_repositories = ndk_platform_repos,
                 version = android.ndk_version,
             )
         gradle_repository(
