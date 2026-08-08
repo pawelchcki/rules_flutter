@@ -461,7 +461,7 @@
     },
     "@@rules_flutter+//flutter:extensions.bzl%flutter": {
       "general": {
-        "bzlTransitiveDigest": "UDz9uzhrBppLGV8gqgjgBNW0zJBBIERcQsWf3lwYdqw=",
+        "bzlTransitiveDigest": "kTUuJddisDUy7Qi+pQLRo9jFZyGnAWflYH9B2aWGVWQ=",
         "usagesDigest": "DmtFD/WdAMvXh7whCtauj7M6DaD5eQgpFMzkqiIIds0=",
         "recordedFileInputs": {},
         "recordedDirentsInputs": {},
@@ -610,7 +610,7 @@
     },
     "@@rules_flutter+//flutter:extensions.bzl%pub": {
       "general": {
-        "bzlTransitiveDigest": "UDz9uzhrBppLGV8gqgjgBNW0zJBBIERcQsWf3lwYdqw=",
+        "bzlTransitiveDigest": "kTUuJddisDUy7Qi+pQLRo9jFZyGnAWflYH9B2aWGVWQ=",
         "usagesDigest": "8P2FYQtelPagBVJ+QGRG7oizLHy3cwyOJtcLU4HfBrk=",
         "recordedFileInputs": {
           "@@//codegen_app/pub_deps.json": "1f360270a671c0b00fd37abb03989d09840cd98b55272670abebcdf6bf11a087",
