@@ -80,15 +80,22 @@ CI with no host Flutter install.
 ## Phase 2: Pin pub.dev dependencies
 
 `rules_flutter` manages hosted packages through a `pub` module extension that
-scans every checked-in `pub_deps.json` in the root module and creates one
-Bazel repository per hosted package (named `pub_<package>`).
+reads the `pub_deps.json` manifests you declare and creates one Bazel
+repository per hosted package (named `pub_<package>`).
 
-Add the extension to `MODULE.bazel`:
+Add the extension to `MODULE.bazel` and declare every manifest explicitly:
 
 ```starlark
 pub = use_extension("@rules_flutter//flutter:extensions.bzl", "pub")
+pub.deps_manifest(files = ["//app:pub_deps.json"])
 use_repo(pub)  # bazel mod tidy fills this in
 ```
+
+Declaring the manifests (rather than letting the extension go looking for
+them) is what lets Bazel invalidate the extension when one is added, removed
+or edited, and it is what makes `bazel mod tidy` able to maintain `use_repo`.
+A manifest in a directory that is not a Bazel package is spelled relative to
+the nearest enclosing package, e.g. `//:sub_dir/pub_deps.json`.
 
 Then, for each package directory with a `pubspec.yaml`, define a library (the
 next phase covers the full target; a minimal one is enough to get the
@@ -124,9 +131,14 @@ Common snags in this phase:
   contains real cycles (for example `dio <-> dio_web_adapter`) that Bazel
   target graphs cannot express; the extension drops the back edge, and no
   action is needed on your side.
-- **Only the root module is scanned.** `pub_deps.json` files anywhere under
-  your repository are discovered; packages pinned by other modules defer to
-  the root module's pins.
+- **Every module's manifests are honored, and the root module wins.** A
+  non-root module (a ruleset that ships its own Flutter packages) can declare
+  `pub.deps_manifest` too. When two non-root modules pin the same package at
+  different versions the extension fails; resolve it with a `pub.package` tag
+  in the root module, whose pins always take precedence.
+- **A manifest declared but missing on disk is an error**, reported by label,
+  rather than a confusing "extension does not generate repository" failure
+  later.
 
 **Gate:** `bazel mod tidy` is clean, and `bazel build //app:lib` succeeds
 offline (the prepared workspace and pub cache build without network).

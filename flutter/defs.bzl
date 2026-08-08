@@ -87,6 +87,21 @@ def _remote_cache_trees(ctx):
 def _fast_staging(ctx):
     return ctx.attr._fast_staging[BuildSettingInfo].value
 
+def _runfiles_relative(ctx, file):
+    """Return `file`'s path relative to the runfiles root.
+
+    short_path is relative to the *workspace* directory inside runfiles, and
+    files from external repositories carry a leading `../<repo>/`. This is the
+    only correct way to find a file at test time: an exec path is meaningless
+    there (the cwd is inside the runfiles tree), and walking parent
+    directories out of the runfiles tree only ever worked by escaping into
+    the execroot.
+    """
+    short = file.short_path
+    if short.startswith("../"):
+        return short[len("../"):]
+    return ctx.workspace_name + "/" + short
+
 def _resolve_flutter_toolchain(ctx):
     """Return (toolchain, flutter_bin File) for the resolved Flutter toolchain.
 
@@ -106,7 +121,21 @@ def _resolve_flutter_toolchain(ctx):
              "toolchain has no tool files). Register one via the `flutter` module " +
              "extension and register_toolchains(\"@flutter_toolchains//:all\"). " +
              "See the README \"Registering a Flutter toolchain\" section.")
-    return flutter_toolchain, flutter_toolchain.flutterinfo.tool_files[0]
+    return flutter_toolchain, flutter_toolchain.flutterinfo.flutter_bin
+
+# Environment shared by every rule that materializes a runtime workspace and
+# is statically known at analysis time, so it is declared rather than exported
+# from the runner script. The $TEST_TMPDIR-derived variables (PUB_CACHE, HOME,
+# PATH) and FLUTTER_ROOT stay in the script: they are only knowable at run
+# time.
+RUNTIME_ENV = {
+    "ANDROID_HOME": "",
+    "ANDROID_SDK_ROOT": "",
+    "CI": "true",
+    "FLUTTER_ALREADY_LOCKED": "true",
+    "FLUTTER_SUPPRESS_ANALYTICS": "true",
+    "PUB_ENVIRONMENT": "flutter_tool:bazel",
+}
 
 def _test_execution_info(ctx):
     """ExecutionInfo for the flutter test rules (see allow_remote_execution).
@@ -225,7 +254,7 @@ def _prepare_library_deps(ctx, flutter_toolchain, working_dir, pubspec_file, pub
         pub_tool_file = ctx.file._pub_tool,
     )
 
-def _render_pub_deps_generate_script(pubspec_file, flutter_bin):
+def _render_pub_deps_generate_script(pubspec_file, flutter_bin, pub_tool):
     """Generate shell script that refreshes pub_deps.json in the source workspace."""
 
     pubspec_rel = pubspec_file.short_path
@@ -289,9 +318,14 @@ cleanup() {{
 }}
 trap cleanup EXIT
 
-PYTHON_BIN="$(command -v python3 || command -v python || true)"
-if [ -z "$PYTHON_BIN" ]; then
-    echo "✗ python3 or python is required to refresh pub_deps.json" >&2
+PUB_TOOL="$(resolve_runfile "{pub_tool}")"
+if [ -z "$PUB_TOOL" ]; then
+    echo "✗ Unable to locate pub_tool.dart in runfiles: {pub_tool}" >&2
+    exit 1
+fi
+DART_BIN="$(cd "$(dirname "$FLUTTER_BIN")/.." && pwd -P)/bin/cache/dart-sdk/bin/dart"
+if [ ! -x "$DART_BIN" ]; then
+    echo "✗ Dart binary not found at $DART_BIN" >&2
     exit 1
 fi
 
@@ -301,6 +335,7 @@ export CI=true
 export PUB_ENVIRONMENT="flutter_tool:bazel_update"
 
 TMP_WORKSPACE="$TMP_DIR/workspace"
+mkdir -p "$TMP_WORKSPACE"
 if command -v rsync >/dev/null 2>&1; then
     rsync -a \
         --exclude='.git' \
@@ -311,22 +346,18 @@ if command -v rsync >/dev/null 2>&1; then
         --exclude='bazel-*' \
         "$WORKSPACE_DIR/" "$TMP_WORKSPACE/"
 else
-    SOURCE_WORKSPACE_DIR="$WORKSPACE_DIR" TMP_WORKSPACE="$TMP_WORKSPACE" "$PYTHON_BIN" - <<'PY'
-import os
-import shutil
-
-src = os.environ["SOURCE_WORKSPACE_DIR"]
-dst = os.environ["TMP_WORKSPACE"]
-
-def ignore(_, names):
-    skipped = set()
-    for name in names:
-        if name in {{".git", ".hg", ".svn", ".dart_tool", "build"}} or name.startswith("bazel-"):
-            skipped.add(name)
-    return skipped
-
-shutil.copytree(src, dst, symlinks=True, ignore=ignore)
-PY
+    # No rsync: copy every top-level entry except the excluded ones. Those
+    # names are all directories Bazel or a VCS owns at the workspace root,
+    # and `pub` only reads the package directory, so filtering at the top
+    # level is equivalent here and needs no host interpreter.
+    for ENTRY in "$WORKSPACE_DIR"/* "$WORKSPACE_DIR"/.[!.]*; do
+        [ -e "$ENTRY" ] || continue
+        BASE="$(basename "$ENTRY")"
+        case "$BASE" in
+            .git|.hg|.svn|.dart_tool|build|bazel-*) continue ;;
+        esac
+        cp -R "$ENTRY" "$TMP_WORKSPACE/"
+    done
 fi
 
 PACKAGE_DIR="$TMP_WORKSPACE"
@@ -341,40 +372,23 @@ fi
 
 cd "$PACKAGE_DIR"
 
+# Resolve first so pubspec.lock exists and matches the report below: the lock
+# is where the per-package sha256 pins come from, and a stale one would pin
+# hashes belonging to different versions than the report records.
+if ! "$FLUTTER_BIN" --suppress-analytics --no-version-check pub get; then
+    echo "✗ flutter pub get failed for $SOURCE_PACKAGE_DIR" >&2
+    exit 1
+fi
+
 if ! "$FLUTTER_BIN" --suppress-analytics --no-version-check pub deps --json > "$TMP_DIR/pub_deps.raw.json"; then
     echo "✗ flutter pub deps --json failed for $SOURCE_PACKAGE_DIR" >&2
     exit 1
 fi
 
-PUB_DEPS_RAW="$TMP_DIR/pub_deps.raw.json" PUB_DEPS_OUT="$TMP_DIR/pub_deps.json" "$PYTHON_BIN" - <<'PY'
-import json
-import os
-import sys
-
-raw = os.environ["PUB_DEPS_RAW"]
-out = os.environ["PUB_DEPS_OUT"]
-with open(raw, "r", encoding="utf-8") as fh:
-    payload = fh.read()
-
-start = None
-for idx, ch in enumerate(payload):
-    if ch in "[{{":
-        start = idx
-        break
-
-if start is None:
-    sys.stderr.write("pub deps did not produce JSON\\n")
-    sys.exit(1)
-
-data = json.loads(payload[start:])
-if not isinstance(data.get("packages"), list):
-    sys.stderr.write("pub deps JSON missing packages list\\n")
-    sys.exit(1)
-
-with open(out, "w", encoding="utf-8") as fh:
-    json.dump(data, fh, indent=2)
-    fh.write("\\n")
-PY
+"$DART_BIN" "$PUB_TOOL" merge-pub-deps \
+    "$TMP_DIR/pub_deps.raw.json" \
+    "$PACKAGE_DIR/pubspec.lock" \
+    "$TMP_DIR/pub_deps.json"
 
 DEST_FILE="$SOURCE_PACKAGE_DIR/pub_deps.json"
 if [ -f "$DEST_FILE" ] && cmp -s "$TMP_DIR/pub_deps.json" "$DEST_FILE"; then
@@ -390,6 +404,7 @@ SCRIPT_COMPLETED=1
 """.format(
         pubspec_rel = pubspec_rel,
         flutter_bin = flutter_bin,
+        pub_tool = pub_tool,
     )
 
 def _pub_deps_update_impl(ctx):
@@ -403,12 +418,13 @@ def _pub_deps_update_impl(ctx):
         content = _render_pub_deps_generate_script(
             ctx.file.pubspec,
             flutter_bin.short_path,
+            ctx.file._pub_tool.short_path,
         ),
         is_executable = True,
     )
 
     runfiles = ctx.runfiles(
-        files = [update_script, flutter_bin],
+        files = [update_script, flutter_bin, ctx.file._pub_tool],
         transitive_files = depset(
             direct = flutter_toolchain.flutterinfo.tool_files,
             transitive = [flutter_toolchain.flutterinfo.sdk_files],
@@ -430,6 +446,10 @@ _pub_deps_update = rule(
             allow_single_file = True,
             mandatory = True,
             doc = "pubspec.yaml whose package dependency report should be refreshed.",
+        ),
+        "_pub_tool": attr.label(
+            allow_single_file = True,
+            default = Label("//flutter/private:tools/pub_tool.dart"),
         ),
     },
     executable = True,
@@ -718,6 +738,8 @@ resolve_runfile() {{
     return 1
 }}
 
+{stage_tree_helpers}
+
 WORKSPACE_DIR="${{BUILD_WORKSPACE_DIRECTORY:-}}"
 if [ -z "$WORKSPACE_DIR" ]; then
     echo "✗ BUILD_WORKSPACE_DIRECTORY is not set; run via 'bazel run' inside a workspace." >&2
@@ -746,15 +768,9 @@ while IFS=$'\t' read -r KIND SRC_REL DEST_REL; do
     fi
     DEST="$PACKAGE_DIR/$DEST_REL"
     if [ "$KIND" = "dir" ]; then
-        mkdir -p "$DEST"
-        # Trees overlap (shared well-known-type files) and arrive read-only;
-        # make earlier copies writable before merging the next.
-        find "$DEST" -type d ! -perm -200 -exec chmod u+w {{}} + 2>/dev/null || true
-        if command -v rsync >/dev/null 2>&1; then
-            rsync -aL "$SRC/" "$DEST/"
-        else
-            cp -RLf "$SRC/." "$DEST/"
-        fi
+        # Trees overlap (shared well-known-type files) and arrive read-only,
+        # so this is an additive overlay, never an exclusive staging.
+        _merge_tree "$SRC" "$DEST" 0
     else
         mkdir -p "$(dirname "$DEST")"
         cp -Lf "$SRC" "$DEST"
@@ -771,6 +787,7 @@ echo "✓ Synced generated sources into $PACKAGE_DIR"
 """.format(
             package = ctx.label.package,
             manifest = manifest.short_path,
+            stage_tree_helpers = STAGE_TREE_HELPERS,
             dest_dirs = " ".join([_shell_quote(d) for d in sorted(dest_dirs.keys())]) if dest_dirs else "",
         ),
         is_executable = True,
@@ -1008,6 +1025,14 @@ def _flutter_library_impl(ctx):
                 ),
                 assembled_cache = False,
             ),
+        # InstrumentedFilesInfo on flutter_test is inert unless the embedded
+        # library reports its sources too, so both halves are declared.
+        coverage_common.instrumented_files_info(
+            ctx,
+            dependency_attributes = ["deps"],
+            extensions = ["dart"],
+            source_attributes = ["srcs"],
+        ),
         ]
 
     working_dir, _ = create_flutter_working_dir(
@@ -1070,6 +1095,14 @@ def _flutter_library_impl(ctx):
                 transitive = transitive_pub_caches,
             ),
             assembled_cache = ctx.attr.assemble_dep_caches,
+        ),
+        # InstrumentedFilesInfo on flutter_test is inert unless the embedded
+        # library reports its sources too, so both halves are declared.
+        coverage_common.instrumented_files_info(
+            ctx,
+            dependency_attributes = ["deps"],
+            extensions = ["dart"],
+            source_attributes = ["srcs"],
         ),
     ]
 
@@ -1751,7 +1784,7 @@ exec "${{CMD[@]}}"
 def _flutter_dev_server_impl(ctx):
     """Implementation for the {name}.dev run helper."""
 
-    library_info, _ = _single_embedded_library(ctx, "flutter_app dev server")
+    library_info, _, _ = _single_embedded_library(ctx, "flutter_app dev server")
 
     flutter_toolchain, flutter_bin_file = _resolve_flutter_toolchain(ctx)
 
@@ -2048,27 +2081,23 @@ def _render_runtime_bootstrap(prepared_workspace, library_info, flutter_bin, pub
     into the Bazel-provided cache read-only), or "auto" (APFS clone on macOS,
     byte copy elsewhere; always writable).
     """
-    return """#!/bin/bash
+    script = """#!/bin/bash
 set -euo pipefail
 set -o pipefail
+""" + STAGE_TREE_HELPERS + """
 
-copy_tree() {{
-    local src="$1"
-    local dest="$2"
-    if command -v rsync >/dev/null 2>&1; then
-        rsync -aL "$src/" "$dest/"
-    else
-        cp -RL "$src/." "$dest/"
-    fi
-}}
-
+# Materialize a tree without moving bytes. Deliberately NOT folded into
+# _stage_tree's fast path: that tries an APFS clone and then a hardlink farm
+# on every platform, whereas `auto` mode below must clone on macOS and never
+# hardlink on Linux (a Linux hardlink would share inodes with bazel-out and
+# silently drop the writable contract that `hardlink` mode exists to opt into).
 # Materialize a tree without moving bytes: hardlink the dereferenced symlink
 # targets (GNU cp -RLl) or APFS-clone them (macOS cp -c). Fails (nonzero) when
 # src/dest sit on different filesystems or cp lacks the flag — callers fall
-# back to copy_tree. Hardlinked files share inodes with the Bazel-owned
+# back to a plain _stage_tree copy. Hardlinked files share inodes with the Bazel-owned
 # source tree and stay read-only; APFS clones are fresh copy-on-write inodes
 # and may be made writable safely.
-link_tree() {{
+link_tree() {
     local src="$1"
     local dest="$2"
     if [ "$(uname)" = "Darwin" ]; then
@@ -2076,21 +2105,9 @@ link_tree() {{
     else
         cp -RLl "$src/." "$dest/" 2>/dev/null
     fi
-}}
+}
 
-# Reset a possibly partially-linked destination for a copy retry. A failed
-# link_tree leaves the source's read-only (0555) directory skeleton behind,
-# which a plain rm -rf cannot unlink into as non-root — restore directory
-# write bits first (directories are never hardlinked, so this cannot touch
-# inodes shared with the source tree).
-reset_dest() {{
-    local dest="$1"
-    find "$dest" -type d ! -perm -200 -exec chmod u+w {{}} + 2>/dev/null || true
-    rm -rf "$dest"
-    mkdir -p "$dest"
-}}
-
-resolve_path() {{
+resolve_path() {
     local rel="$1"
     local fallback="$2"
     local candidate
@@ -2116,10 +2133,10 @@ resolve_path() {{
     fi
     echo ""
     return 1
-}}
+}
 
-RUNFILES_ROOT="${{RUNFILES_DIR:-$PWD}}"
-WORKSPACE_ROOT="$RUNFILES_ROOT/${{TEST_WORKSPACE:-__main__}}"
+RUNFILES_ROOT="${RUNFILES_DIR:-$PWD}"
+WORKSPACE_ROOT="$RUNFILES_ROOT/${TEST_WORKSPACE:-__main__}"
 if [ ! -d "$WORKSPACE_ROOT" ]; then
     if [ -d "$RUNFILES_ROOT/__main__" ]; then
         WORKSPACE_ROOT="$RUNFILES_ROOT/__main__"
@@ -2128,67 +2145,52 @@ if [ ! -d "$WORKSPACE_ROOT" ]; then
     fi
 fi
 
-WORKSPACE_SRC="{workspace_short}"
-PUB_CACHE_SRC="{pub_cache_short}"
-PUB_DEPS_SRC="{pub_deps_short}"
-DART_TOOL_SRC="{dart_tool_short}"
-FLUTTER_BIN_REL="{flutter_bin}"
+WORKSPACE_SRC="<<WORKSPACE_SHORT>>"
+PUB_CACHE_SRC="<<PUB_CACHE_SHORT>>"
+PUB_DEPS_SRC="<<PUB_DEPS_SHORT>>"
+DART_TOOL_SRC="<<DART_TOOL_SHORT>>"
+FLUTTER_BIN_REL="<<FLUTTER_BIN>>"
 
+# FLUTTER_BIN_REL is runfiles-root-relative and the SDK is in this target's
+# runfiles, so this is an exact lookup. It deliberately does not fall back to
+# walking parent directories: that only ever succeeded by escaping the
+# runfiles tree into the execroot, which hid the missing SDK runfiles entry
+# and would silently mask a regression.
 FLUTTER_BIN_ABS="$RUNFILES_ROOT/$FLUTTER_BIN_REL"
 if [ ! -f "$FLUTTER_BIN_ABS" ]; then
-    SEARCH_ROOT="$RUNFILES_ROOT"
-    while [ "$SEARCH_ROOT" != "/" ]; do
-        if [ -f "$SEARCH_ROOT/$FLUTTER_BIN_REL" ]; then
-            FLUTTER_BIN_ABS="$SEARCH_ROOT/$FLUTTER_BIN_REL"
-            break
-        fi
-        PARENT_DIR="$(dirname "$SEARCH_ROOT")"
-        if [ "$PARENT_DIR" = "$SEARCH_ROOT" ]; then
-            break
-        fi
-        SEARCH_ROOT="$PARENT_DIR"
-    done
-fi
-
-if [ ! -f "$FLUTTER_BIN_ABS" ] && [ -f "$FLUTTER_BIN_REL" ]; then
-    FLUTTER_BIN_ABS="$FLUTTER_BIN_REL"
-fi
-
-if [ ! -f "$FLUTTER_BIN_ABS" ]; then
-    echo "✗ Flutter binary not found: $FLUTTER_BIN_REL" >&2
+    echo "✗ Flutter binary not found in runfiles: $FLUTTER_BIN_REL" >&2
     exit 1
 fi
 
-WORKSPACE_ABS="$(resolve_path "$WORKSPACE_SRC" "{workspace_path}")"
+WORKSPACE_ABS="$(resolve_path "$WORKSPACE_SRC" "<<WORKSPACE_PATH>>")"
 if [ -z "$WORKSPACE_ABS" ]; then
     echo "✗ Unable to locate prepared Flutter workspace: $WORKSPACE_SRC" >&2
     exit 1
 fi
 
-PUB_CACHE_ABS="$(resolve_path "$PUB_CACHE_SRC" "{pub_cache_path}")"
-PUB_DEPS_ABS="$(resolve_path "$PUB_DEPS_SRC" "{pub_deps_path}")"
-DART_TOOL_ABS="$(resolve_path "$DART_TOOL_SRC" "{dart_tool_path}")"
+PUB_CACHE_ABS="$(resolve_path "$PUB_CACHE_SRC" "<<PUB_CACHE_PATH>>")"
+PUB_DEPS_ABS="$(resolve_path "$PUB_DEPS_SRC" "<<PUB_DEPS_PATH>>")"
+DART_TOOL_ABS="$(resolve_path "$DART_TOOL_SRC" "<<DART_TOOL_PATH>>")"
 
-if [[ -z "${{TEST_TMPDIR:-}}" ]]; then
+if [[ -z "${TEST_TMPDIR:-}" ]]; then
     echo "✗ TEST_TMPDIR is not set"
     exit 1
 fi
 
-RUNTIME_WORKSPACE="${{TEST_TMPDIR}}/flutter_workspace"
-RUNTIME_PUB_CACHE="${{TEST_TMPDIR}}/pub_cache"
-LOG_ROOT="${{TEST_UNDECLARED_OUTPUTS_DIR:-${{TEST_TMPDIR}}/test_outputs}}"
-TEST_LOG="$LOG_ROOT/{log_name}"
+RUNTIME_WORKSPACE="${TEST_TMPDIR}/flutter_workspace"
+RUNTIME_PUB_CACHE="${TEST_TMPDIR}/pub_cache"
+LOG_ROOT="${TEST_UNDECLARED_OUTPUTS_DIR:-${TEST_TMPDIR}/test_outputs}"
+TEST_LOG="$LOG_ROOT/<<LOG_NAME>>"
 
 mkdir -p "$LOG_ROOT"
 : > "$TEST_LOG"
 
-rm -rf "$RUNTIME_WORKSPACE"
-mkdir -p "$RUNTIME_WORKSPACE"
-copy_tree "$WORKSPACE_ABS" "$RUNTIME_WORKSPACE"
+_reset_dest "$RUNTIME_WORKSPACE"
+_stage_tree "$WORKSPACE_ABS" "$RUNTIME_WORKSPACE" 0
 chmod -R u+w "$RUNTIME_WORKSPACE" 2>/dev/null || true
 
 mkdir -p "$RUNTIME_PUB_CACHE"
-PUB_CACHE_MODE="{pub_cache_mode}"
+PUB_CACHE_MODE="<<PUB_CACHE_MODE>>"
 PUB_CACHE_FOR_CONFIG="$RUNTIME_PUB_CACHE"
 if [ -n "$PUB_CACHE_ABS" ] && [ -d "$PUB_CACHE_ABS" ] && [ -n "$(ls -A "$PUB_CACHE_ABS" 2>/dev/null)" ]; then
     case "$PUB_CACHE_MODE" in
@@ -2209,13 +2211,13 @@ if [ -n "$PUB_CACHE_ABS" ] && [ -d "$PUB_CACHE_ABS" ] && [ -n "$(ls -A "$PUB_CAC
             # copy when linking isn't possible (cross-device TEST_TMPDIR,
             # busybox cp).
             if ! link_tree "$PUB_CACHE_ABS" "$RUNTIME_PUB_CACHE"; then
-                reset_dest "$RUNTIME_PUB_CACHE"
-                copy_tree "$PUB_CACHE_ABS" "$RUNTIME_PUB_CACHE"
+                _reset_dest "$RUNTIME_PUB_CACHE"
+                _stage_tree "$PUB_CACHE_ABS" "$RUNTIME_PUB_CACHE" 0
                 chmod -R u+w "$RUNTIME_PUB_CACHE" 2>/dev/null || true
             fi
             ;;
         copy)
-            copy_tree "$PUB_CACHE_ABS" "$RUNTIME_PUB_CACHE"
+            _stage_tree "$PUB_CACHE_ABS" "$RUNTIME_PUB_CACHE" 0
             chmod -R u+w "$RUNTIME_PUB_CACHE" 2>/dev/null || true
             ;;
         *)
@@ -2228,8 +2230,8 @@ if [ -n "$PUB_CACHE_ABS" ] && [ -d "$PUB_CACHE_ABS" ] && [ -n "$(ls -A "$PUB_CAC
             if [ "$(uname)" = "Darwin" ] && link_tree "$PUB_CACHE_ABS" "$RUNTIME_PUB_CACHE"; then
                 chmod -R u+w "$RUNTIME_PUB_CACHE" 2>/dev/null || true
             else
-                reset_dest "$RUNTIME_PUB_CACHE"
-                copy_tree "$PUB_CACHE_ABS" "$RUNTIME_PUB_CACHE"
+                _reset_dest "$RUNTIME_PUB_CACHE"
+                _stage_tree "$PUB_CACHE_ABS" "$RUNTIME_PUB_CACHE" 0
                 chmod -R u+w "$RUNTIME_PUB_CACHE" 2>/dev/null || true
             fi
             ;;
@@ -2238,7 +2240,7 @@ fi
 
 if [ -n "$DART_TOOL_ABS" ] && [ -d "$DART_TOOL_ABS" ]; then
     mkdir -p "$RUNTIME_WORKSPACE/.dart_tool"
-    copy_tree "$DART_TOOL_ABS" "$RUNTIME_WORKSPACE/.dart_tool"
+    _stage_tree "$DART_TOOL_ABS" "$RUNTIME_WORKSPACE/.dart_tool" 0
     chmod -R u+w "$RUNTIME_WORKSPACE/.dart_tool" 2>/dev/null || true
 fi
 
@@ -2250,15 +2252,13 @@ fi
 FLUTTER_BIN_DIR="$(dirname "$FLUTTER_BIN_ABS")"
 FLUTTER_ROOT="$(cd "$FLUTTER_BIN_DIR/.." && pwd)"
 
-export FLUTTER_SUPPRESS_ANALYTICS=true
-export FLUTTER_ALREADY_LOCKED=true
-export CI=true
-export PUB_ENVIRONMENT="flutter_tool:bazel"
+# FLUTTER_SUPPRESS_ANALYTICS, FLUTTER_ALREADY_LOCKED, CI, PUB_ENVIRONMENT,
+# ANDROID_HOME and ANDROID_SDK_ROOT are statically known at analysis time and
+# are declared through RunEnvironmentInfo (see RUNTIME_ENV) instead of here.
+# What remains is derived at runtime from $TEST_TMPDIR or the resolved SDK.
 export PUB_CACHE="$RUNTIME_PUB_CACHE"
-export HOME="${{TEST_TMPDIR}}/flutter_home"
+export HOME="${TEST_TMPDIR}/flutter_home"
 mkdir -p "$HOME"
-export ANDROID_HOME=""
-export ANDROID_SDK_ROOT=""
 export FLUTTER_ROOT
 export PATH="$FLUTTER_BIN_DIR:$PATH"
 
@@ -2274,7 +2274,7 @@ if [ ! -x "$DART_BIN" ]; then
 fi
 # resolve_path returns nonzero when it finds nothing; without `|| true` the
 # assignment would abort the script under `set -e` before the message below.
-PUB_TOOL="$(resolve_path "{pub_tool_short}" "{pub_tool_path}" || true)"
+PUB_TOOL="$(resolve_path "<<PUB_TOOL_SHORT>>" "<<PUB_TOOL_PATH>>" || true)"
 if [ -z "$PUB_TOOL" ]; then
     echo "✗ Unable to locate the rules_flutter pub tool" | tee -a "$TEST_LOG"
     exit 1
@@ -2292,21 +2292,24 @@ else
     echo "✗ package_config regeneration failed" | tee -a "$TEST_LOG"
     exit 1
 fi
-""".format(
-        workspace_short = prepared_workspace.short_path,
-        pub_cache_short = library_info.pub_cache.short_path,
-        pub_deps_short = library_info.pub_deps.short_path,
-        dart_tool_short = library_info.dart_tool.short_path,
-        workspace_path = prepared_workspace.path,
-        pub_cache_path = library_info.pub_cache.path,
-        pub_deps_path = library_info.pub_deps.path,
-        dart_tool_path = library_info.dart_tool.path,
-        flutter_bin = flutter_bin,
-        log_name = log_name,
-        pub_cache_mode = pub_cache_mode,
-        pub_tool_short = pub_tool.short_path,
-        pub_tool_path = pub_tool.path,
-    )
+"""
+    for sentinel, value in [
+        ("<<WORKSPACE_SHORT>>", prepared_workspace.short_path),
+        ("<<PUB_CACHE_SHORT>>", library_info.pub_cache.short_path),
+        ("<<PUB_DEPS_SHORT>>", library_info.pub_deps.short_path),
+        ("<<DART_TOOL_SHORT>>", library_info.dart_tool.short_path),
+        ("<<WORKSPACE_PATH>>", prepared_workspace.path),
+        ("<<PUB_CACHE_PATH>>", library_info.pub_cache.path),
+        ("<<PUB_DEPS_PATH>>", library_info.pub_deps.path),
+        ("<<DART_TOOL_PATH>>", library_info.dart_tool.path),
+        ("<<FLUTTER_BIN>>", flutter_bin),
+        ("<<LOG_NAME>>", log_name),
+        ("<<PUB_CACHE_MODE>>", pub_cache_mode),
+        ("<<PUB_TOOL_SHORT>>", pub_tool.short_path),
+        ("<<PUB_TOOL_PATH>>", pub_tool.path),
+    ]:
+        script = script.replace(sentinel, value)
+    return script
 
 def _single_embedded_library(ctx, rule_name):
     """Return (library_info, flutter_bin) for a rule embedding one flutter_library."""
@@ -2320,9 +2323,9 @@ def _single_embedded_library(ctx, rule_name):
     library_info = ctx.attr.embed[0][FlutterLibraryInfo]
     _check_embeddable(ctx, ctx.attr.embed[0], library_info)
 
-    _, flutter_bin = _resolve_flutter_toolchain(ctx)
+    flutter_toolchain, flutter_bin = _resolve_flutter_toolchain(ctx)
 
-    return library_info, flutter_bin.path
+    return library_info, flutter_toolchain, flutter_bin
 
 def _prepare_overlay_workspace(ctx, library_info, overlay_files, suffix, mnemonic):
     """Copy the library workspace and overlay extra files into a tree artifact."""
@@ -2389,8 +2392,31 @@ done
 
     return prepared_workspace
 
-def _runtime_runfiles(ctx, runner, prepared_workspace, library_info):
-    """Runfiles common to rules that materialize a runtime workspace."""
+def _runtime_output_groups(prepared_workspace, library_info):
+    """Expose a runtime rule's intermediate trees via --output_groups.
+
+    The test *log* deliberately is not here: it is written at run time into
+    $TEST_UNDECLARED_OUTPUTS_DIR, not by a declared action, so it cannot join
+    an output group. Bazel already surfaces it under
+    `bazel-testlogs/<pkg>/<target>/test.outputs/`.
+    """
+    return OutputGroupInfo(
+        dart_tool = depset([library_info.dart_tool]),
+        prepared_workspace = depset([prepared_workspace]),
+        pub_cache = depset([library_info.pub_cache]),
+        # pub_get_log is None for libraries whose deps were not prepared.
+        pub_get_log = depset([library_info.pub_get_log] if library_info.pub_get_log else []),
+    )
+
+def _runtime_runfiles(ctx, runner, prepared_workspace, library_info, flutter_toolchain):
+    """Runfiles common to rules that materialize a runtime workspace.
+
+    The SDK belongs here: the runner resolves the Flutter launcher (and the
+    bundled `dart`) from a runfiles-relative path, so it must actually be in
+    the runfiles tree. Runfiles are a symlink forest, so the marginal cost of
+    the ~1GB SDK is filesystem metadata rather than bytes, and sdk_files stays
+    an unflattened depset.
+    """
     return ctx.runfiles(
         files = [
             runner,
@@ -2400,13 +2426,14 @@ def _runtime_runfiles(ctx, runner, prepared_workspace, library_info):
             library_info.dart_tool,
             # The package_config regeneration runs this with the SDK's dart.
             ctx.file._pub_tool,
-        ],
+        ] + flutter_toolchain.flutterinfo.tool_files,
+        transitive_files = flutter_toolchain.flutterinfo.sdk_files,
     )
 
 def _flutter_test_impl(ctx):
     """Implementation for flutter_test rule."""
 
-    library_info, flutter_bin = _single_embedded_library(ctx, "flutter_test")
+    library_info, flutter_toolchain, flutter_bin = _single_embedded_library(ctx, "flutter_test")
 
     prepared_workspace = _prepare_overlay_workspace(
         ctx,
@@ -2427,7 +2454,7 @@ def _flutter_test_impl(ctx):
     test_runner_content = _render_runtime_bootstrap(
         prepared_workspace,
         library_info,
-        flutter_bin,
+        _runfiles_relative(ctx, flutter_bin),
         ctx.file._pub_tool,
         pub_cache_mode = ctx.attr.pub_cache_materialization,
     ) + """
@@ -2524,7 +2551,21 @@ exit "$RESULT"
         DefaultInfo(
             executable = test_runner,
             files = depset([test_runner]),
-            runfiles = _runtime_runfiles(ctx, test_runner, prepared_workspace, library_info),
+            runfiles = _runtime_runfiles(ctx, test_runner, prepared_workspace, library_info, flutter_toolchain),
+        ),
+        RunEnvironmentInfo(environment = RUNTIME_ENV),
+        _runtime_output_groups(prepared_workspace, library_info),
+        # Declared so `--collect_code_coverage` can see the sources under
+        # test. NOTE: this is only the provider half. Turning it into real
+        # coverage additionally requires rewriting the LCOV paths that
+        # `flutter test --coverage` emits under $TEST_TMPDIR back to
+        # workspace-relative paths; until that lands, no coverage collector is
+        # wired up here on purpose, rather than shipping a half-working one.
+        coverage_common.instrumented_files_info(
+            ctx,
+            dependency_attributes = ["embed"],
+            extensions = ["dart"],
+            source_attributes = ["srcs"],
         ),
     ] + _test_execution_info(ctx)
 
@@ -2591,6 +2632,7 @@ flutter_test = rule(
 # fails the action (it does not replace a general widget-test gate).
 _GOLDENS_ACTION_SCRIPT = """#!/bin/bash
 set -euo pipefail
+""" + STAGE_TREE_HELPERS + """
 
 OUT_DIR="$1"
 WORKSPACE_SRC="$2"
@@ -2604,31 +2646,6 @@ TEST_TAGS="$9"
 shift 9
 ORIGINAL_PWD="$PWD"
 
-copy_tree() {
-    if command -v rsync >/dev/null 2>&1; then
-        rsync -aL "$1/" "$2/"
-    else
-        cp -RL "$1/." "$2/"
-    fi
-}
-
-# APFS-clone the dereferenced files instead of copying bytes on macOS (fresh
-# copy-on-write inodes, safe to chmod); anywhere else the byte copy keeps the
-# historical writable staging contract.
-clone_tree() {
-    [ "$(uname)" = "Darwin" ] || return 1
-    cp -c -RL "$1/." "$2/" 2>/dev/null
-}
-
-# Reset a possibly partially-cloned destination for a copy retry: a failed
-# clone can leave the source's read-only (0555) directory skeleton, which a
-# plain rm -rf cannot unlink into as non-root.
-reset_dest() {
-    find "$1" -type d ! -perm -200 -exec chmod u+w {} + 2>/dev/null || true
-    rm -rf "$1"
-    mkdir -p "$1"
-}
-
 # Scratch must live INSIDE the action root ($PWD, the execroot/sandbox): the
 # regenerated package_config points at the SDK by a path relative to the
 # runtime workspace, and only paths within the action root resolve (an
@@ -2638,7 +2655,7 @@ WORK="$(mktemp -d "$PWD/.rf_goldens.XXXXXX")"
 # trees can carry 0555 dirs) and never let the EXIT trap's status replace a
 # successful run's exit code.
 cleanup() {
-    find "$WORK" -type d ! -perm -200 -exec chmod u+w {} + 2>/dev/null || true
+    find "$WORK" -type d ! -perm -700 -exec chmod u+rwx {} + 2>/dev/null || true
     rm -rf "$WORK" 2>/dev/null || true
 }
 trap cleanup EXIT
@@ -2647,22 +2664,21 @@ RUNTIME_WORKSPACE="$WORK/ws"
 RUNTIME_PUB_CACHE="$WORK/pub_cache"
 mkdir -p "$RUNTIME_WORKSPACE" "$RUNTIME_PUB_CACHE"
 
-copy_tree "$WORKSPACE_SRC" "$RUNTIME_WORKSPACE"
+_stage_tree "$WORKSPACE_SRC" "$RUNTIME_WORKSPACE" 0
 chmod -R u+w "$RUNTIME_WORKSPACE" 2>/dev/null || true
 
 if [ -d "$PUB_CACHE_SRC" ] && [ -n "$(ls -A "$PUB_CACHE_SRC" 2>/dev/null)" ]; then
-    if clone_tree "$PUB_CACHE_SRC" "$RUNTIME_PUB_CACHE"; then
-        chmod -R u+w "$RUNTIME_PUB_CACHE" 2>/dev/null || true
-    else
-        reset_dest "$RUNTIME_PUB_CACHE"
-        copy_tree "$PUB_CACHE_SRC" "$RUNTIME_PUB_CACHE"
-        chmod -R u+w "$RUNTIME_PUB_CACHE" 2>/dev/null || true
-    fi
+    # Fast staging: an APFS clone on macOS gives fresh copy-on-write inodes
+    # that are safe to chmod; the hardlink and byte-copy fallbacks inside
+    # _stage_tree cover everywhere else. The chmod below is what makes the
+    # copy fallback's historical writable-staging contract hold either way.
+    _stage_tree "$PUB_CACHE_SRC" "$RUNTIME_PUB_CACHE" 1
+    chmod -R u+w "$RUNTIME_PUB_CACHE" 2>/dev/null || true
 fi
 
 if [ -d "$DART_TOOL_SRC" ]; then
     mkdir -p "$RUNTIME_WORKSPACE/.dart_tool"
-    copy_tree "$DART_TOOL_SRC" "$RUNTIME_WORKSPACE/.dart_tool"
+    _stage_tree "$DART_TOOL_SRC" "$RUNTIME_WORKSPACE/.dart_tool" 0
     chmod -R u+w "$RUNTIME_WORKSPACE/.dart_tool" 2>/dev/null || true
 fi
 
@@ -2725,12 +2741,13 @@ done
 
 ( cd "$RUNTIME_WORKSPACE" && "${CMD[@]}" )
 
-rm -rf "$OUT_DIR"
-mkdir -p "$OUT_DIR"
+_reset_dest "$OUT_DIR"
 while IFS= read -r golden_dir; do
     rel="${golden_dir#./}"
     mkdir -p "$OUT_DIR/$(dirname "$rel")"
-    copy_tree "$RUNTIME_WORKSPACE/$rel" "$OUT_DIR/$rel"
+    # Declared output tree: never fast-stage, so it owns its inodes and holds
+    # no symlinks into the torn-down sandbox.
+    _stage_tree "$RUNTIME_WORKSPACE/$rel" "$OUT_DIR/$rel" 0
 done < <(cd "$RUNTIME_WORKSPACE" && find . -type d -name goldens 2>/dev/null)
 """
 
@@ -2812,8 +2829,9 @@ echo "Updated $count golden directory(ies) in $PACKAGE_DIR"
 
 def _flutter_goldens_impl(ctx):
     """Regenerate goldens hermetically (cached) and write them back on run."""
-    library_info, flutter_bin = _single_embedded_library(ctx, "flutter_goldens")
-    flutter_toolchain, _ = _resolve_flutter_toolchain(ctx)
+    # A build action, so the exec path is the right one here.
+    library_info, flutter_toolchain, flutter_bin_file = _single_embedded_library(ctx, "flutter_goldens")
+    flutter_bin = flutter_bin_file.path
 
     prepared_workspace = _prepare_overlay_workspace(
         ctx,
@@ -2928,7 +2946,7 @@ to run every test under test_files (only safe when golden is the sole skip).""",
 def _flutter_analyze_test_impl(ctx):
     """Implementation for flutter_analyze_test rule."""
 
-    library_info, flutter_bin = _single_embedded_library(ctx, "flutter_analyze_test")
+    library_info, flutter_toolchain, flutter_bin = _single_embedded_library(ctx, "flutter_analyze_test")
 
     prepared_workspace = _prepare_overlay_workspace(
         ctx,
@@ -2951,7 +2969,7 @@ def _flutter_analyze_test_impl(ctx):
     runner_content = _render_runtime_bootstrap(
         prepared_workspace,
         library_info,
-        flutter_bin,
+        _runfiles_relative(ctx, flutter_bin),
         ctx.file._pub_tool,
         log_name = "flutter_analyze.log",
         pub_cache_mode = ctx.attr.pub_cache_materialization,
@@ -2989,8 +3007,10 @@ exit "$RESULT"
         DefaultInfo(
             executable = runner,
             files = depset([runner]),
-            runfiles = _runtime_runfiles(ctx, runner, prepared_workspace, library_info),
+            runfiles = _runtime_runfiles(ctx, runner, prepared_workspace, library_info, flutter_toolchain),
         ),
+        RunEnvironmentInfo(environment = RUNTIME_ENV),
+        _runtime_output_groups(prepared_workspace, library_info),
     ] + _test_execution_info(ctx)
 
 flutter_analyze_test = rule(
@@ -3177,7 +3197,11 @@ def _dart_proto_aspect_impl(target, ctx):
         return [DartProtoAspectInfo(trees = depset(transitive = transitive))]
 
     flutter_toolchain = ctx.toolchains["//flutter:toolchain_type"]
-    flutter_bin = flutter_toolchain.flutterinfo.target_tool_path
+    # The exec path: this runs in a build action, not at test time. The
+    # previous code used the runfiles *manifest* path here, which only
+    # coincided with the exec path under the default repository layout and
+    # was wrong under --experimental_sibling_repository_layout.
+    flutter_bin = flutter_toolchain.flutterinfo.flutter_bin.path
     flutter_bin_dir = paths.dirname(flutter_bin)
     dart_bin = paths.normalize(paths.join(flutter_bin_dir, "cache", "dart-sdk", "bin", "dart"))
 

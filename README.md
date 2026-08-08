@@ -136,12 +136,13 @@ SDK from scripts: it is unnecessary and the sealed cache will reject it. See
 
 ## Managing pub.dev dependencies
 
-`rules_flutter` ships a `pub` module extension that scans every checked-in
-`pub_deps.json` in the root module and creates one Bazel repository per hosted
-package. Add it next to the Flutter extension:
+`rules_flutter` ships a `pub` module extension that reads the `pub_deps.json`
+manifests you declare and creates one Bazel repository per hosted package. Add
+it next to the Flutter extension and list your manifests:
 
 ```starlark
 pub = use_extension("@rules_flutter//flutter:extensions.bzl", "pub")
+pub.deps_manifest(files = ["//app:pub_deps.json"])
 
 # Repositories follow the pub_<package> naming convention; each exposes a
 # target named after the package (e.g. @pub_fixnum//:fixnum).

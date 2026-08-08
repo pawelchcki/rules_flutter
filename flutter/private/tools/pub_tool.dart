@@ -10,6 +10,8 @@
 //   pubspec-info       print "name|version|sdk constraint" for a pubspec.yaml
 //   strip-pubspec      remove whole top-level sections from a pubspec.yaml
 //   normalize-pub-deps strip leading junk from pub_deps.json and validate it
+//   merge-pub-deps     rewrite a raw `pub deps --json` report into pub_deps.json,
+//                      folding each hosted package's sha256 in from pubspec.lock
 //   has-package        exit 0 iff pub_deps.json lists the named package
 
 import 'dart:convert';
@@ -445,6 +447,92 @@ void normalizePubDeps() {
   }
 }
 
+/// Parse the `sha256` of every hosted package out of a `pubspec.lock`.
+///
+/// pub writes the lock with fixed two-space indentation and a stable key
+/// order, and this tool runs with no package config (so no `package:yaml`).
+/// A line-based scanner keyed on that indentation is therefore both
+/// sufficient and the only option, in the style of [readLanguageSpec]:
+///
+///     packages:
+///       collection:
+///         dependency: transitive
+///         description:
+///           name: collection
+///           sha256: "a1ace0a..."
+///           url: "https://pub.dev"
+///         source: hosted
+///         version: "1.19.0"
+Map<String, String> readLockHashes(String lockPath) {
+  final file = File(lockPath);
+  final hashes = <String, String>{};
+  if (!file.existsSync()) return hashes;
+
+  var inPackages = false;
+  String? package;
+  var inDescription = false;
+  for (final line in file.readAsLinesSync()) {
+    if (line.trimRight().isEmpty || line.trimLeft().startsWith('#')) continue;
+    final indent = line.length - line.replaceFirst(RegExp(r'^ *'), '').length;
+    final stripped = line.trim();
+
+    if (indent == 0) {
+      inPackages = stripped == 'packages:';
+      package = null;
+      inDescription = false;
+      continue;
+    }
+    if (!inPackages) continue;
+
+    if (indent == 2) {
+      package = stripped.endsWith(':')
+          ? stripped.substring(0, stripped.length - 1)
+          : null;
+      inDescription = false;
+      continue;
+    }
+    if (indent == 4) {
+      inDescription = stripped == 'description:';
+      continue;
+    }
+    if (indent >= 6 && inDescription && package != null && stripped.startsWith('sha256:')) {
+      final value = unquote(stripped.substring('sha256:'.length));
+      if (value.isNotEmpty) hashes[package as String] = value;
+    }
+  }
+  return hashes;
+}
+
+/// merge-pub-deps <raw pub deps json> <pubspec.lock> <output pub_deps.json>
+///
+/// The lock's `description.sha256` *is* the sha256 of the `.tar.gz` that
+/// `pub_dev_repository` downloads, so recording it here pins every fetch by
+/// construction. The caller must run `pub get` first: a stale lock would pin
+/// hashes that do not match the versions in the report.
+void mergePubDeps(List<String> args) {
+  if (args.length != 3) {
+    fail('merge-pub-deps takes <raw json> <pubspec.lock> <output>');
+  }
+  var payload = File(args[0]).readAsStringSync();
+  final start = payload.indexOf(RegExp(r'[\[{]'));
+  if (start < 0) fail('pub deps did not produce JSON');
+  if (start > 0) payload = payload.substring(start);
+
+  final data = json.decode(payload);
+  if (data is! Map || data['packages'] is! List) {
+    fail('pub deps JSON missing packages list');
+  }
+
+  final hashes = readLockHashes(args[1]);
+  for (final raw in (data as Map)['packages'] as List) {
+    if (raw is! Map) continue;
+    if (raw['source'] != 'hosted') continue;
+    final sha = hashes[raw['name']];
+    if (sha != null) raw['sha256'] = sha;
+  }
+  _writeJson(args[2], data);
+}
+
 void hasPackage(List<String> args) {
   if (args.length != 2) {
     fail('has-package takes <pub_deps.json> <package name>');
@@ -471,6 +559,8 @@ void main(List<String> args) {
       stripPubspec();
     case 'normalize-pub-deps':
       normalizePubDeps();
+    case 'merge-pub-deps':
+      mergePubDeps(rest);
     case 'has-package':
       hasPackage(rest);
     default:

@@ -1,22 +1,5 @@
 """Helpers for generating BUILD files for Dart/Flutter packages."""
 
-_LIB_DISCOVERY_SCRIPT = """
-import os
-import sys
-
-root = os.path.abspath(sys.argv[1])
-paths = []
-
-for dirpath, _, filenames in os.walk(root):
-    rel_dir = os.path.relpath(dirpath, root)
-    for name in filenames:
-        rel_path = os.path.join(rel_dir, name) if rel_dir != "." else name
-        paths.append(rel_path.replace(os.sep, "/"))
-
-for path in sorted(paths):
-    print(path)
-"""
-
 _DEF_LOAD_STMT = 'load("@rules_flutter//flutter:defs.bzl", "dart_library", "flutter_library")'
 
 _DEF_VISIBILITY = '    visibility = ["//visibility:public"],'
@@ -570,6 +553,28 @@ def _parse_pubspec_metadata(repository_ctx, package_dir):
 
     return metadata
 
+def _walk_files(root_path):
+    """Return every file under root_path, as root-relative slash-separated paths.
+
+    repository_ctx.path().readdir() keeps this in Starlark; the previous
+    implementation shelled out to a host `python3`, an undeclared host tool.
+    Starlark has no recursion and no `while`, so the traversal is an explicit
+    worklist under a bounded loop.
+    """
+    pending = [(root_path, "")]
+    found = []
+    for _ in range(1000000):
+        if not pending:
+            break
+        path, prefix = pending.pop()
+        for child in path.readdir():
+            rel = prefix + child.basename
+            if child.is_dir:
+                pending.append((child, rel + "/"))
+            else:
+                found.append(rel)
+    return sorted(found)
+
 def _collect_lib_sources(repository_ctx, package_dir):
     """Collect Dart sources needed for a generated pub package target."""
 
@@ -583,32 +588,11 @@ def _collect_lib_sources(repository_ctx, package_dir):
     if not source_roots:
         return []
 
-    python = repository_ctx.which("python3") or repository_ctx.which("python")
-    if not python:
-        fail("Unable to locate python3 to enumerate Dart sources")
-
     sources = []
     for source_dir, root_path in source_roots:
-        result = repository_ctx.execute([
-            python,
-            "-c",
-            _LIB_DISCOVERY_SCRIPT,
-            str(root_path),
-        ], quiet = True)
-
-        if result.return_code:
-            fail(
-                "Failed to enumerate {}/ sources (code {}): {}".format(
-                    source_dir,
-                    result.return_code,
-                    result.stderr or result.stdout,
-                ),
-            )
-
-        for line in result.stdout.splitlines():
-            line = line.strip()
-            if line and line.endswith(".dart"):
-                sources.append("{}/{}".format(source_dir, line))
+        for rel in _walk_files(root_path):
+            if rel.endswith(".dart"):
+                sources.append("{}/{}".format(source_dir, rel))
 
     return sorted(sources)
 

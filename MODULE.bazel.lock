@@ -253,7 +253,7 @@
   "moduleExtensions": {
     "//flutter:extensions.bzl%flutter": {
       "general": {
-        "bzlTransitiveDigest": "Nag5ec7JYZg+cBrephDJ6Cyy+l4CAVLpfwL5M1MfpkY=",
+        "bzlTransitiveDigest": "40lURunbJ/JIjIHK+LBeb+wcDMGFnZj4xZ0qNbaRyLY=",
         "usagesDigest": "MPZC/xzGVbRvfxHYU74cPXZyyx32ojSPxKT0ZE+0WUE=",
         "recordedFileInputs": {},
         "recordedDirentsInputs": {},
@@ -322,81 +322,6 @@
             "repoRuleId": "@@//flutter/private:sdk_repo.bzl%flutter_sdk_repo",
             "attributes": {
               "user_repository_name": "flutter"
-            }
-          }
-        },
-        "recordedRepoMappingEntries": [
-          [
-            "",
-            "hermetic_android_toolchains",
-            "hermetic_android_toolchains+"
-          ],
-          [
-            "hermetic_android_toolchains+",
-            "rules_android_ndk",
-            "rules_android_ndk+"
-          ]
-        ]
-      }
-    },
-    "//flutter:extensions.bzl%pub": {
-      "general": {
-        "bzlTransitiveDigest": "Nag5ec7JYZg+cBrephDJ6Cyy+l4CAVLpfwL5M1MfpkY=",
-        "usagesDigest": "3gAU9n5Op2qqiGszPR8sJraNKYT2c6mBN9ysbRuWHDA=",
-        "recordedFileInputs": {
-          "@@//flutter/tests/analysis/pub_deps.json": "7c074babb777e14501577377e80fff2ec31011797ba2a6a47a70d3a60daee897"
-        },
-        "recordedDirentsInputs": {},
-        "envVariables": {},
-        "generatedRepoSpecs": {
-          "pub_fixnum": {
-            "repoRuleId": "@@//flutter/private:pub_repository.bzl%pub_dev_repository",
-            "attributes": {
-              "package": "fixnum",
-              "version": "1.1.1",
-              "keep_vendored_cache": true,
-              "resolve_deps": true,
-              "sha256": ""
-            }
-          },
-          "pub_meta": {
-            "repoRuleId": "@@//flutter/private:pub_repository.bzl%pub_dev_repository",
-            "attributes": {
-              "package": "meta",
-              "version": "1.15.0",
-              "keep_vendored_cache": true,
-              "resolve_deps": true,
-              "sha256": ""
-            }
-          },
-          "pub_path": {
-            "repoRuleId": "@@//flutter/private:pub_repository.bzl%pub_dev_repository",
-            "attributes": {
-              "package": "path",
-              "version": "1.9.0",
-              "keep_vendored_cache": true,
-              "resolve_deps": true,
-              "sha256": ""
-            }
-          },
-          "pub_protobuf": {
-            "repoRuleId": "@@//flutter/private:pub_repository.bzl%pub_dev_repository",
-            "attributes": {
-              "package": "protobuf",
-              "version": "3.1.0",
-              "keep_vendored_cache": true,
-              "resolve_deps": true,
-              "sha256": ""
-            }
-          },
-          "pub_protoc_plugin": {
-            "repoRuleId": "@@//flutter/private:pub_repository.bzl%pub_dev_repository",
-            "attributes": {
-              "package": "protoc_plugin",
-              "version": "21.1.1",
-              "keep_vendored_cache": true,
-              "resolve_deps": true,
-              "sha256": ""
             }
           }
         },

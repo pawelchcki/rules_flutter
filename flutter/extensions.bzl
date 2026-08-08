@@ -228,89 +228,17 @@ pub_package = tag_class(attrs = {
     "sha256": attr.string(doc = "Expected SHA-256 of the package archive (optional; pins the download)"),
 })
 
-_DEPS_DISCOVERY_SCRIPT = """
-import os
-import sys
+pub_deps_manifest = tag_class(attrs = {
+    "files": attr.label_list(doc = """\
+Labels of `pub_deps.json` manifests whose packages become `@pub_*`
+repositories. Declaring the tag at all is the opt-in signal; `files = []` is
+the explicit opt-out for a module that has no manifests.
 
-root = os.path.realpath(sys.argv[1])
-results = []
-
-SKIP_PREFIXES = ("bazel-",)
-SKIP_NAMES = {".git", ".hg", ".svn", ".dart_tool"}
-
-# Honor the workspace's .bazelignore: ignored trees are not part of the
-# build (nested workspaces, tool worktrees, vendored checkouts), and stale
-# pub_deps.json copies inside them must not join -- or version-conflict
-# with -- the real dependency scan.
-ignored = []
-try:
-    with open(os.path.join(root, ".bazelignore")) as fh:
-        for line in fh:
-            entry = line.split("#", 1)[0].strip().strip("/")
-            if entry:
-                ignored.append(entry.replace(os.sep, "/"))
-except OSError:
-    pass
-
-def is_ignored(rel):
-    rel = rel.replace(os.sep, "/")
-    for entry in ignored:
-        if rel == entry or rel.startswith(entry + "/"):
-            return True
-    return False
-
-for dirpath, dirnames, filenames in os.walk(root):
-    rel_dir = os.path.relpath(dirpath, root)
-    if rel_dir == ".":
-        rel_dir = ""
-    dirnames[:] = [
-        name
-        for name in dirnames
-        if not name.startswith(SKIP_PREFIXES) and name not in SKIP_NAMES and
-        not is_ignored(rel_dir + "/" + name if rel_dir else name)
-    ]
-    if "pub_deps.json" in filenames:
-        results.append(os.path.join(dirpath, "pub_deps.json"))
-
-for path in sorted(results):
-    print(path)
-"""
-
-def _module_root(module_ctx, mod):
-    """Return the filesystem root for the given module."""
-    module_name = mod.name or ""
-    if mod.is_root:
-        label = "@@//:MODULE.bazel"
-    else:
-        label = "@@{}//:MODULE.bazel".format(module_name)
-    module_file = module_ctx.path(Label(label))
-    return module_file.dirname
-
-def _execute_deps_scan(module_ctx, root):
-    """Run a python helper to locate pub_deps.json files under the module root."""
-    python = module_ctx.which("python3") or module_ctx.which("python")
-    if not python:
-        fail("Unable to locate python3 or python on PATH while scanning pub_deps.json files")
-
-    result = module_ctx.execute([
-        python,
-        "-c",
-        _DEPS_DISCOVERY_SCRIPT,
-        str(root),
-    ], quiet = True)
-
-    if result.return_code != 0:
-        fail(
-            "pub extension failed to scan {} for pub_deps.json files (code {}):\nstdout: {}\nstderr: {}".format(
-                str(root),
-                result.return_code,
-                result.stdout,
-                result.stderr,
-            ),
-        )
-
-    deps_files = [line for line in result.stdout.splitlines() if line]
-    return [module_ctx.path(path) for path in deps_files]
+These labels are read, never analyzed, so they need no BUILD file of their
+own: a manifest in a directory that is not a Bazel package is spelled
+relative to the nearest enclosing package, e.g. `//:sub_dir/pub_deps.json`.
+""", default = []),
+})
 
 def _sanitize_repo_name(package):
     """Generate a deterministic repository name for a package."""
@@ -450,12 +378,19 @@ def _register_repo(repo_map, repo_name, package, version, origin, from_root = Tr
             )
         if version and existing["version"] and version != existing["version"]:
             fail(
-                "Repository '{}' has conflicting versions: '{}' from {} vs '{}' from {}".format(
+                ("Repository '{}' has conflicting versions: '{}' from {} vs '{}' from {}\n\n" +
+                 "Two modules pin the same pub package at different versions. " +
+                 "The root module has the last word: add a `pub.package` tag to " +
+                 "the root MODULE.bazel to force the version you want, e.g.\n\n" +
+                 "    pub.package(name = \"{}\", package = \"{}\", version = \"{}\")").format(
                     repo_name,
                     existing["version"],
                     ", ".join(existing["origins"]),
                     version,
                     origin,
+                    repo_name,
+                    package,
+                    version,
                 ),
             )
         if version and not existing["version"]:
@@ -484,39 +419,81 @@ def _register_repo(repo_map, repo_name, package, version, origin, from_root = Tr
         "sha256": sha256,
     }
 
+_NO_MANIFEST_TAGS_ERROR = """\
+The pub extension found no `deps_manifest` tag in the root module.
+
+rules_flutter no longer scans the workspace for `pub_deps.json`; every
+manifest must be declared explicitly, which is what lets Bazel invalidate the
+extension when one is added or removed.
+
+Find your manifests:
+
+    find . -name pub_deps.json -not -path './bazel-*'
+
+then declare them in MODULE.bazel:
+
+    pub = use_extension("@rules_flutter//flutter:extensions.bzl", "pub")
+    pub.deps_manifest(files = [
+        "//my_app:pub_deps.json",
+    ])
+
+A manifest whose directory is not a Bazel package (no BUILD file) is spelled
+relative to the nearest enclosing package, e.g. `//:my_app/pub_deps.json`.
+
+If this module genuinely has no manifests, acknowledge that explicitly with:
+
+    pub.deps_manifest(files = [])
+"""
+
 def _pub_extension(module_ctx):
     """Extension implementation for pub.dev packages."""
     repos = {}
-    scanned_roots = {}
+    seen_manifests = {}
     dep_edges = {}
+    root_declared_manifest_tag = False
 
     for mod in module_ctx.modules:
-        if not mod.is_root:
-            continue
-        root = _module_root(module_ctx, mod)
-        root_key = str(root)
-        if root_key in scanned_roots:
-            continue
-        scanned_roots[root_key] = True
-        deps_files = _execute_deps_scan(module_ctx, root)
-        for deps_file in deps_files:
-            module_ctx.watch(deps_file)
-            packages = _parse_pub_deps_json(module_ctx.read(deps_file))
-            for package, info in packages.items():
-                repo_name = _sanitize_repo_name(package)
-                origin = "{} (pub_deps.json)".format(str(deps_file))
-                _register_repo(
-                    repos,
-                    repo_name,
-                    package,
-                    info.get("version"),
-                    origin,
-                    sha256 = info.get("sha256") or "",
-                )
-                merged = {dep: True for dep in dep_edges.get(package, [])}
-                for dep in info.get("dependencies", []):
-                    merged[dep] = True
-                dep_edges[package] = sorted(merged.keys())
+        for tag in mod.tags.deps_manifest:
+            if mod.is_root:
+                root_declared_manifest_tag = True
+            for label in tag.files:
+                label_key = str(label)
+                if label_key in seen_manifests:
+                    continue
+                seen_manifests[label_key] = True
+
+                deps_path = module_ctx.path(label)
+
+                # module_ctx.path() happily returns a path for a source file
+                # that does not exist; without this guard the read below fails
+                # with a bare I/O error naming an execroot path.
+                if not deps_path.exists:
+                    fail(
+                        "pub.deps_manifest declares {}, but no such file exists (looked at {}).".format(
+                            label_key,
+                            str(deps_path),
+                        ),
+                    )
+                module_ctx.watch(deps_path)
+                packages = _parse_pub_deps_json(module_ctx.read(deps_path))
+                for package, info in packages.items():
+                    repo_name = _sanitize_repo_name(package)
+                    _register_repo(
+                        repos,
+                        repo_name,
+                        package,
+                        info.get("version"),
+                        label_key,
+                        from_root = mod.is_root,
+                        sha256 = info.get("sha256") or "",
+                    )
+                    merged = {dep: True for dep in dep_edges.get(package, [])}
+                    for dep in info.get("dependencies", []):
+                        merged[dep] = True
+                    dep_edges[package] = sorted(merged.keys())
+
+    if not root_declared_manifest_tag:
+        fail(_NO_MANIFEST_TAGS_ERROR)
 
     for mod in module_ctx.modules:
         for pkg in mod.tags.package:
@@ -565,7 +542,23 @@ def _pub_extension(module_ctx):
                 sha256 = meta["sha256"],
             )
 
+    # `bazel mod tidy` maintains use_repo() from this. The extension cannot
+    # see BUILD files, so it deliberately over-approximates and reports every
+    # generated repository as a direct dep. Under-approximating breaks the
+    # build: `@pub_analyzer`, `@pub_path` and `@pub_protoc_plugin` are all
+    # referenced from BUILD files while being transitive (or registered by a
+    # non-root module's pub.package tag), so any narrower rule would have
+    # tidy prune them.
+    return module_ctx.extension_metadata(
+        root_module_direct_deps = sorted(repos.keys()),
+        root_module_direct_dev_deps = [],
+        reproducible = True,
+    )
+
 pub = module_extension(
     implementation = _pub_extension,
-    tag_classes = {"package": pub_package},
+    tag_classes = {
+        "deps_manifest": pub_deps_manifest,
+        "package": pub_package,
+    },
 )

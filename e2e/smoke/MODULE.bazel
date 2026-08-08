@@ -27,12 +27,16 @@ local_path_override(
 )
 
 # Temporary until hermetic_android_toolchains publishes its first BCR release;
-# keep this identical to the rules_flutter root override.
+# keep this identical to the rules_flutter root override. `include()` cannot
+# share the text: Bazel rejects that directive in a non-root module, so
+# rules_flutter itself must spell the override inline. The patched *file* is
+# deduped — e2e/smoke/patches is a symlink to the rules_flutter patches/
+# directory, so both overrides name literally the same patch.
 archive_override(
     module_name = "hermetic_android_toolchains",
     integrity = "sha256-jovdpav966xUgaGTHIv5OMGtWxJMFk8ijbSoGQ6xX2E=",
     patch_strip = 1,
-    patches = ["//:hermetic_android_toolchains_export_repositories.patch"],
+    patches = ["//patches:hermetic_android_toolchains_export_repositories.patch"],
     strip_prefix = "hermetic_android_toolchains-c6a9f203fbe1d4e72ecfc8d6ea47b81c844435ff",
     urls = ["https://github.com/keith/hermetic_android_toolchains/archive/c6a9f203fbe1d4e72ecfc8d6ea47b81c844435ff.tar.gz"],
 )
@@ -77,49 +81,109 @@ use_repo(
 )
 
 register_toolchains("@flutter_toolchains//:all")
+
 register_toolchains("@android_toolchains//:all")
 
 # Pub.dev dependencies
 pub = use_extension("@rules_flutter//flutter:extensions.bzl", "pub")
+pub.deps_manifest(files = [
+    "//codegen_app:pub_deps.json",
+    "//dart_package:pub_deps.json",
+    "//flutter_app:pub_deps.json",
+    # gazelle_app has no BUILD file of its own (only BUILD.bazel.golden), so
+    # this manifest lives in the root package.
+    "//:gazelle_app/pub_deps.json",
+])
 use_repo(
     pub,
+    "pub__fe_analyzer_shared",
     "pub_analyzer",
     "pub_archive",
     "pub_args",
     "pub_async",
     "pub_boolean_selector",
+    "pub_build",
+    "pub_build_config",
+    "pub_build_daemon",
+    "pub_build_resolvers",
     "pub_build_runner",
+    "pub_build_runner_core",
+    "pub_built_collection",
+    "pub_built_value",
     "pub_characters",
+    "pub_checked_yaml",
     "pub_clock",
+    "pub_code_builder",
     "pub_collection",
+    "pub_color",
+    "pub_convert",
     "pub_copy_with_extension",
     "pub_copy_with_extension_gen",
+    "pub_crypto",
+    "pub_cupertino_icons",
     "pub_dart_style",
+    "pub_dartx",
     "pub_fake_async",
+    "pub_ffi",
+    "pub_file",
     "pub_fixnum",
+    "pub_flutter_gen_core",
     "pub_flutter_gen_runner",
     "pub_flutter_lints",
+    "pub_frontend_server_client",
+    "pub_glob",
+    "pub_graphs",
+    "pub_hashcodes",
     "pub_http",
+    "pub_http_multi_server",
+    "pub_http_parser",
+    "pub_image_size_getter",
     "pub_intl",
     "pub_intl_utils",
+    "pub_io",
+    "pub_js",
+    "pub_json_annotation",
     "pub_leak_tracker",
     "pub_leak_tracker_flutter_testing",
     "pub_leak_tracker_testing",
     "pub_lints",
+    "pub_logging",
+    "pub_macros",
     "pub_matcher",
     "pub_material_color_utilities",
     "pub_meta",
+    "pub_mime",
+    "pub_package_config",
     "pub_path",
+    "pub_path_parsing",
     "pub_petitparser",
+    "pub_pool",
+    "pub_posix",
     "pub_protobuf",
     "pub_protoc_plugin",
+    "pub_pub_semver",
+    "pub_pubspec_parse",
+    "pub_shelf",
+    "pub_shelf_web_socket",
+    "pub_source_gen",
     "pub_source_span",
     "pub_stack_trace",
     "pub_stream_channel",
+    "pub_stream_transform",
     "pub_string_scanner",
     "pub_term_glyph",
     "pub_test_api",
+    "pub_time",
+    "pub_timing",
+    "pub_typed_data",
+    "pub_vector_graphics_codec",
+    "pub_vector_graphics_compiler",
     "pub_vector_math",
     "pub_vm_service",
+    "pub_watcher",
+    "pub_web",
+    "pub_web_socket",
+    "pub_web_socket_channel",
+    "pub_xml",
     "pub_yaml",
 )

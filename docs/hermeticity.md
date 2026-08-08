@@ -62,7 +62,8 @@ afterwards:
 ### Pub dependencies: no network at build time
 
 Hosted packages are fetched as individual Bazel repositories by the `pub`
-module extension, which scans every `pub_deps.json` in the root module. Network
+module extension, which reads the `pub_deps.json` manifests declared through
+`pub.deps_manifest`. Network
 access happens only at repository fetch time. At build time, the
 `FlutterPrepareDeps` action assembles a per-target pub cache purely by copying:
 it merges the pub caches propagated by dependency targets into a fresh
@@ -462,7 +463,8 @@ generation printed.
   the archive exists at the printed URL and regenerate/verify its hash.
 - **A `pub_deps.json` is stale or a hosted package is missing** — after editing
   a `pubspec.yaml`, run `bazel run //my_app:lib.update` to refresh the pinned
-  dependency report, then `bazel mod tidy` to rescan and update `use_repo`.
+  dependency report, then `bazel mod tidy` to update `use_repo`. A brand-new
+  manifest additionally needs a `pub.deps_manifest` entry in `MODULE.bazel`.
 - **A write into `bin/cache` failed the build** — something invoked
   `flutter precache`/`flutter config` (or otherwise wrote into the SDK). The
   cache is sealed read-only on purpose; remove that step (see "The guarantee").

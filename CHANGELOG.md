@@ -7,13 +7,40 @@ it reaches 1.0.
 
 ## [Unreleased]
 
+### Added
+
+- `pub_deps.json` now records a `sha256` for every hosted package, taken from
+  the `pubspec.lock` that `bazel run //<pkg>:<lib>.update` resolves. Every
+  hosted package download is therefore pinned, and the "downloaded without a
+  pinned hash" warning no longer appears on a clean fetch. Rerun `.update` to
+  record hashes into an existing manifest.
+- The `pub` extension now returns `extension_metadata`, so `bazel mod tidy`
+  maintains the `use_repo(pub, ...)` list instead of you.
+
 ### Breaking
 
 - Android APK/appbundle builds now require `flutter.android_toolchain(...)`
   plus a complete per-app `android_maven_repo`. Host SDK, network Gradle, and
   persistent Gradle-home configuration have been removed. Android actions are
   sandboxable, remotely cacheable, and remote-execution eligible by default.
-- Raised the Bazel minimum to 8.4.2 and the module compatibility level to 2.
+- Raised the Bazel minimum to 8.4.2 and the module compatibility level to 3.
+- **The `pub` extension no longer scans the workspace for `pub_deps.json`.**
+  Every manifest must be declared explicitly with the new `pub.deps_manifest`
+  tag:
+
+  ```starlark
+  pub = use_extension("@rules_flutter//flutter:extensions.bzl", "pub")
+  pub.deps_manifest(files = ["//app:pub_deps.json"])
+  ```
+
+  The scan could not be invalidated (adding a new `pub_deps.json` did not
+  re-run the extension), needed a host `python3`, and made it impossible for
+  the extension to report its repositories to `bazel mod tidy`. All three are
+  fixed. A root module with no `deps_manifest` tag now fails with an
+  actionable message; `files = []` is the explicit opt-out.
+
+  Manifests declared by non-root modules are now honored as well, with root
+  module pins still winning.
 
 ## [0.2.1] - 2026-07-14
 

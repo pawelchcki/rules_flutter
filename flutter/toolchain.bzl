@@ -4,38 +4,28 @@
 FlutterInfo = provider(
     doc = "Information about how to invoke the tool executable.",
     fields = {
-        "target_tool_path": "Path to the tool executable for the target platform.",
-        "tool_files": """Files required in runfiles to make the tool executable available.
-
-May be empty if the target_tool_path points to a locally installed tool binary.""",
+        "flutter_bin": "The `flutter` launcher File. Use `.path` in actions and a runfiles-relative path at runtime.",
+        "tool_files": "Files required in runfiles to make the tool executable available.",
         "sdk_files": "Depset of all Flutter SDK files needed for the tool to work properly.",
     },
 )
 
-# Avoid using non-normalized paths (workspace/../other_workspace/path)
-def _to_manifest_path(ctx, file):
-    if file.short_path.startswith("../"):
-        return "external/" + file.short_path[3:]
-    else:
-        return ctx.workspace_name + "/" + file.short_path
-
 def _flutter_toolchain_impl(ctx):
-    if ctx.attr.target_tool and ctx.attr.target_tool_path:
-        fail("Can only set one of target_tool or target_tool_path but both were set.")
-    if not ctx.attr.target_tool and not ctx.attr.target_tool_path:
-        fail("Must set one of target_tool or target_tool_path.")
+    if not ctx.attr.target_tool:
+        fail("flutter_toolchain requires target_tool (the hermetic `flutter` launcher).")
 
-    tool_files = []
-    target_tool_path = ctx.attr.target_tool_path
+    tool_files = ctx.attr.target_tool.files.to_list()
+    if not tool_files:
+        fail("flutter_toolchain: target_tool produced no files.")
+    flutter_bin = tool_files[0]
 
-    if ctx.attr.target_tool:
-        tool_files = ctx.attr.target_tool.files.to_list()
-        target_tool_path = _to_manifest_path(ctx, tool_files[0])
-
-    # Make the $(tool_BIN) variable available in places like genrules.
-    # See https://docs.bazel.build/versions/main/be/make-variables.html#custom_variables
+    # Make the $(FLUTTER_BIN) variable available in places like genrules,
+    # which are expanded against runfiles manifest paths.
+    manifest_path = (
+        "external/" + flutter_bin.short_path[3:] if flutter_bin.short_path.startswith("../") else ctx.workspace_name + "/" + flutter_bin.short_path
+    )
     template_variables = platform_common.TemplateVariableInfo({
-        "FLUTTER_BIN": target_tool_path,
+        "FLUTTER_BIN": manifest_path,
     })
     default = DefaultInfo(
         files = depset(tool_files),
@@ -47,7 +37,7 @@ def _flutter_toolchain_impl(ctx):
     sdk_files = ctx.attr.sdk_files.files if ctx.attr.sdk_files else depset()
 
     flutterinfo = FlutterInfo(
-        target_tool_path = target_tool_path,
+        flutter_bin = flutter_bin,
         tool_files = tool_files,
         sdk_files = sdk_files,
     )
@@ -70,12 +60,8 @@ flutter_toolchain = rule(
     attrs = {
         "target_tool": attr.label(
             doc = "A hermetically downloaded executable target for the target platform.",
-            mandatory = False,
+            mandatory = True,
             allow_single_file = True,
-        ),
-        "target_tool_path": attr.string(
-            doc = "Path to an existing executable for the target platform.",
-            mandatory = False,
         ),
         "sdk_files": attr.label(
             doc = "Flutter SDK files needed for the tool to work properly.",

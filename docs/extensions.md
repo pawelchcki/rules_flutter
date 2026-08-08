@@ -61,11 +61,22 @@ flutter.toolchain(<a href="#flutter.toolchain-name">name</a>, <a href="#flutter.
 
 <pre>
 pub = use_extension("@rules_flutter//flutter:extensions.bzl", "pub")
+pub.deps_manifest(<a href="#pub.deps_manifest-files">files</a>)
 pub.package(<a href="#pub.package-name">name</a>, <a href="#pub.package-package">package</a>, <a href="#pub.package-sha256">sha256</a>, <a href="#pub.package-version">version</a>)
 </pre>
 
 
 **TAG CLASSES**
+
+<a id="pub.deps_manifest"></a>
+
+### deps_manifest
+
+**Attributes**
+
+| Name  | Description | Type | Mandatory | Default |
+| :------------- | :------------- | :------------- | :------------- | :------------- |
+| <a id="pub.deps_manifest-files"></a>files |  Labels of `pub_deps.json` manifests whose packages become `@pub_*` repositories. Declaring the tag at all is the opt-in signal; `files = []` is the explicit opt-out for a module that has no manifests.<br><br>These labels are read, never analyzed, so they need no BUILD file of their own: a manifest in a directory that is not a Bazel package is spelled relative to the nearest enclosing package, e.g. `//:sub_dir/pub_deps.json`.   | <a href="https://bazel.build/concepts/labels">List of labels</a> | optional |  `[]`  |
 
 <a id="pub.package"></a>
 

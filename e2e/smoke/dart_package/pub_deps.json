@@ -1,20 +1,33 @@
 {
+  "root": "dart_package",
   "packages": [
     {
       "name": "dart_package",
-      "dependency": "root",
+      "version": "1.0.0",
+      "kind": "root",
       "source": "root",
-      "version": "1.0.0"
+      "dependencies": [
+        "fixnum"
+      ]
     },
     {
       "name": "fixnum",
-      "dependency": "direct main",
-      "source": "hosted",
       "version": "1.1.1",
-      "description": {
-        "name": "fixnum",
-        "url": "https://pub.dev"
-      }
+      "kind": "direct",
+      "source": "hosted",
+      "dependencies": [],
+      "sha256": "b6dc7065e46c974bc7c5f143080a6764ec7a4be6da1285ececdc37be96de53be"
     }
-  ]
+  ],
+  "sdks": [
+    {
+      "name": "Dart",
+      "version": "3.5.0"
+    },
+    {
+      "name": "Flutter",
+      "version": "3.24.0"
+    }
+  ],
+  "executables": []
 }

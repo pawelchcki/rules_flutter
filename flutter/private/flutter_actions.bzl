@@ -118,23 +118,52 @@ fi
 # (_make_dirs_writable). With fast staging off ($3 = 0) this is byte-for-byte
 # the historical rsync/cp copy.
 STAGE_TREE_HELPERS = """
+_reset_dest() {
+    # $1 dest dir. Makes any existing tree writable (a previous _stage_tree
+    # may have left read-only directories behind), removes it and recreates
+    # it empty. Only ever called on destinations we own.
+    if [ -d "$1" ]; then
+        find "$1" -type d ! -perm -700 -exec chmod u+rwx {} + 2>/dev/null || true
+    fi
+    rm -rf "$1"
+    mkdir -p "$1"
+}
 _stage_tree() {
     # $1 src dir, $2 dest dir (created), $3 fast staging (1/0).
+    # Exclusive-destination contract: this function owns $2 and may wipe it
+    # on retry. Use _merge_tree to overlay into a shared destination.
     mkdir -p "$2"
     if [ "$3" = "1" ]; then
         if cp -cRL "$1/." "$2/" 2>/dev/null; then
             return 0
         fi
-        rm -rf "$2" && mkdir -p "$2"
+        _reset_dest "$2"
         if cp -RLl "$1/." "$2/" 2>/dev/null; then
             return 0
         fi
-        rm -rf "$2" && mkdir -p "$2"
+        _reset_dest "$2"
     fi
     if command -v rsync >/dev/null 2>&1; then
         rsync -aL "$1/" "$2/"
     else
         cp -RL "$1/." "$2/"
+    fi
+}
+_merge_tree() {
+    # $1 src dir, $2 dest dir, $3 link-dest (1/0). Additive overlay: layers
+    # $1 on top of whatever is already in $2 without ever removing it, so it
+    # is safe for destinations built up from several read-only sources.
+    # Symlinks are always dereferenced ($1 may be a staged input tree whose
+    # links point outside the destination).
+    mkdir -p "$2"
+    if command -v rsync >/dev/null 2>&1; then
+        if [ "$3" = "1" ]; then
+            rsync -aL --chmod=Du+w --link-dest="$1" "$1/" "$2/" && return 0
+        fi
+        rsync -aL --chmod=Du+w "$1/" "$2/"
+    else
+        _make_dirs_writable "$2"
+        cp -RLf "$1/." "$2/"
     fi
 }
 _unshare_file() {
@@ -347,47 +376,41 @@ def flutter_assemble_pub_cache_action(
             dep_pub_cache_files.append(item)
 
     assembled_cache = ctx.actions.declare_directory(ctx.label.name + "_pub_cache")
-    dep_pub_cache_args = [dep_cache.path for dep_cache in dep_pub_cache_files]
+
+    # The dependency cache paths arrive as action *arguments* rather than
+    # interpolated into the command string. The previous version pasted them
+    # into a shell array literal with hand-rolled quoting, which a path
+    # containing a space or a quote would have broken; args.add_all cannot be
+    # mis-quoted, and it keeps the command string independent of the
+    # dependency list (so it no longer rekeys the action).
+    args = ctx.actions.args()
+    args.add(assembled_cache.path)
+    args.add_all(dep_pub_cache_files, expand_directories = False)
 
     script_content = """#!/bin/bash
 set -euo pipefail
 
 ORIGINAL_PWD="$PWD"
-PUB_CACHE_DIR_ABS="$ORIGINAL_PWD/{pub_cache_dir}"
-rm -rf "$PUB_CACHE_DIR_ABS"
-mkdir -p "$PUB_CACHE_DIR_ABS"
+{stage_tree_helpers}
+PUB_CACHE_DIR_ABS="$ORIGINAL_PWD/$1"
+shift
+_reset_dest "$PUB_CACHE_DIR_ABS"
 
 echo "=== Assembling pub cache from dependencies ==="
-DEP_CACHES=({dep_caches})
-HAVE_RSYNC=0
-command -v rsync >/dev/null 2>&1 && HAVE_RSYNC=1
-if [ ${{#DEP_CACHES[@]}} -gt 0 ]; then
-    for DEP_CACHE in "${{DEP_CACHES[@]}}"; do
+if [ "$#" -gt 0 ]; then
+    for DEP_CACHE in "$@"; do
         if [[ "$DEP_CACHE" != /* ]]; then
             DEP_CACHE="$ORIGINAL_PWD/$DEP_CACHE"
         fi
         if [ -d "$DEP_CACHE" ] && [ -n "$(ls -A "$DEP_CACHE" 2>/dev/null)" ]; then
-            if [ "$HAVE_RSYNC" -eq 1 ]; then
-                # Hardlink the read-only dependency files instead of copying
-                # bytes. The assembled cache is consumed read-only downstream
-                # (flutter_pub_get_action points PUB_CACHE at it read-only), so
-                # sharing inodes with the dependency inputs is safe, and it turns
-                # a per-file copy of thousands of tiny pub files into near-instant
-                # links. --link-dest points at the source, so every file links;
-                # overlapping packages (identical pkg-version dirs) are deduped by
-                # rsync. --chmod=Du+w keeps destination directories writable for
-                # later merges while leaving files read-only so they stay
-                # hardlinkable — this replaces the per-iteration full-tree chmod
-                # rescan (which was quadratic over the growing tree). rsync falls
-                # back to a byte copy automatically when link-dest is on a
-                # different filesystem.
-                rsync -a --chmod=Du+w --link-dest="$DEP_CACHE" "$DEP_CACHE/" "$PUB_CACHE_DIR_ABS/"
-            else
-                # No rsync: byte copy, making earlier read-only copies writable
-                # first so overlapping directories can be extended.
-                find "$PUB_CACHE_DIR_ABS" -type d ! -perm -200 -exec chmod u+w {{}} + 2>/dev/null || true
-                cp -RLf "$DEP_CACHE/." "$PUB_CACHE_DIR_ABS/"
-            fi
+            # link_dest=1: hardlink the read-only dependency files instead of
+            # copying bytes. The assembled cache is consumed read-only
+            # downstream (flutter_pub_get_action points PUB_CACHE at it
+            # read-only), so sharing inodes with the dependency inputs is safe,
+            # and it turns a per-file copy of thousands of tiny pub files into
+            # near-instant links. This is the only _merge_tree caller that
+            # links.
+            _merge_tree "$DEP_CACHE" "$PUB_CACHE_DIR_ABS" 1
         fi
     done
 else
@@ -399,13 +422,13 @@ if [ -z "$(ls -A "$PUB_CACHE_DIR_ABS" 2>/dev/null)" ]; then
 fi
 echo "=== Pub cache assembly complete ==="
 """.format(
-        pub_cache_dir = assembled_cache.path,
-        dep_caches = " ".join(['"{}"'.format(path) for path in dep_pub_cache_args]),
+        stage_tree_helpers = STAGE_TREE_HELPERS,
     )
 
     ctx.actions.run_shell(
         inputs = dep_pub_cache_files,
         outputs = [assembled_cache],
+        arguments = [args],
         command = script_content,
         mnemonic = "FlutterAssemblePubCache",
         progress_message = "Assembling pub cache for %s" % ctx.label.name,
@@ -696,8 +719,6 @@ mkdir -p "$PUB_CACHE_DIR_ABS"
 
 echo "=== Preparing pub cache from dependencies ==="
 DEP_CACHES=({dep_caches})
-HAVE_RSYNC=0
-command -v rsync >/dev/null 2>&1 && HAVE_RSYNC=1
 if [ ${{#DEP_CACHES[@]}} -gt 0 ]; then
     for DEP_CACHE in "${{DEP_CACHES[@]}}"; do
         if [[ "$DEP_CACHE" != /* ]]; then
@@ -706,17 +727,10 @@ if [ ${{#DEP_CACHES[@]}} -gt 0 ]; then
         if [ -d "$DEP_CACHE" ] && [ -n "$(ls -A "$DEP_CACHE" 2>/dev/null)" ]; then
             # The caches overlap (shared transitive packages). Unlike the
             # separate assemble action, `pub get` runs against this cache in the
-            # same action, so files are byte-copied (not hardlinked) to stay
-            # independent of the read-only dependency inputs. --chmod=Du+w keeps
-            # destination directories writable (pub adds files under them) while
-            # leaving package files read-only — replacing the quadratic
-            # per-iteration full-tree chmod rescan with a one-shot flag.
-            if [ "$HAVE_RSYNC" -eq 1 ]; then
-                rsync -a --chmod=Du+w "$DEP_CACHE/" "$PUB_CACHE_DIR_ABS/"
-            else
-                find "$PUB_CACHE_DIR_ABS" -type d ! -perm -200 -exec chmod u+w {{}} + 2>/dev/null || true
-                cp -RLf "$DEP_CACHE/." "$PUB_CACHE_DIR_ABS/"
-            fi
+            # same action, so link_dest is deliberately 0: files must be
+            # byte-copied to stay independent of the read-only dependency
+            # inputs.
+            _merge_tree "$DEP_CACHE" "$PUB_CACHE_DIR_ABS" 0
         fi
     done
 else
@@ -724,13 +738,9 @@ else
 fi
 
 if [ -d "$WORKSPACE_DIR_ABS/.pub_cache" ]; then
+    # Also deliberately unlinked: `pub get` writes into this cache below.
     echo "Merging package-local .pub_cache"
-    if [ "$HAVE_RSYNC" -eq 1 ]; then
-        rsync -a --chmod=Du+w "$WORKSPACE_DIR_ABS/.pub_cache/" "$PUB_CACHE_DIR_ABS/"
-    else
-        find "$PUB_CACHE_DIR_ABS" -type d ! -perm -200 -exec chmod u+w {{}} + 2>/dev/null || true
-        cp -RLf "$WORKSPACE_DIR_ABS/.pub_cache/." "$PUB_CACHE_DIR_ABS/"
-    fi
+    _merge_tree "$WORKSPACE_DIR_ABS/.pub_cache" "$PUB_CACHE_DIR_ABS" 0
 fi""".format(
             dep_caches = " ".join(['"{}"'.format(path) for path in dep_pub_cache_args]),
         )
@@ -996,14 +1006,12 @@ else
     exit 1
 fi
 
-rm -rf "{dart_tool_dir}"
-mkdir -p "{dart_tool_dir}"
+_reset_dest "{dart_tool_dir}"
 if [ -d "$WORKSPACE_DIR_ABS/.dart_tool" ]; then
-    if command -v rsync >/dev/null 2>&1; then
-        rsync -a "$WORKSPACE_DIR_ABS/.dart_tool/" "{dart_tool_dir}/"
-    else
-        cp -RL "$WORKSPACE_DIR_ABS/.dart_tool/." "{dart_tool_dir}/"
-    fi
+    # Never fast-stage: this is a declared output tree, so it must own its
+    # inodes and must not contain symlinks (absolute links into the
+    # torn-down sandbox would be dangling on a remote-cache hit).
+    _stage_tree "$WORKSPACE_DIR_ABS/.dart_tool" "{dart_tool_dir}" 0
     echo "✓ Created .dart_tool/package_config.json" >> "$LOG_FILE"
 else
     echo "{{}}" > "{dart_tool_dir}/package_config.json"
@@ -1368,10 +1376,15 @@ fi
     # under --incompatible_strict_action_env HOME is absent, so fall back to a
     # scratch dir rather than aborting. Everything else always gets a scratch
     # HOME to keep config/analytics writes out of shared state.
+    # The scratch HOME goes under $TMPDIR (which Bazel points into the
+    # execroot) rather than a bare `mktemp -d` rooted at /tmp, matching every
+    # other scratch directory in this ruleset: outside the execroot it escapes
+    # the sandbox and survives the action.
+    scratch_home = 'export HOME="$(mktemp -d "${TMPDIR:-/tmp}/rules_flutter_home.XXXXXX")"'
     if target == "ios":
-        home_export = 'export HOME="${HOME:-$(mktemp -d)}"'
+        home_export = 'export HOME="${HOME:-}"\nif [ -z "$HOME" ]; then\n    ' + scratch_home + '\nfi'
     else:
-        home_export = 'export HOME="$(mktemp -d)"'
+        home_export = scratch_home
 
     android_gradle_env = ""
     if target in ANDROID_TARGETS:

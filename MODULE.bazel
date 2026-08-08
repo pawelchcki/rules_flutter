@@ -5,7 +5,7 @@ module(
     # Stamped by the release workflow; 0.0.0 on main between releases.
     version = "0.0.0",
     bazel_compatibility = [">=8.4.2"],
-    compatibility_level = 2,
+    compatibility_level = 3,
 )
 
 bazel_dep(name = "bazel_skylib", version = "1.4.1")
@@ -73,6 +73,19 @@ register_toolchains("//flutter/tests/analysis:fixture_android_toolchain")
 # that closure. Making them dev_dependency would delete it in consumer
 # workspaces and break proto generation at execution time.
 pub = use_extension("//flutter:extensions.bzl", "pub")
+
+# The only pub_deps.json in this module belongs to the analysis test fixture,
+# so it rides a dev_dependency proxy: its tags are dropped when rules_flutter
+# is not the root module, and consumers therefore never inherit the fixture's
+# package pins. The repositories it generates are still imported through the
+# non-dev proxy below (both proxies address the same extension instance).
+pub_dev = use_extension(
+    "//flutter:extensions.bzl",
+    "pub",
+    dev_dependency = True,
+)
+pub_dev.deps_manifest(files = ["//flutter/tests/analysis:pub_deps.json"])
+
 pub.package(
     name = "pub_fixnum",
     package = "fixnum",

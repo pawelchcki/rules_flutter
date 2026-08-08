@@ -3,6 +3,7 @@ load("//flutter:defs.bzl", "flutter_app", "flutter_library")
 load(
     ":defs_analysis_test.bzl",
     "android_offline_test",
+    "android_toolchain_roots_test",
     "android_online_test",
     "build_command_test",
     "embed_guard_test",
@@ -15,6 +16,16 @@ android_toolchain(
     gradle_version = "8.7",
     sdk = "@bazel_skylib//:LICENSE",
     sdk_version = "35",
+)
+
+# The SDK comes from an external repo (workspace_root branch) and the Gradle
+# distribution from the main repo (single-directory branch), so one test
+# covers both root-derivation paths.
+android_toolchain_roots_test(
+    name = "android_toolchain_roots_test",
+    expected_gradle_home = "flutter/tests/analysis",
+    expected_sdk_path = "external/bazel_skylib+",
+    target_under_test = ":fixture_android",
 )
 
 toolchain(
@@ -190,6 +201,7 @@ test_suite(
         ":android_offline_apk_test",
         ":android_online_apk_test",
         ":android_test_apk_test",
+        ":android_toolchain_roots_test",
         ":build_command_customization_test",
         ":build_command_defaults_test",
         ":embed_unassembled_cache_test",

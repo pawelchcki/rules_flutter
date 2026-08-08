@@ -128,3 +128,29 @@ embed_guard_test = analysistest.make(
     _embed_guard_test_impl,
     expect_failure = True,
 )
+
+def _android_toolchain_roots_test_impl(ctx):
+    env = analysistest.begin(ctx)
+
+    info = analysistest.target_under_test(env)[platform_common.ToolchainInfo].android
+    asserts.equals(env, ctx.attr.expected_sdk_path, info.sdk_path)
+    asserts.equals(env, ctx.attr.expected_gradle_home, info.gradle_home)
+
+    return analysistest.end(env)
+
+# The roots are derived from each dependency's own Label, not guessed from a
+# file path. The hazard this pins down is not the derivation itself but the
+# main-repo branch: it used to be an unconditional silent fall-through to the
+# first file's parent directory, which produced a plausible-looking-but-wrong
+# root for any multi-directory dependency instead of failing.
+android_toolchain_roots_test = analysistest.make(
+    _android_toolchain_roots_test_impl,
+    attrs = {
+        "expected_gradle_home": attr.string(
+            doc = "Expected exec-root-relative Gradle distribution root.",
+        ),
+        "expected_sdk_path": attr.string(
+            doc = "Expected exec-root-relative Android SDK root.",
+        ),
+    },
+)

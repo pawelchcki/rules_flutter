@@ -21,4 +21,5 @@ register_toolchains("@flutter_toolchains//:all")
 # `use_repo(pub, "pub_<package>")`) and reference them as
 # @pub_<package>//:<package>. No use_repo entries are needed while the app
 # only uses SDK packages.
-use_extension("@rules_flutter//flutter:extensions.bzl", "pub")
+pub = use_extension("@rules_flutter//flutter:extensions.bzl", "pub")
+pub.deps_manifest(files = ["//:pub_deps.json"])

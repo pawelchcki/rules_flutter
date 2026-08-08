@@ -1,10 +1,13 @@
 """Creates a repository alias that always exposes the host Flutter SDK.
 
+
 The repository mirrors the contents of the platform-specific Flutter SDK
 selected for the current host machine so that clients can uniformly depend
 on `@<name>_sdk` (e.g. `@flutter_sdk`) without caring about the underlying
 platform repository name.
 """
+
+load(":repo_names.bzl", "sibling_canonical_repo")
 
 def _is_arm64(repository_ctx):
     """True when the host CPU is 64-bit ARM."""
@@ -49,10 +52,7 @@ def _sdk_repo_impl(repository_ctx):
 def _canonical_target_repo(current_repo_name, target_repo):
     """Return the canonical repo name for target_repo within this extension."""
 
-    if "+" not in current_repo_name:
-        fail("Unexpected canonical repo name '{}' for Flutter SDK alias".format(current_repo_name))
-    prefix, _ = current_repo_name.rsplit("+", 1)
-    return "{}+{}".format(prefix, target_repo)
+    return sibling_canonical_repo(current_repo_name, target_repo)
 
 def _write_binary_symlinks(repository_ctx, canonical_target_repo):
     """Create platform-agnostic symlinks to dart/flutter binaries.
