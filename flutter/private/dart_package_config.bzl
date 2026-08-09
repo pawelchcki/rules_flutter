@@ -1,5 +1,11 @@
 """Generates a package_config.json for a vendored pub repository, once."""
 
+def _sdk_files(flutter_toolchain):
+    return flutter_toolchain.flutterinfo.sdk_groups.get(
+        "dart",
+        flutter_toolchain.flutterinfo.sdk_files,
+    )
+
 def _dart_package_config_impl(ctx):
     config = ctx.actions.declare_file(ctx.label.name + "/package_config.json")
 
@@ -41,7 +47,7 @@ exec "$DART_BIN" "$PWD/{pub_tool}" package-config
     ctx.actions.run_shell(
         inputs = depset(
             direct = ctx.files.package_files + [ctx.file._pub_tool, flutter_bin],
-            transitive = [flutter_toolchain.flutterinfo.sdk_files],
+            transitive = [_sdk_files(flutter_toolchain)],
         ),
         outputs = [config],
         command = script,

@@ -120,8 +120,9 @@ The SDK repository is immutable after fetch:
 - The release archive is downloaded with integrity verification, and the
   launcher's engine-version refresh is patched at fetch time so `flutter`
   invocations never write into the repository.
-- `bin/cache` is sealed read-only; any residual write attempt fails the build
-  loudly instead of silently mutating shared state. (The one exception: the
+- `bin/cache` and Flutter tool's vendored pub cache are sealed read-only; any
+  residual write attempt fails the build loudly instead of silently mutating
+  shared state. (The one exception: the
   iOS/macOS engine framework directories keep owner-write, because
   `flutter build ios` copies them permissions-preserved into the app's build
   directory and codesigns the copies in place — the tool never writes the
@@ -133,6 +134,10 @@ The SDK repository is immutable after fetch:
 Do not run `flutter precache` or `flutter config` against the Bazel-provided
 SDK from scripts: it is unnecessary and the sealed cache will reject it. See
 [docs/hermeticity.md](docs/hermeticity.md) for the full per-platform contract.
+
+The downloaded SDK is a runtime distribution, not a Flutter contributor
+checkout: its `dev/`, `docs/`, `examples/`, and editor/CI trees are pruned.
+Use a separate Flutter checkout for SDK contribution workflows.
 
 ## Managing pub.dev dependencies
 

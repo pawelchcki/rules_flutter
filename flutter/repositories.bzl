@@ -266,6 +266,10 @@ def _ensure_precached_artifacts(repository_ctx):
             "CI": "true",
             "FLUTTER_SUPPRESS_ANALYTICS": "true",
             "PUB_ENVIRONMENT": "flutter_tool:bazel_fetch",
+            # Flutter tools runs pub while refreshing its snapshot. Keep that
+            # closure in the repository so no generated metadata can mention
+            # the fetch machine's home directory.
+            "PUB_CACHE": str(repository_ctx.path("flutter/packages/flutter_tools/.pub_cache")),
         },
         timeout = 1800,
     )
@@ -348,6 +352,7 @@ def _warm_first_run_stamps(repository_ctx):
             "CI": "true",
             "FLUTTER_SUPPRESS_ANALYTICS": "true",
             "PUB_ENVIRONMENT": "flutter_tool:bazel_fetch",
+            "PUB_CACHE": str(repository_ctx.path("flutter/packages/flutter_tools/.pub_cache")),
         },
         timeout = 1800,
     )
@@ -393,6 +398,26 @@ def _resolves_outside_repo(repository_ctx, uri):
     if not uri.startswith("file://"):
         return False
     return repository_ctx.path(uri[len("file://"):]).exists
+
+def _normal_repo_path(path):
+    """Normalize a repository-relative path, returning None if it escapes."""
+    parts = []
+    for part in path.split("/"):
+        if not part or part == ".":
+            continue
+        if part == "..":
+            if not parts:
+                return None
+            parts.pop()
+        else:
+            parts.append(part)
+    return "/".join(parts)
+
+def _relative_root_path(config_path, root_uri):
+    """Resolve a relative package root against its config without filesystem IO."""
+    if root_uri.startswith("file:") or root_uri.startswith("/"):
+        return None
+    return _normal_repo_path(config_path.rsplit("/", 1)[0] + "/" + root_uri)
 
 def _relocate_package_configs(repository_ctx):
     """Make the SDK's package_config.json files independent of the fetch path.
@@ -443,10 +468,27 @@ def _relocate_package_configs(repository_ctx):
         if not config_path:
             continue
 
+        # The Flutter-tool configuration is the only package config consumed
+        # by the SDK launcher. Hosted package payloads can contain fixture
+        # configs below test/; those are package-test data, not live SDK state
+        # (and frequently intentionally point at fixture directories).
+        if config_path != "flutter/packages/flutter_tools/.dart_tool/package_config.json":
+            continue
+
         config = json.decode(repository_ctx.read(config_path))
         base_dir = config_path.rsplit("/", 1)[0]
 
+        # These fields are Flutter/pub bookkeeping, not package resolution.
+        # `generated` is timestamped, and flutterRoot/pubCache are absolute
+        # paths from the repository-rule output directory.
+        normalized_metadata = False
+        for key in ["generated", "flutterRoot", "pubCache"]:
+            if key in config:
+                config.pop(key)
+                normalized_metadata = True
+
         rewrote = False
+        retained_packages = []
         for package in config.get("packages", []):
             relative = _relative_uri(package.get("rootUri", ""), root_uri, base_dir)
             if relative != None:
@@ -466,10 +508,95 @@ def _relocate_package_configs(repository_ctx):
                 # nothing about whether it can be moved.
                 relocatable = False
 
-        if rewrote:
+            # A dead absolute root is stale archive/build output. It cannot
+            # work in this repository even before a contents-cache move, so do
+            # not preserve its machine path in the sealed tree. Live external
+            # roots above still make the repository non-reproducible.
+            if package.get("rootUri", "").startswith("file://"):
+                rewrote = True
+                continue
+
+            # Every retained relative root must point at an actual vendored
+            # package. This catches a package_config that still points into a
+            # user PUB_CACHE before it is allowed into repo_contents_cache.
+            root_path = _relative_root_path(config_path, package.get("rootUri", ""))
+            if root_path != None and not repository_ctx.path(root_path + "/pubspec.yaml").exists:
+                relocatable = False
+
+            retained_packages.append(package)
+
+        if rewrote or normalized_metadata:
+            config["packages"] = retained_packages
             repository_ctx.file(config_path, json.encode_indent(config, indent = "  ") + "\n")
 
     return relocatable
+
+def _prune_flutter_tool_pub_cache(repository_ctx):
+    """Keep only immutable hosted payloads needed by flutter_tools.
+
+    Pub's active roots, logs, hosted metadata and temporary directories are
+    deliberately process-local. They contain fetch paths/timestamps and have
+    no role in executing the already-resolved flutter_tools snapshot.
+    """
+    cache = repository_ctx.path("flutter/packages/flutter_tools/.pub_cache")
+    if not cache.exists or not cache.is_dir:
+        return
+
+    for entry in cache.readdir():
+        if entry.basename != "hosted":
+            repository_ctx.delete(entry)
+
+    hosted = cache.get_child("hosted")
+    if not hosted.exists or not hosted.is_dir:
+        return
+    for host in hosted.readdir():
+        if not host.is_dir:
+            repository_ctx.delete(host)
+            continue
+        for package in host.readdir():
+            # `.cache` is a pub API-response cache; package directories are
+            # identified by their pubspec rather than an unstable name shape.
+            if not package.is_dir or not package.get_child("pubspec.yaml").exists:
+                repository_ctx.delete(package)
+
+def _remove_package_config_subsets(repository_ctx):
+    """Delete derived subset configs that embed absolute pub roots."""
+    if repository_ctx.os.name.lower().startswith("windows"):
+        return
+    result = repository_ctx.execute([
+        "find",
+        "flutter",
+        "-type",
+        "f",
+        "-name",
+        "package_config_subset",
+        "-delete",
+    ])
+    if result.return_code != 0:
+        fail("rules_flutter: deleting package_config_subset files failed: " + result.stderr)
+
+def _prune_nonruntime_sources(repository_ctx):
+    """Drop upstream contributor/editor trees that are not SDK runtime inputs."""
+    for path in [
+        "flutter/dev",
+        "flutter/docs",
+        "flutter/examples",
+        "flutter/.github",
+        "flutter/.idea",
+        "flutter/.vscode",
+        "flutter/.cirrus.yml",
+        "flutter/.travis.yml",
+        "flutter/appveyor.yml",
+    ]:
+        target = repository_ctx.path(path)
+        if target.exists:
+            repository_ctx.delete(target)
+
+    # flutter analyze enumerates this directory while discovering the SDK's
+    # own packages. It does not need contributor sources there, but it does
+    # require the directory itself to exist.
+    repository_ctx.file("flutter/dev/.rules_flutter_keep", "")
+    repository_ctx.file("flutter/examples/.rules_flutter_keep", "")
 
 def _seal_sdk_cache(repository_ctx):
     """Make bin/cache read-only so any residual write attempt fails loudly.
@@ -481,6 +608,11 @@ def _seal_sdk_cache(repository_ctx):
     if repository_ctx.os.name.lower().startswith("windows"):
         return
     repository_ctx.execute(["chmod", "-R", "a-w", "flutter/bin/cache"])
+    tool_pub_cache = repository_ctx.path("flutter/packages/flutter_tools/.pub_cache")
+    if tool_pub_cache.exists:
+        result = repository_ctx.execute(["chmod", "-R", "a-w", "flutter/packages/flutter_tools/.pub_cache"])
+        if result.return_code != 0:
+            fail("rules_flutter: sealing flutter_tools pub cache failed: " + result.stderr)
 
     # Keep owner-write on the iOS/macOS engine frameworks: `flutter build ios`
     # copies them into the app's build directory with permissions preserved,
@@ -655,6 +787,12 @@ def _flutter_repo_impl(repository_ctx):
     if downloads.exists:
         repository_ctx.delete(downloads)
 
+    # Nothing below invokes Flutter or pub. Normalize their output before
+    # generating BUILD metadata and sealing it into an immutable repository.
+    _prune_flutter_tool_pub_cache(repository_ctx)
+    _remove_package_config_subsets(repository_ctx)
+    _prune_nonruntime_sources(repository_ctx)
+
     package_labels = _generate_flutter_packages(repository_ctx)
 
     package_group = ""
@@ -705,6 +843,100 @@ filegroup(
     visibility = ["//visibility:public"],
 )
 
+# Capability-scoped SDK closures. Keep flutter_sdk above as the complete
+# compatibility target; action rules consume these internal groups instead.
+filegroup(
+    name = "sdk_dart",
+    srcs = glob(["flutter/bin/cache/dart-sdk/**/*"], allow_empty = True),
+    visibility = ["//visibility:public"],
+)
+
+filegroup(
+    name = "sdk_framework",
+    srcs = [":sdk_dart", ":flutter_sdk_packages"] + glob(
+        [
+            "flutter/packages/**/*",
+            # sky_engine and the SDK packages generated below live here.
+            "flutter/bin/cache/pkg/**/*",
+        ],
+        exclude = ["flutter/packages/flutter_tools/.pub_cache/**"],
+        allow_empty = True,
+    ),
+    visibility = ["//visibility:public"],
+)
+
+# Start base from the complete retained tree, then broadly remove every known
+# platform engine family. This deliberately keeps new universal artifacts in
+# base while preventing an engine for one target from leaking into another.
+filegroup(
+    name = "sdk_base",
+    srcs = [":flutter_sdk_packages"] + glob(
+        ["flutter/**/*"],
+        exclude = [
+            "flutter/bin/cache/artifacts/engine/android-*/**",
+            "flutter/bin/cache/artifacts/engine/darwin*/**",
+            "flutter/bin/cache/artifacts/engine/ios*/**",
+            "flutter/bin/cache/artifacts/engine/linux-*/**",
+            "flutter/bin/cache/artifacts/engine/windows-*/**",
+            "flutter/bin/cache/artifacts/engine/flutter_web_sdk/**",
+            "flutter/bin/cache/flutter_web_sdk/**",
+        ],
+        allow_empty = True,
+    ),
+    visibility = ["//visibility:public"],
+)
+
+filegroup(
+    name = "sdk_test",
+    srcs = [":sdk_base"] + glob(["flutter/bin/cache/artifacts/engine/**/*"], allow_empty = True),
+    visibility = ["//visibility:public"],
+)
+
+filegroup(
+    name = "sdk_web",
+    srcs = [":sdk_base"] + glob([
+        "flutter/bin/cache/artifacts/engine/flutter_web_sdk/**/*",
+        "flutter/bin/cache/flutter_web_sdk/**/*",
+    ], allow_empty = True),
+    visibility = ["//visibility:public"],
+)
+
+filegroup(
+    name = "sdk_android",
+    srcs = [":sdk_base"] + glob(["flutter/bin/cache/artifacts/engine/android-*/**"], allow_empty = True),
+    visibility = ["//visibility:public"],
+)
+
+filegroup(
+    name = "sdk_ios",
+    srcs = [":sdk_base"] + glob([
+        "flutter/bin/cache/artifacts/engine/ios*/**",
+        "flutter/bin/cache/artifacts/engine/darwin*/**",
+    ], allow_empty = True),
+    visibility = ["//visibility:public"],
+)
+
+filegroup(
+    name = "sdk_macos",
+    srcs = [":sdk_base"] + glob([
+        "flutter/bin/cache/artifacts/engine/ios*/**",
+        "flutter/bin/cache/artifacts/engine/darwin*/**",
+    ], allow_empty = True),
+    visibility = ["//visibility:public"],
+)
+
+filegroup(
+    name = "sdk_linux",
+    srcs = [":sdk_base"] + glob(["flutter/bin/cache/artifacts/engine/linux-*/**"], allow_empty = True),
+    visibility = ["//visibility:public"],
+)
+
+filegroup(
+    name = "sdk_windows",
+    srcs = [":sdk_base"] + glob(["flutter/bin/cache/artifacts/engine/windows-*/**"], allow_empty = True),
+    visibility = ["//visibility:public"],
+)
+
 flutter_toolchain(
     name = "flutter_toolchain",
     target_tool = select({{
@@ -712,6 +944,16 @@ flutter_toolchain(
         "//conditions:default": ":flutter_binary_unix",
     }}),
     sdk_files = ":flutter_sdk",
+    sdk_dart_files = ":sdk_dart",
+    sdk_framework_files = ":sdk_framework",
+    sdk_base_files = ":sdk_base",
+    sdk_test_files = ":sdk_test",
+    sdk_web_files = ":sdk_web",
+    sdk_android_files = ":sdk_android",
+    sdk_ios_files = ":sdk_ios",
+    sdk_macos_files = ":sdk_macos",
+    sdk_linux_files = ":sdk_linux",
+    sdk_windows_files = ":sdk_windows",
 )
 {package_group}
 """.format(

@@ -4,6 +4,13 @@ def shell_quote(arg):
     """Quote a string for safe interpolation into a bash script."""
     return "'" + arg.replace("'", "'\"'\"'") + "'"
 
+def _sdk_files(flutter_toolchain, capability):
+    """Return a capability closure, falling back for legacy custom toolchains."""
+    return flutter_toolchain.flutterinfo.sdk_groups.get(
+        capability,
+        flutter_toolchain.flutterinfo.sdk_files,
+    )
+
 # Portable (macOS-safe, no flock) mkdir-locked helpers for the opt-in
 # build_runner incremental-state cache. Inserted verbatim into the
 # preparation script as pre-resolved bash (NOT .format()ed), so their
@@ -978,7 +985,7 @@ echo "=== Dependency preparation complete ==="
         prepare_outputs = prepare_outputs + [pub_cache_dir]
     prepare_inputs = depset(
         direct = prepare_direct_inputs,
-        transitive = [flutter_toolchain.flutterinfo.sdk_files],
+        transitive = [_sdk_files(flutter_toolchain, "framework")],
     )
 
     ctx.actions.run_shell(
@@ -1655,7 +1662,7 @@ SCRIPT_COMPLETED=1
     inputs = depset(
         direct = [working_dir, pub_cache_dir, dart_tool_dir, pub_tool_file] +
                  flutter_toolchain.flutterinfo.tool_files,
-        transitive = [flutter_toolchain.flutterinfo.sdk_files] +
+        transitive = [_sdk_files(flutter_toolchain, target)] +
                      ([android.files] if android else []),
     )
 

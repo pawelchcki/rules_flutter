@@ -409,13 +409,19 @@ remote-cacheable by default, so a rebuild with no source changes is all cache
 hits (seconds), not a re-run. Getting that on CI depends on the *consumer's*
 configuration:
 
-- **Persist a cache across runs.** The heavy work (SDK provisioning, pub-cache
-  assembly, codegen) is cacheable, but a repository fetch is not an action — a
-  fresh/ephemeral runner re-downloads and re-extracts the SDK and re-resolves
-  every pub repository unless you persist a `--repository_cache` on a durable
-  volume (or bake the pinned SDK + assembled pub cache into a warm runner image).
-  Pair it with a remote cache (`--remote_cache` + `--remote_upload_local_results`)
-  so the locally-executed `no-remote-exec` action results populate it.
+- **Persist both repository caches across runs.** `--repository_cache` stores
+  downloaded archives, while `--repo_contents_cache` stores the deterministic,
+  materialized Flutter SDK after its fetch-time warm-up. Persist both on a
+  durable volume (or bake the pinned SDK + assembled pub cache into a warm
+  runner image); the second avoids re-extracting and re-warming the 1GB SDK in
+  each fresh output base. Pair them with a remote cache
+  (`--remote_cache` + `--remote_upload_local_results`) so the locally-executed
+  `no-remote-exec` action results populate it.
+
+  ```
+  common --repository_cache=/cache/bazel/downloads
+  common --repo_contents_cache=/cache/bazel/repository-contents
+  ```
 - **Do not put volatile values in the action environment.** `--action_env=HOME`
   (or any volatile `--action_env`/`--repo_env`) becomes part of *every* action's
   cache key, so runners (or a developer vs. CI) with a different `HOME` cannot

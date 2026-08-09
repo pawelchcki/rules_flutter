@@ -123,6 +123,13 @@ def _resolve_flutter_toolchain(ctx):
              "See the README \"Registering a Flutter toolchain\" section.")
     return flutter_toolchain, flutter_toolchain.flutterinfo.flutter_bin
 
+def _sdk_files(flutter_toolchain, capability):
+    """Return a capability-scoped SDK closure with a custom-toolchain fallback."""
+    return flutter_toolchain.flutterinfo.sdk_groups.get(
+        capability,
+        flutter_toolchain.flutterinfo.sdk_files,
+    )
+
 # Environment shared by every rule that materializes a runtime workspace and
 # is statically known at analysis time, so it is declared rather than exported
 # from the runner script. The $TEST_TMPDIR-derived variables (PUB_CACHE, HOME,
@@ -410,7 +417,7 @@ def _pubspec_lock_update_impl(ctx):
         files = [update_script, flutter_bin],
         transitive_files = depset(
             direct = flutter_toolchain.flutterinfo.tool_files,
-            transitive = [flutter_toolchain.flutterinfo.sdk_files],
+            transitive = [_sdk_files(flutter_toolchain, "base")],
         ),
     )
 
@@ -663,7 +670,7 @@ def _flutter_format_impl(ctx):
             files = depset([runner]),
             runfiles = ctx.runfiles(
                 files = [runner, ctx.file.pubspec] + flutter_toolchain.flutterinfo.tool_files,
-                transitive_files = flutter_toolchain.flutterinfo.sdk_files,
+                transitive_files = _sdk_files(flutter_toolchain, "dart"),
             ),
         ),
     ]
@@ -818,7 +825,7 @@ def _build_runner_command_impl(ctx):
             files = depset([runner]),
             runfiles = ctx.runfiles(
                 files = [runner, ctx.file.pubspec] + flutter_toolchain.flutterinfo.tool_files,
-                transitive_files = flutter_toolchain.flutterinfo.sdk_files,
+                transitive_files = _sdk_files(flutter_toolchain, "framework"),
             ),
         ),
     ]
@@ -1791,7 +1798,7 @@ def _flutter_dev_server_impl(ctx):
             runfiles = ctx.runfiles(
                 files = [runner, library_info.pubspec] +
                         flutter_toolchain.flutterinfo.tool_files,
-                transitive_files = flutter_toolchain.flutterinfo.sdk_files,
+                transitive_files = _sdk_files(flutter_toolchain, "web"),
             ),
         ),
     ]
@@ -2391,7 +2398,7 @@ def _runtime_output_groups(prepared_workspace, library_info):
         pub_get_log = depset([library_info.pub_get_log] if library_info.pub_get_log else []),
     )
 
-def _runtime_runfiles(ctx, runner, prepared_workspace, library_info, flutter_toolchain):
+def _runtime_runfiles(ctx, runner, prepared_workspace, library_info, flutter_toolchain, capability = "test"):
     """Runfiles common to rules that materialize a runtime workspace.
 
     The SDK belongs here: the runner resolves the Flutter launcher (and the
@@ -2410,7 +2417,7 @@ def _runtime_runfiles(ctx, runner, prepared_workspace, library_info, flutter_too
             # The package_config regeneration runs this with the SDK's dart.
             ctx.file._pub_tool,
         ] + flutter_toolchain.flutterinfo.tool_files,
-        transitive_files = flutter_toolchain.flutterinfo.sdk_files,
+        transitive_files = _sdk_files(flutter_toolchain, capability),
     )
 
 def _flutter_test_impl(ctx):
@@ -2836,7 +2843,7 @@ def _flutter_goldens_impl(ctx):
             library_info.dart_tool,
             pub_tool,
         ] + flutter_toolchain.flutterinfo.tool_files,
-        transitive = [flutter_toolchain.flutterinfo.sdk_files],
+        transitive = [_sdk_files(flutter_toolchain, "test")],
     )
 
     ctx.actions.run_shell(
@@ -2991,7 +2998,7 @@ exit "$RESULT"
         DefaultInfo(
             executable = runner,
             files = depset([runner]),
-            runfiles = _runtime_runfiles(ctx, runner, prepared_workspace, library_info, flutter_toolchain),
+            runfiles = _runtime_runfiles(ctx, runner, prepared_workspace, library_info, flutter_toolchain, "base"),
         ),
         RunEnvironmentInfo(environment = RUNTIME_ENV),
         _runtime_output_groups(prepared_workspace, library_info),
@@ -3110,7 +3117,7 @@ exec "$DART_BIN" format --output=none --set-exit-if-changed "${{FILES[@]}}"
             runfiles = ctx.runfiles(
                 files = [runner] + ctx.files.srcs +
                         flutter_toolchain.flutterinfo.tool_files,
-                transitive_files = flutter_toolchain.flutterinfo.sdk_files,
+                transitive_files = _sdk_files(flutter_toolchain, "dart"),
             ),
         ),
     ] + _test_execution_info(ctx)
@@ -3234,7 +3241,7 @@ exec "$DART_BIN" --packages="$PWD/{package_config}" "$ENTRYPOINT" "$@"
 
     tool_inputs = depset(
         direct = flutter_toolchain.flutterinfo.tool_files,
-        transitive = [flutter_toolchain.flutterinfo.sdk_files],
+        transitive = [_sdk_files(flutter_toolchain, "dart")],
     )
     additional_inputs = depset(
         direct = [package_config],
