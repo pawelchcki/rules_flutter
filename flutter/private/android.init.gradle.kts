@@ -16,5 +16,4 @@ gradle.beforeSettings {
 }
 allprojects {
     buildscript.repositories.useRulesFlutterMirror()
-    repositories.useRulesFlutterMirror()
 }

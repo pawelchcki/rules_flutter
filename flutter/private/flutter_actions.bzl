@@ -1409,7 +1409,7 @@ fi
 
         android_gradle_env = 'export GRADLE_USER_HOME="$BUILD_WORKSPACE_TMP/.gradle_home"' + """
 mkdir -p "$GRADLE_USER_HOME"
-export GRADLE_OPTS="-Dorg.gradle.daemon=false ${GRADLE_OPTS:-}"
+export GRADLE_OPTS="-Dorg.gradle.daemon=false ${{GRADLE_OPTS:-}}"
 # flutter build upgrades Android project files in place. Fast staging
 # hardlinks ordinary workspace files to read-only inputs, so detach this small
 # mutable subtree before Flutter touches it.
@@ -1419,9 +1419,30 @@ if [ "$FAST_STAGING" = "1" ] && [ -d android ]; then
     rm -rf android
     mv .rules_flutter_android_mutable android
 fi
+
+# Some Flutter plugins leave buildToolsVersion unset and still request the
+# historical 34.0.0 default. Expose that compatibility name through a
+# writable overlay while keeping every SDK byte backed by the declared,
+# checksummed toolchain input.
+SDK_INPUT="$ANDROID_HOME"
+SDK_OVERLAY="$BUILD_WORKSPACE_TMP/.android_sdk"
+mkdir -p "$SDK_OVERLAY/build-tools"
+for SDK_ENTRY in "$SDK_INPUT"/*; do
+    if [ "$(basename "$SDK_ENTRY")" != "build-tools" ]; then
+        ln -s "$SDK_ENTRY" "$SDK_OVERLAY/$(basename "$SDK_ENTRY")"
+    fi
+done
+for BUILD_TOOLS_ENTRY in "$SDK_INPUT/build-tools"/*; do
+    ln -s "$BUILD_TOOLS_ENTRY" "$SDK_OVERLAY/build-tools/$(basename "$BUILD_TOOLS_ENTRY")"
+done
+if [ ! -e "$SDK_OVERLAY/build-tools/34.0.0" ]; then
+    ln -s "$SDK_INPUT/build-tools/{build_tools_version}" "$SDK_OVERLAY/build-tools/34.0.0"
+fi
+export ANDROID_HOME="$SDK_OVERLAY"
+export ANDROID_SDK_ROOT="$ANDROID_HOME"
 mkdir -p android
 printf 'sdk.dir=%s\\nflutter.sdk=%s\\n' "$ANDROID_HOME" "$FLUTTER_ROOT" > android/local.properties
-"""
+""".format(build_tools_version = android.build_tools_version)
 
         # Keep aapt2 and lint out of the real ~/.android: it holds a per-machine
         # debug keystore and an analytics/AVD cache, none of it an input.

@@ -1451,6 +1451,7 @@ def _android_environment(ctx):
 
     return struct(
         sdk_path = android_toolchain.sdk_path,
+        build_tools_version = android_toolchain.build_tools_version,
         ndk_path = android_toolchain.ndk_path,
         java_home = java_runtime.java_home,
         gradle_home = android_toolchain.gradle_home,
