@@ -125,12 +125,31 @@ bzl_library(
     visibility = ["//flutter:__subpackages__"],
 )
 
-# Build-action helper executed with the toolchain SDK's own `dart`, replacing
-# the embedded Python the action scripts used to pipe into a host python3.
-exports_files(["tools/pub_tool.dart"])
+# Build-action helpers executed with the toolchain SDK's own `dart`, replacing
+# host-language dependencies and normalizing Flutter's generated web output.
+exports_files([
+    "tools/pub_tool.dart",
+    "tools/web_normalizer.dart",
+    "tools/web_normalizer_test.dart",
+])
 
 filegroup(
     name = "pub_tool",
     srcs = ["tools/pub_tool.dart"],
+    visibility = ["//visibility:public"],
+)
+
+filegroup(
+    name = "web_normalizer",
+    srcs = ["tools/web_normalizer.dart"],
+    visibility = ["//visibility:public"],
+)
+
+filegroup(
+    name = "web_normalizer_test_support",
+    srcs = [
+        "tools/web_normalizer.dart",
+        "tools/web_normalizer_test.dart",
+    ],
     visibility = ["//visibility:public"],
 )

@@ -110,6 +110,18 @@ cache are the only toolchain state the build sees. The action performs no
 network access — by construction (no step on this path is networked) rather
 than enforced by a network-blocking execution requirement.
 
+After Flutter finishes, a private Dart helper from the pinned SDK action
+inputs replaces only Flutter-injected service-worker versions with a
+content-derived SHA-256 fingerprint. It hashes sorted, length-delimited paths
+and bytes for the non-hidden web bundle (excluding the service worker), then
+repairs the affected MD5 values in the worker's `RESOURCES` map, including
+`/` for the root index. This keeps Flutter's default offline-first PWA behavior
+while removing its random cache-busting value. Token-based and legacy web
+templates are supported, recursively located `index.html` files are handled,
+and deliberately hardcoded versions are left alone. An absent or empty worker
+from `--pwa-strategy=none` is valid; an unrepairable non-empty manifest fails
+the action instead of publishing inconsistent cache metadata.
+
 ### Tests, analysis, and formatting
 
 `flutter_test` and `flutter_analyze_test` run from a prepared workspace;
@@ -329,6 +341,12 @@ the same mechanism `build_runner watch` relies on. Measured on a large app, a
 single-file edit's preparation action dropped from ~68s to ~55s, and the
 saving grows the more codegen a change would otherwise redo.
 
+The cache save happens before the prepared outputs are exported. The action
+then removes `.dart_tool/build` and `.dart_tool/build_resolvers` from its
+workspace, so absolute scratch paths and incremental bookkeeping never enter
+the declared workspace or `.dart_tool` tree. Generated Dart sources,
+`package_config.json`, and `package_graph.json` remain part of the outputs.
+
 Unlike the hermetic default, this opt-in makes the preparation action inherit
 the client shell environment (so the cache directory is reachable), a
 documented, opt-in reduction in hermeticity of the same kind as the
@@ -455,6 +473,12 @@ generator output to a `<target>_pub_prepare.log` file next to the target's
 other outputs under `bazel-bin/`, so after a build you can read, e.g.,
 `bazel-bin/my_app/lib_pub_prepare.log` to see what pub resolution and code
 generation printed.
+
+Flutter build diagnostics stay in Bazel's action stdout/stderr and are visible
+with the flags above. `<target>_build.log` remains a declared output and
+runfile, but on success it is a deterministic four-line summary containing
+only `Target`, `Mode`, `Command`, and `Status`; it intentionally does not
+capture Flutter's scratch paths, progress timings, or console transcript.
 
 ### Common failures
 

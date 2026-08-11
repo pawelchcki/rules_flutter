@@ -26,4 +26,14 @@ if [ ! -f "$MAIN_JS.map" ]; then
     exit 1
 fi
 
+ARTIFACTS_DIR="$(dirname "$MAIN_JS")"
+BUILD_LOG="$(find -L "${TEST_SRCDIR:-$PWD}" -path "*app.web_build.log" -type f 2>/dev/null | head -n 1)"
+DART_BIN="$(find -L "${TEST_SRCDIR:-$PWD}" -path "*flutter_sdk/bin/dart" -type f 2>/dev/null | head -n 1)"
+NORMALIZER_TEST="$(find -L "${TEST_SRCDIR:-$PWD}" -path "*/flutter/private/tools/web_normalizer_test.dart" -type f 2>/dev/null | head -n 1)"
+if [ -z "$BUILD_LOG" ] || [ -z "$DART_BIN" ] || [ -z "$NORMALIZER_TEST" ]; then
+    echo "✗ deterministic web assertion inputs missing from runfiles" >&2
+    exit 1
+fi
+"$DART_BIN" "$NORMALIZER_TEST" --verify-output "$ARTIFACTS_DIR" "$BUILD_LOG"
+
 echo "✓ dart_defines and build_args reached the web bundle"

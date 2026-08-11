@@ -73,6 +73,10 @@ ALLOW_REMOTE_EXECUTION_ATTR = {
         default = Label("//flutter/private:tools/pub_tool.dart"),
         allow_single_file = True,
     ),
+    "_web_normalizer": attr.label(
+        default = Label("//flutter/private:tools/web_normalizer.dart"),
+        allow_single_file = True,
+    ),
 }
 
 def _allow_remote_exec(ctx):
@@ -1583,6 +1587,7 @@ fi
         allow_remote_exec = _allow_remote_exec(ctx),
         fast_staging = _fast_staging(ctx),
         pub_tool_file = ctx.file._pub_tool,
+        web_normalizer_file = ctx.file._web_normalizer if ctx.attr.target == "web" else None,
     )
 
     runner = ctx.actions.declare_file(ctx.label.name + "_runner.sh")

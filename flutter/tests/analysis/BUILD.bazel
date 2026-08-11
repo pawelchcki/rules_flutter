@@ -81,9 +81,16 @@ build_command_test(
     absent_substrings = [
         "--dart-define",
         "--profile",
+        "exec > >(tee",
     ],
+    expected_inputs = ["flutter/private/tools/web_normalizer.dart"],
     expected_substrings = [
         "'build' 'web' '--no-pub' '--release'",
+        "Status: Success",
+    ],
+    ordered_substrings = [
+        '"$DART_BIN_LOCAL" "$WEB_NORMALIZER_ABS"',
+        "# Copy build artifacts to absolute path",
     ],
     target_under_test = ":fixture_default_app.web",
 )
@@ -122,6 +129,7 @@ build_command_test(
 
 build_command_test(
     name = "android_default_apk_test",
+    absent_inputs = ["flutter/private/tools/web_normalizer.dart"],
     absent_substrings = ["assembleAndroidTest"],
     expected_substrings = [
         "'build' 'apk' '--no-pub' '--release'",

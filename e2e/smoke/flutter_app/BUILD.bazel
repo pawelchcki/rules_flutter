@@ -200,7 +200,20 @@ filegroup(
 sh_test(
     name = "web_build_args_test",
     srcs = ["web_build_args_test.sh"],
-    data = [":app.web"],
+    data = [
+        ":app.web",
+        "@flutter_sdk//:dart_bin",
+        "@rules_flutter//flutter/private:web_normalizer_test_support",
+    ],
+)
+
+sh_test(
+    name = "web_normalizer_test",
+    srcs = ["web_normalizer_test.sh"],
+    data = [
+        "@flutter_sdk//:dart_bin",
+        "@rules_flutter//flutter/private:web_normalizer_test_support",
+    ],
 )
 
 build_test(
