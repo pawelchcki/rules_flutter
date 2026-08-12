@@ -108,6 +108,7 @@ test_suite(
         "//flutter_app:lib_test_copy_cache",
         "//flutter_app:lib_test_reference_cache",
         "//flutter_app:lib_test_sharded",
+        "//flutter_app:linux_build_artifacts_test",
         "//flutter_app:web_build_args_test",
         "//flutter_app:web_normalizer_test",
         "//proto_service:proto_generation_test",

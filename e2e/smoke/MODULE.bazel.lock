@@ -39,6 +39,11 @@
     "https://bcr.bazel.build/modules/bazel_features/1.4.1/MODULE.bazel": "e45b6bb2350aff3e442ae1111c555e27eac1d915e77775f6fdc4b351b758b5d7",
     "https://bcr.bazel.build/modules/bazel_features/1.9.0/MODULE.bazel": "885151d58d90d8d9c811eb75e3288c11f850e1d6b481a8c9f766adee4712358b",
     "https://bcr.bazel.build/modules/bazel_features/1.9.1/MODULE.bazel": "8f679097876a9b609ad1f60249c49d68bfab783dd9be012faf9d82547b14815a",
+    "https://bcr.bazel.build/modules/bazel_lib/3.0.0-rc.0/MODULE.bazel": "d6e00979a98ac14ada5e31c8794708b41434d461e7e7ca39b59b765e6d233b18",
+    "https://bcr.bazel.build/modules/bazel_lib/3.1.0/MODULE.bazel": "6809765c14e3c766a9b9286c7b0ec56ed87a73326e48fe01749f0c0fdcfe3287",
+    "https://bcr.bazel.build/modules/bazel_lib/3.1.0/source.json": "aaf7c2dc816219f4cb356c9d65f2555fb7f9543e537199f74a921f7877d23dfb",
+    "https://bcr.bazel.build/modules/bazel_linux_packages/0.4.1/MODULE.bazel": "9bcd612b78aa98db07f01ca7edc3129148aced24d3726884bba1f321031e724d",
+    "https://bcr.bazel.build/modules/bazel_linux_packages/0.4.1/source.json": "f3bbbf0f046fbc692b5e00f317088c6163b1874213027f1047bf505a1b9c647b",
     "https://bcr.bazel.build/modules/bazel_skylib/1.0.3/MODULE.bazel": "bcb0fd896384802d1ad283b4e4eb4d718eebd8cb820b0a2c3a347fb971afd9d8",
     "https://bcr.bazel.build/modules/bazel_skylib/1.1.1/MODULE.bazel": "1add3e7d93ff2e6998f9e118022c84d163917d912f5afafb3058e3d2f1545b5e",
     "https://bcr.bazel.build/modules/bazel_skylib/1.2.0/MODULE.bazel": "44fe84260e454ed94ad326352a698422dbe372b21a1ac9f3eab76eb531223686",
@@ -76,12 +81,15 @@
     "https://bcr.bazel.build/modules/googletest/1.15.2/MODULE.bazel": "6de1edc1d26cafb0ea1a6ab3f4d4192d91a312fd2d360b63adaa213cd00b2108",
     "https://bcr.bazel.build/modules/googletest/1.17.0/MODULE.bazel": "dbec758171594a705933a29fcf69293d2468c49ec1f2ebca65c36f504d72df46",
     "https://bcr.bazel.build/modules/googletest/1.17.0/source.json": "38e4454b25fc30f15439c0378e57909ab1fd0a443158aa35aec685da727cd713",
+    "https://bcr.bazel.build/modules/jq.bzl/0.4.0/MODULE.bazel": "a7b39b37589f2b0dad53fd6c1ccaabbdb290330caa920d7ef3e6aad068cd4ab2",
+    "https://bcr.bazel.build/modules/jq.bzl/0.4.0/source.json": "52ec7530c4618e03f634b30ff719814a68d7d39c235938b7aa2abbfe1eb1c52c",
     "https://bcr.bazel.build/modules/jsoncpp/1.9.5/MODULE.bazel": "31271aedc59e815656f5736f282bb7509a97c7ecb43e927ac1a37966e0578075",
     "https://bcr.bazel.build/modules/jsoncpp/1.9.6/MODULE.bazel": "2f8d20d3b7d54143213c4dfc3d98225c42de7d666011528dc8fe91591e2e17b0",
     "https://bcr.bazel.build/modules/jsoncpp/1.9.6/source.json": "a04756d367a2126c3541682864ecec52f92cdee80a35735a3cb249ce015ca000",
     "https://bcr.bazel.build/modules/libpfm/4.11.0/MODULE.bazel": "45061ff025b301940f1e30d2c16bea596c25b176c8b6b3087e92615adbd52902",
     "https://bcr.bazel.build/modules/nlohmann_json/3.6.1/MODULE.bazel": "6f7b417dcc794d9add9e556673ad25cb3ba835224290f4f848f8e2db1e1fca74",
     "https://bcr.bazel.build/modules/nlohmann_json/3.6.1/source.json": "f448c6e8963fdfa7eb831457df83ad63d3d6355018f6574fb017e8169deb43a9",
+    "https://bcr.bazel.build/modules/package_metadata/0.0.2/MODULE.bazel": "fb8d25550742674d63d7b250063d4580ca530499f045d70748b1b142081ebb92",
     "https://bcr.bazel.build/modules/package_metadata/0.0.3/MODULE.bazel": "77890552ecea9e284b5424c9de827a58099348763a4359e975c359a83d4faa83",
     "https://bcr.bazel.build/modules/package_metadata/0.0.5/MODULE.bazel": "ef4f9439e3270fdd6b9fd4dbc3d2f29d13888e44c529a1b243f7a31dfbc2e8e4",
     "https://bcr.bazel.build/modules/package_metadata/0.0.5/source.json": "2326db2f6592578177751c3e1f74786b79382cd6008834c9d01ec865b9126a85",
@@ -461,8 +469,8 @@
     },
     "@@rules_flutter+//flutter:extensions.bzl%flutter": {
       "general": {
-        "bzlTransitiveDigest": "YF2/H/X0lfYP9Q7WdD20lY5XO6Yom0xsygmMxE1ZiC4=",
-        "usagesDigest": "DmtFD/WdAMvXh7whCtauj7M6DaD5eQgpFMzkqiIIds0=",
+        "bzlTransitiveDigest": "zcnRGZ4LZOUIr2rSTyoFbW6n4QRhffvQqkq0Q42jjPo=",
+        "usagesDigest": "WrNLOMtHbY5BgHMBe3HMWm5GNjO5BJIhgHbmE4/sIow=",
         "recordedFileInputs": {},
         "recordedDirentsInputs": {},
         "envVariables": {
@@ -542,6 +550,167 @@
               "user_repository_name": "flutter"
             }
           },
+          "linux_repository": {
+            "repoRuleId": "@@bazel_linux_packages+//apt/private:deb_repository.bzl%_fetch",
+            "attributes": {
+              "architectures": [
+                "amd64",
+                "arm64"
+              ],
+              "components": [
+                "main",
+                "universe"
+              ],
+              "integrity": {
+                "https://snapshot.debian.org/archive/debian/20250201T023325Z/dists/bookworm/main/binary-amd64/Packages.xz": "sha256-Fl6W8bB5Dzn+0u4C6nYCJcZD8qjRx4Y220YpESAG7Ws=",
+                "https://snapshot.debian.org/archive/debian/20250201T023325Z/dists/bookworm/main/binary-arm64/Packages.xz": "sha256-EsJBx1P6LUUrd5hcnoexa1WDMUQ6cHQrxrzPA3rzg54=",
+                "https://snapshot.debian.org/archive/debian/20250201T023325Z/dists/bullseye/main/binary-amd64/Packages.xz": "sha256-HDQFREKX6thkcRwY5kvOSBDbY7SDQKL52BGC2fI1rXE=",
+                "https://snapshot.debian.org/archive/debian/20250201T023325Z/dists/bullseye/main/binary-arm64/Packages.xz": "sha256-caUlhdxcp45daC4T/HAqB3wrFDVbzgIKsP+U5O+EEHo=",
+                "https://snapshot.debian.org/archive/debian/20250201T023325Z/dists/trixie/main/binary-amd64/Packages.xz": "sha256-KRgblQPapfuy9adPyAdJX3FSZtiXWlNtwFjJ/kfN4TE=",
+                "https://snapshot.debian.org/archive/debian/20250201T023325Z/dists/trixie/main/binary-arm64/Packages.xz": "sha256-jnm7as0JYi65vZhcHQdfSRib5+BXDJYZ6tQh8lnafBk=",
+                "https://snapshot.ubuntu.com/ubuntu/20250219T154000Z/dists/focal/main/binary-amd64/Packages.xz": "sha256-d1eSH/j+7Zw5NKDJk21EG6SiOL7j6myMHfXLzUP8mGE=",
+                "https://snapshot.ubuntu.com/ubuntu/20250219T154000Z/dists/focal/main/binary-arm64/Packages.xz": "sha256-4BSyQQIdjAzxbLlPRPTK+3dGUHdpuvNrd4RdOuIuLBs=",
+                "https://snapshot.ubuntu.com/ubuntu/20250219T154000Z/dists/focal/universe/binary-amd64/Packages.xz": "sha256-RqdG2seJvZU3rKVNsWgLnf9RwkgVMRE1A4IZnX2WudE=",
+                "https://snapshot.ubuntu.com/ubuntu/20250219T154000Z/dists/focal/universe/binary-arm64/Packages.xz": "sha256-guCn48uS32rEMXOCIWGzrLoe77F+sm5aj1nwPeiT36E=",
+                "https://snapshot.ubuntu.com/ubuntu/20250219T154000Z/dists/jammy/main/binary-amd64/Packages.xz": "sha256-N8tX8VVMv6ccWinun/7hipqMF4K7BWjgh0t/9M6PnBE=",
+                "https://snapshot.ubuntu.com/ubuntu/20250219T154000Z/dists/jammy/main/binary-arm64/Packages.xz": "sha256-uA0fCXGY9KLYD4TbAlImPZAgUaaVBArLwIXwMwSLybs=",
+                "https://snapshot.ubuntu.com/ubuntu/20250219T154000Z/dists/jammy/universe/binary-amd64/Packages.xz": "sha256-0pyyTJP+xfQyVXBrzn60bUd5lSA52MaKwbsUpvNlXOI=",
+                "https://snapshot.ubuntu.com/ubuntu/20250219T154000Z/dists/jammy/universe/binary-arm64/Packages.xz": "sha256-I8GSi37A9qPjlvSPQ7aZW90Bpx3YQ6bMiaraC9q6SF0=",
+                "https://snapshot.ubuntu.com/ubuntu/20250219T154000Z/dists/noble/main/binary-amd64/Packages.xz": "sha256-KmoZnhAxpcJ5yzRmRtWUmT81scA91KgqqgMjmA3ZJFE=",
+                "https://snapshot.ubuntu.com/ubuntu/20250219T154000Z/dists/noble/main/binary-arm64/Packages.xz": "sha256-ShkB5hJPsKER9d/8j1wUR09Eni7Ppx8urwspkX7bU/k=",
+                "https://snapshot.ubuntu.com/ubuntu/20250219T154000Z/dists/noble/universe/binary-amd64/Packages.xz": "sha256-upBX+huRQ4zIodJoCNAMhTif4QHQwUliVN+XI2QFWZo=",
+                "https://snapshot.ubuntu.com/ubuntu/20250219T154000Z/dists/noble/universe/binary-arm64/Packages.xz": "sha256-bfIwz1z+vL1Z5OJxO47tB9wKrtZvtHHr8EbLcMywcnU=",
+                "https://snapshot.ubuntu.com/ubuntu/20250219T154000Z/dists/oracular/main/binary-amd64/Packages.xz": "sha256-jfIC4OforO3TrOVIqS6mn9jkTLOCg2ZTtmwq5wXt9pA=",
+                "https://snapshot.ubuntu.com/ubuntu/20250219T154000Z/dists/oracular/main/binary-arm64/Packages.xz": "sha256-zqCVNUadbGa2mrrmTjiTQNLGRBZ3rJ1v/EA4+iraKRw=",
+                "https://snapshot.ubuntu.com/ubuntu/20250219T154000Z/dists/oracular/universe/binary-amd64/Packages.xz": "sha256-zbVv2+qgHh5IXdQgPCoI3BOTNIc7QOd277uvu6bsuOk=",
+                "https://snapshot.ubuntu.com/ubuntu/20250219T154000Z/dists/oracular/universe/binary-arm64/Packages.xz": "sha256-TtulJOQcfsoCl2SnoSDL5g37DqmPNLmSYC15Bhf+uT0="
+              },
+              "suites": [
+                "jammy"
+              ],
+              "uri": "https://snapshot.ubuntu.com/ubuntu/20250219T154000Z"
+            }
+          },
+          "linux_index": {
+            "repoRuleId": "@@bazel_linux_packages+//apt/private:deb_download.bzl%_deb_index",
+            "attributes": {
+              "apparent_name": "linux_index",
+              "architectures": [
+                "amd64",
+                "arm64"
+              ],
+              "input_data": "{\"architectures\":[\"amd64\",\"arm64\"],\"packages\":[\"binutils\",\"clang\",\"cmake\",\"libgtk-3-dev\",\"libstdc++-12-dev\",\"ninja-build\",\"patchelf\",\"pkg-config\"]}",
+              "lockfile": "@@rules_flutter+//flutter/private:linux_packages.lock.json",
+              "packages": [
+                "binutils",
+                "clang",
+                "cmake",
+                "libgtk-3-dev",
+                "libstdc++-12-dev",
+                "ninja-build",
+                "patchelf",
+                "pkg-config"
+              ],
+              "resolve_transitive": true,
+              "sources": [
+                "linux_repository"
+              ]
+            }
+          },
+          "linux_amd64_download": {
+            "repoRuleId": "@@bazel_linux_packages+//apt/private:deb_download.bzl%_deb_download",
+            "attributes": {
+              "apparent_name": "linux_amd64_download",
+              "architecture": "amd64",
+              "index": "linux_index",
+              "input_data": "{\"architectures\":[\"amd64\",\"arm64\"],\"packages\":[\"binutils\",\"clang\",\"cmake\",\"libgtk-3-dev\",\"libstdc++-12-dev\",\"ninja-build\",\"patchelf\",\"pkg-config\"]}",
+              "install_name": "linux_amd64",
+              "lockfile": "@@rules_flutter+//flutter/private:linux_packages.lock.json",
+              "sources": [
+                "linux_repository"
+              ]
+            }
+          },
+          "linux_amd64": {
+            "repoRuleId": "@@bazel_linux_packages+//apt/private:deb_install.bzl%deb_install",
+            "attributes": {
+              "add_files": {},
+              "apparent_name": "linux_amd64",
+              "architecture": "amd64",
+              "build_file": "@@bazel_linux_packages+//apt:install.BUILD.bazel.tmpl",
+              "build_file_substitutions": {},
+              "fix_absolute_interpreter_with_patchelf": false,
+              "fix_relative_interpreter_with_patchelf": true,
+              "fix_rpath_with_patchelf": true,
+              "glob_excludes": [
+                "lib/systemd/system/**",
+                "usr/share/man/**"
+              ],
+              "glob_pattern": [
+                "**"
+              ],
+              "patchelf_dirs": [
+                "lib/aarch64-linux-gnu",
+                "lib/x86_64-linux-gnu",
+                "usr/bin",
+                "usr/lib/aarch64-linux-gnu",
+                "usr/lib/llvm-14/bin",
+                "usr/lib/x86_64-linux-gnu"
+              ],
+              "post_install_cmd": {},
+              "source": "linux_amd64_download"
+            }
+          },
+          "linux_arm64_download": {
+            "repoRuleId": "@@bazel_linux_packages+//apt/private:deb_download.bzl%_deb_download",
+            "attributes": {
+              "apparent_name": "linux_arm64_download",
+              "architecture": "arm64",
+              "index": "linux_index",
+              "input_data": "{\"architectures\":[\"amd64\",\"arm64\"],\"packages\":[\"binutils\",\"clang\",\"cmake\",\"libgtk-3-dev\",\"libstdc++-12-dev\",\"ninja-build\",\"patchelf\",\"pkg-config\"]}",
+              "install_name": "linux_arm64",
+              "lockfile": "@@rules_flutter+//flutter/private:linux_packages.lock.json",
+              "sources": [
+                "linux_repository"
+              ]
+            }
+          },
+          "linux_arm64": {
+            "repoRuleId": "@@bazel_linux_packages+//apt/private:deb_install.bzl%deb_install",
+            "attributes": {
+              "add_files": {},
+              "apparent_name": "linux_arm64",
+              "architecture": "arm64",
+              "build_file": "@@bazel_linux_packages+//apt:install.BUILD.bazel.tmpl",
+              "build_file_substitutions": {},
+              "fix_absolute_interpreter_with_patchelf": false,
+              "fix_relative_interpreter_with_patchelf": true,
+              "fix_rpath_with_patchelf": true,
+              "glob_excludes": [
+                "lib/systemd/system/**",
+                "usr/share/man/**"
+              ],
+              "glob_pattern": [
+                "**"
+              ],
+              "patchelf_dirs": [
+                "lib/aarch64-linux-gnu",
+                "lib/x86_64-linux-gnu",
+                "usr/bin",
+                "usr/lib/aarch64-linux-gnu",
+                "usr/lib/llvm-14/bin",
+                "usr/lib/x86_64-linux-gnu"
+              ],
+              "post_install_cmd": {},
+              "source": "linux_arm64_download"
+            }
+          },
+          "linux_toolchains": {
+            "repoRuleId": "@@rules_flutter+//flutter/private:linux_repositories.bzl%linux_toolchains_repository",
+            "attributes": {
+              "packages_repository": "linux"
+            }
+          },
           "android_android_sdk_darwin": {
             "repoRuleId": "@@hermetic_android_toolchains+//sdk:repositories.bzl%hermetic_android_sdk_platform_repository",
             "attributes": {
@@ -601,9 +770,24 @@
         },
         "recordedRepoMappingEntries": [
           [
+            "bazel_linux_packages+",
+            "bazel_lib",
+            "bazel_lib+"
+          ],
+          [
+            "bazel_linux_packages+",
+            "bazel_skylib",
+            "bazel_skylib+"
+          ],
+          [
             "hermetic_android_toolchains+",
             "rules_android_ndk",
             "rules_android_ndk+"
+          ],
+          [
+            "rules_flutter+",
+            "bazel_linux_packages",
+            "bazel_linux_packages+"
           ],
           [
             "rules_flutter+",

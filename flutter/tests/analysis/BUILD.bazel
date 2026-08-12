@@ -1,5 +1,6 @@
 load("//flutter:android_toolchain.bzl", "android_toolchain")
 load("//flutter:defs.bzl", "flutter_app", "flutter_library")
+load("//flutter:linux_toolchain.bzl", "linux_toolchain")
 load(
     ":defs_analysis_test.bzl",
     "android_offline_test",
@@ -32,6 +33,25 @@ toolchain(
     name = "fixture_android_toolchain",
     toolchain = ":fixture_android",
     toolchain_type = "//flutter:android_toolchain_type",
+)
+
+linux_toolchain(
+    name = "fixture_linux",
+    debian_arch = "amd64",
+    flutter_arch = "x64",
+    gnu_triple = "x86_64-linux-gnu",
+    loader = "lib64/ld-linux-x86-64.so.2",
+    packages = "linux-toolchain-fixture.txt",
+)
+
+toolchain(
+    name = "fixture_linux_toolchain",
+    exec_compatible_with = [
+        "@platforms//os:linux",
+        "@platforms//cpu:x86_64",
+    ],
+    toolchain = ":fixture_linux",
+    toolchain_type = "//flutter:linux_toolchain_type",
 )
 
 # Fixture targets are analysis-only: the analysis tests inspect their action
@@ -93,6 +113,42 @@ build_command_test(
         "# Copy build artifacts to absolute path",
     ],
     target_under_test = ":fixture_default_app.web",
+)
+
+flutter_app(
+    name = "fixture_linux_app",
+    embed = [":fixture_lib"],
+    linux = [],
+    tags = ["manual"],
+)
+
+build_command_test(
+    name = "linux_hermetic_toolchain_test",
+    absent_substrings = [
+        "command -v clang",
+        "command -v cmake",
+        "command -v ninja",
+        "command -v pkg-config",
+        "_linux_compiler_wrapper()",
+        "--set-interpreter",
+        "-DCMAKE_BUILD_WITH_INSTALL_RPATH=ON",
+    ],
+    expected_inputs = [
+        "flutter/private/linux_cmake_initial_cache.cmake",
+        "flutter/private/linux_tool_launcher.sh",
+        "flutter/private/linux_toolchain_setup.sh",
+        "flutter/tests/analysis/linux-toolchain-fixture.txt",
+    ],
+    expected_substrings = [
+        "LINUX_ROOT=",
+        "LINUX_LOADER=",
+        "LINUX_TOOL_LAUNCHER=",
+        "LINUX_CMAKE_INITIAL_CACHE=",
+        "source \"$ORIGINAL_PWD/",
+        "'build' 'linux' '--no-pub' '--release'",
+        "build/linux/x64/release/bundle",
+    ],
+    target_under_test = ":fixture_linux_app.linux",
 )
 
 flutter_app(
@@ -213,5 +269,6 @@ test_suite(
         ":build_command_customization_test",
         ":build_command_defaults_test",
         ":embed_unassembled_cache_test",
+        ":linux_hermetic_toolchain_test",
     ],
 )

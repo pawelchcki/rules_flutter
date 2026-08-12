@@ -10,10 +10,25 @@ names (the latest version will be picked for each name) and can register them as
 effectively overriding the default named toolchain due to toolchain resolution precedence.
 """
 
+# bazel_linux_packages exposes repository creation only through its module
+# extension. Extensions cannot invoke other extensions, so compose its pinned
+# repository rules directly until upstream publishes a public composition API.
+# buildifier: disable=bzl-visibility
+load("@bazel_linux_packages//apt/private:deb_download.bzl", "deb_download")
+
+# buildifier: disable=bzl-visibility
+load("@bazel_linux_packages//apt/private:deb_install.bzl", "deb_install")
+
+# buildifier: disable=bzl-visibility
+load("@bazel_linux_packages//apt/private:deb_repository.bzl", "deb_repository")
+
+# buildifier: disable=bzl-visibility
+load("@bazel_linux_packages//apt/private:integrities.bzl", "INTEGRITIES")
 load("@hermetic_android_toolchains//ndk:repositories.bzl", "ANDROID_NDK_LICENSE_ENV", "hermetic_android_ndk_platform_repository", "hermetic_android_ndk_repository")
 load("@hermetic_android_toolchains//private:utils.bzl", "ANDROID_PLATFORMS")
 load("@hermetic_android_toolchains//sdk:repositories.bzl", "ANDROID_SDK_LICENSE_ENV", "hermetic_android_sdk_platform_repository", "hermetic_android_sdk_repository")
 load("//flutter/private:android_repositories.bzl", "android_toolchains_repository", "gradle_repository")
+load("//flutter/private:linux_repositories.bzl", "LINUX_ARCHITECTURES", "LINUX_PACKAGES", "LINUX_PACKAGE_COMPONENTS", "LINUX_PACKAGE_SNAPSHOT", "LINUX_PACKAGE_SUITES", "linux_toolchains_repository")
 load("//flutter/private:pub_lock_hub.bzl", "pub_lock_hub")
 load("//flutter/private:pub_repository.bzl", "pub_dev_repository")
 load("//flutter/private:pubspec_lock.bzl", "lock_hosted_packages", "parse_pubspec_lock")
@@ -63,6 +78,97 @@ android_toolchain = tag_class(attrs = {
     "gradle_distribution_url": attr.string(mandatory = True),
     "gradle_distribution_integrity": attr.string(mandatory = True),
 })
+
+linux_toolchain = tag_class(attrs = {
+    "name": attr.string(
+        default = "linux",
+        doc = "Base name for generated hermetic Linux package and toolchain repositories. The pinned Ubuntu Jammy closure supports Linux x86_64 and arm64 execution platforms and includes Clang, CMake, Ninja, pkg-config, GTK 3 development files, binutils, and the C/C++ runtime. Declare this tag in the root module, import <name>_toolchains with use_repo, and register @<name>_toolchains//:all.",
+    ),
+})
+
+def _linux_package_input_data():
+    return json.encode({
+        "architectures": sorted(LINUX_ARCHITECTURES.keys()),
+        "packages": LINUX_PACKAGES,
+    })
+
+def _create_linux_toolchain(name):
+    """Instantiate the locked Ubuntu package closure and its Bazel toolchains."""
+    source_repo = "{}_repository".format(name)
+    index_repo = "{}_index".format(name)
+    input_data = _linux_package_input_data()
+    lockfile = Label("//flutter/private:linux_packages.lock.json")
+
+    deb_repository.fetch(
+        name = source_repo,
+        architectures = sorted(LINUX_ARCHITECTURES.keys()),
+        components = LINUX_PACKAGE_COMPONENTS,
+        integrity = INTEGRITIES,
+        suites = LINUX_PACKAGE_SUITES,
+        uri = LINUX_PACKAGE_SNAPSHOT,
+    )
+    deb_download.index(
+        name = index_repo,
+        apparent_name = index_repo,
+        architectures = sorted(LINUX_ARCHITECTURES.keys()),
+        input_data = input_data,
+        lockfile = lockfile,
+        packages = LINUX_PACKAGES,
+        resolve_transitive = True,
+        sources = [source_repo],
+    )
+
+    # Include both multiarch layouts so a repository fetched while resolving
+    # another platform is still described correctly. The installer silently
+    # skips directories absent from the selected architecture's closure.
+    patchelf_dirs = [
+        "lib/aarch64-linux-gnu",
+        "lib/x86_64-linux-gnu",
+        "usr/bin",
+        "usr/lib/aarch64-linux-gnu",
+        "usr/lib/llvm-14/bin",
+        "usr/lib/x86_64-linux-gnu",
+    ]
+    for architecture in sorted(LINUX_ARCHITECTURES.keys()):
+        install_repo = "{}_{}".format(name, architecture)
+        download_repo = "{}_download".format(install_repo)
+        deb_download.download(
+            name = download_repo,
+            apparent_name = download_repo,
+            architecture = architecture,
+            index = index_repo,
+            input_data = input_data,
+            install_name = install_repo,
+            lockfile = lockfile,
+            sources = [source_repo],
+        )
+        deb_install(
+            name = install_repo,
+            add_files = {},
+            apparent_name = install_repo,
+            architecture = architecture,
+            build_file = Label("@bazel_linux_packages//apt:install.BUILD.bazel.tmpl"),
+            build_file_substitutions = {},
+            fix_absolute_interpreter_with_patchelf = False,
+            fix_relative_interpreter_with_patchelf = True,
+            fix_rpath_with_patchelf = True,
+            # systemd ships a literal backslash in an escaped unit filename;
+            # Bazel labels forbid that character. These service units are not
+            # compiler/sysroot inputs, so omit the directory from the filegroup.
+            glob_excludes = [
+                "lib/systemd/system/**",
+                "usr/share/man/**",
+            ],
+            glob_pattern = ["**"],
+            patchelf_dirs = patchelf_dirs,
+            post_install_cmd = {},
+            source = download_repo,
+        )
+
+    linux_toolchains_repository(
+        name = "{}_toolchains".format(name),
+        packages_repository = name,
+    )
 
 def _gradle_version(url):
     filename = url.rsplit("/", 1)[-1]
@@ -141,6 +247,19 @@ def _toolchain_extension(module_ctx):
             register = False,
         )
 
+    linux_tags = []
+    for mod in module_ctx.modules:
+        if mod.tags.linux_toolchain:
+            if not mod.is_root:
+                fail("flutter.linux_toolchain(...) may only be declared by the root module")
+            linux_tags.extend(mod.tags.linux_toolchain)
+    linux_names = {}
+    for linux in linux_tags:
+        if linux.name in linux_names:
+            fail("flutter.linux_toolchain name '{}' was declared more than once".format(linux.name))
+        linux_names[linux.name] = True
+        _create_linux_toolchain(linux.name)
+
     android_tags = []
     for mod in module_ctx.modules:
         if mod.tags.android_toolchain:
@@ -217,6 +336,7 @@ flutter = module_extension(
     implementation = _toolchain_extension,
     tag_classes = {
         "android_toolchain": android_toolchain,
+        "linux_toolchain": linux_toolchain,
         "toolchain": flutter_toolchain,
     },
     environ = [ANDROID_NDK_LICENSE_ENV, ANDROID_SDK_LICENSE_ENV],

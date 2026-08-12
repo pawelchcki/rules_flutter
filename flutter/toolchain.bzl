@@ -36,6 +36,7 @@ def _flutter_toolchain_impl(ctx):
     # Keep the (large) SDK file set as a depset end-to-end: consumers merge it
     # into action inputs/runfiles without ever flattening it per target.
     sdk_files = ctx.attr.sdk_files.files if ctx.attr.sdk_files else depset()
+
     # Keep custom toolchains source-compatible: before capability-scoped SDK
     # inputs existed they supplied only sdk_files, so each capability must use
     # that complete closure unless it was explicitly populated.

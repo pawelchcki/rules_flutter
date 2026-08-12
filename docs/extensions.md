@@ -19,6 +19,7 @@ effectively overriding the default named toolchain due to toolchain resolution p
 flutter = use_extension("@rules_flutter//flutter:extensions.bzl", "flutter")
 flutter.android_toolchain(<a href="#flutter.android_toolchain-name">name</a>, <a href="#flutter.android_toolchain-build_tools_version">build_tools_version</a>, <a href="#flutter.android_toolchain-gradle_distribution_integrity">gradle_distribution_integrity</a>,
                           <a href="#flutter.android_toolchain-gradle_distribution_url">gradle_distribution_url</a>, <a href="#flutter.android_toolchain-ndk_version">ndk_version</a>, <a href="#flutter.android_toolchain-sdk_version">sdk_version</a>)
+flutter.linux_toolchain(<a href="#flutter.linux_toolchain-name">name</a>)
 flutter.toolchain(<a href="#flutter.toolchain-name">name</a>, <a href="#flutter.toolchain-flutter_version">flutter_version</a>, <a href="#flutter.toolchain-integrity">integrity</a>, <a href="#flutter.toolchain-precache">precache</a>, <a href="#flutter.toolchain-warm_first_run_stamps">warm_first_run_stamps</a>)
 </pre>
 
@@ -39,6 +40,16 @@ flutter.toolchain(<a href="#flutter.toolchain-name">name</a>, <a href="#flutter.
 | <a id="flutter.android_toolchain-gradle_distribution_url"></a>gradle_distribution_url |  -   | String | required |  |
 | <a id="flutter.android_toolchain-ndk_version"></a>ndk_version |  -   | String | optional |  `""`  |
 | <a id="flutter.android_toolchain-sdk_version"></a>sdk_version |  -   | String | required |  |
+
+<a id="flutter.linux_toolchain"></a>
+
+### linux_toolchain
+
+**Attributes**
+
+| Name  | Description | Type | Mandatory | Default |
+| :------------- | :------------- | :------------- | :------------- | :------------- |
+| <a id="flutter.linux_toolchain-name"></a>name |  Base name for generated hermetic Linux package and toolchain repositories. The pinned Ubuntu Jammy closure supports Linux x86_64 and arm64 execution platforms and includes Clang, CMake, Ninja, pkg-config, GTK 3 development files, binutils, and the C/C++ runtime. Declare this tag in the root module, import <name>_toolchains with use_repo, and register @<name>_toolchains//:all.   | <a href="https://bazel.build/concepts/labels#target-names">Name</a> | optional |  `"linux"`  |
 
 <a id="flutter.toolchain"></a>
 

@@ -6,6 +6,11 @@
 > complete `android_maven_repo`. Host SDK and persistent Gradle-home escape
 > hatches are no longer supported.
 
+> **Linux contract:** `{name}.linux` actions are hermetic, sandboxable,
+> remotely cacheable, and offline. Declare `flutter.linux_toolchain()` and
+> register `@linux_toolchains//:all`; no host compiler, build tool, GTK
+> development package, or C/C++ sysroot is used.
+
 This document states exactly which parts of a `rules_flutter` build are
 hermetic, which parts are declared non-hermetic, and why. Everything below is
 grounded in the rule implementations (`flutter/repositories.bzl`,
@@ -74,7 +79,9 @@ metadata, and stages the checked-in lock itself into the prepared workspace so
 build_runner reads a genuine, pub-authored lock.
 Downstream build and test actions regenerate `package_config.json` (plus the
 `package_graph.json` newer flutter_tools require) from the same metadata with
-sandbox-correct paths. No `pub get` runs and no resolver touches the network
+sandbox-correct paths. Native build actions additionally run `pub get
+--offline` against a mutable copy of that assembled cache so Flutter can
+regenerate platform plugin registrants. No resolver touches the network
 anywhere on this path.
 
 `pubspec.lock` is maintained by the generated run helper — `bazel run
@@ -121,6 +128,31 @@ templates are supported, recursively located `index.html` files are handled,
 and deliberately hardcoded versions are left alone. An absent or empty worker
 from `--pwa-strategy=none` is valid; an unrepairable non-empty manifest fails
 the action instead of publishing inconsistent cache metadata.
+
+### Linux desktop builds
+
+`{name}.linux` resolves a platform-specific Bazel toolchain for Linux x86_64
+or arm64. The module extension materializes a checksummed package closure from
+a timestamped Ubuntu Jammy snapshot. That closure includes Clang 14, CMake,
+Ninja, pkg-config, binutils, GTK 3 development files, the glibc development
+sysroot, and the C/C++ runtime libraries together with all transitive package
+dependencies.
+
+The build action declares the whole closure as inputs and creates action-local
+wrappers for every native tool. The compiler receives an explicit sysroot,
+resource directory, linker tools, and repaired glibc linker scripts;
+pkg-config receives only sysroot-relative search directories. CMake's copied
+action-local executable is patched to the closure's dynamic loader and RPATH,
+which keeps its nested Ninja invocations independent of the executor image.
+The Flutter SDK, pub cache, sources, tool wrappers, headers, and libraries are
+therefore all visible to Bazel and the action runs under normal sandboxing
+without network access or the client shell environment.
+
+The output tree is the standard Flutter release bundle: the app executable,
+Flutter engine library, AOT library, ICU data, and Flutter assets. GTK and its
+runtime dependencies remain operating-system runtime requirements of that
+bundle; the hermetic toolchain controls compilation and linking rather than
+turning the output into a distro-independent AppImage.
 
 ### Tests, analysis, and formatting
 
@@ -172,22 +204,23 @@ in `flutter_actions.bzl`:
   host toolchain and the network has inputs Bazel cannot see, so its key does
   not identify its output and the result is not safe to share with another
   machine. See [Remote execution](#remote-execution).
-- Everything else (`FlutterBuild` for web and desktop targets,
+- Everything else (`FlutterBuild` for web and Linux/other desktop targets,
   `FlutterPrepareDeps`, `SetupFlutterWorkspace`, tests): no special execution
   requirements; they run under Bazel's default sandboxing.
 
 | Target | What's hermetic | What's not | Why |
 | --- | --- | --- | --- |
 | `{name}.web` | Everything: sealed SDK, assembled pub cache, `--no-pub` build, package config regenerated in-action. | Nothing declared. | No host tools or network are needed for web output. |
+| `{name}.linux` | Everything needed to compile and link: sealed SDK, assembled pub cache, offline plugin tooling, snapshot- and checksum-pinned Clang/CMake/Ninja/pkg-config/binutils/GTK/sysroot closure, and regenerated package config. | GTK and its shared-library closure are runtime requirements of the emitted bundle. | Build tools are invoked through action-local wrappers with an explicit sysroot, loader, library path, and pkg-config search path; none are discovered on the host. |
 | `{name}.apk` / `{name}.appbundle` | The Flutter SDK, all Dart dependencies (the plugin-registrant regeneration runs `flutter pub get --offline` against a *mutable copy* of the assembled cache — pub writes bookkeeping such as `active_roots` into `PUB_CACHE`, so the read-only input is copied first; still no network for pub), `dart_defines`/`build_args`, `JAVA_HOME` from Bazel's java runtime toolchain. | Gradle downloads its distribution and Maven dependencies (`requires-network`); the Android SDK is the host installation consumed through rules_android's `@androidsdk//:sdk_path` (discovered via `ANDROID_HOME`); the action runs `no-sandbox`, `no-remote-exec`, with the client shell environment. | rules_android wraps the host SDK in a symlink tree that omits directories AGP 8 needs (`ndk/<version>`, `licenses/`), so the action resolves the *real* host SDK behind the wrapper — a tree that cannot be staged into a sandbox. Gradle has no offline story for a cold `GRADLE_USER_HOME`. |
 | `{name}.ios` | The Flutter SDK, all Dart dependencies (same offline `pub get` against a mutable cache copy), `dart_defines`/`build_args`. | Host Xcode (`xcodebuild`) and CocoaPods are declared prerequisites; `pod install` (driven by the Flutter tool) fetches pod specs and binary pods over the network; the action runs `requires-darwin`, `no-sandbox`, `no-remote-exec`, with the client shell environment. Under `--incompatible_strict_action_env` the action probes common CocoaPods install locations (`/opt/homebrew/bin`, `/usr/local/bin`, `~/.gem/bin`, ruby gem bindirs) before failing. | Relying on host Xcode is standard practice for Bazel Apple builds; CocoaPods manages its own spec repo and caches under `HOME`. |
 | `flutter_test` / `flutter_analyze_test` / `dart_format_test` | Everything: the first two copy the prepared workspace and pub cache into `$TEST_TMPDIR` with a scratch `HOME` and `--no-pub`; `dart_format_test` runs `dart format` directly over the runfiles copies of its `srcs`. No network in any of them. | Nothing declared. | Tests only consume already-prepared inputs. |
 | `{name}.dev`, `{name}.update`, `build_runner` run helpers | The Flutter SDK they invoke (sealed and pinned; the `flutter`-driven `.dev`/`.update` helpers additionally set `FLUTTER_ALREADY_LOCKED` + `--no-version-check`, while the build_runner helpers invoke `dart` directly and rely on the seal). | These are `bazel run` helpers that operate on your **source** workspace by design: the dev server serves your live sources, and `.update` re-resolves dependencies (the whole point). `.update` works in a temporary copy of the workspace and writes back only `pubspec.lock`. | Developer-loop tooling, intentionally outside the build graph. |
 
-Desktop targets (`macos`, `linux`, `windows`) run with the default sandboxed
-configuration and no declared exceptions, but they depend on host platform
-toolchains that Flutter discovers itself; they are not yet part of the
-verified contract above.
+The remaining desktop targets (`macos`, `windows`) run with the default
+sandboxed configuration and no declared exceptions, but they still depend on
+host platform toolchains that Flutter discovers itself; they are not yet part
+of the verified contract above.
 
 ## Cache opt-ins
 
@@ -485,6 +518,10 @@ capture Flutter's scratch paths, progress timings, or console transcript.
 - **"no Flutter toolchain is registered"** — no toolchain was resolved. Add the
   `flutter` extension and `register_toolchains("@flutter_toolchains//:all")`
   (see the README "Register a Flutter toolchain" section).
+- **A Linux target says its toolchain is missing** — add
+  `flutter.linux_toolchain()`, import `linux_toolchains` with `use_repo`, and
+  call `register_toolchains("@linux_toolchains//:all")` (see the README
+  "Hermetic Linux desktop builds" section).
 - **"Flutter `<v>` is not in the built-in version table"** — the pinned
   `flutter_version` is not in `versions.bzl`. Run
   `bazel run //tools:update_flutter_versions`, or supply an `integrity` map for

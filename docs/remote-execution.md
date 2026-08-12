@@ -33,6 +33,11 @@ been recorded. Treat the sections below as an audit, not a support statement.
 - **Resource hints are declared.** `heavy_action_resource_set` asks for 4 CPUs
   and 4GB, so a scheduler that honours them will not put the flutter tool on a
   single-core worker.
+- **Linux native inputs are complete.** A Linux worker resolves the matching
+  x86_64 or arm64 toolchain, and the action receives the snapshot-pinned
+  compiler, CMake, Ninja, pkg-config, binutils, GTK development files, sysroot,
+  dynamic loader, and transitive package closure as declared inputs. The
+  executor image does not need those packages installed.
 
 ## Blockers
 

@@ -17,14 +17,15 @@ for web and mobile so teams can ship Flutter code from CI with confidence.
 - [Code generation](#code-generation)
 - [Protobuf: dart_proto_library](#protobuf-dart_proto_library)
 - [Building apps: flutter_app](#building-apps-flutter_app)
+- [Hermetic Linux desktop builds](#hermetic-linux-desktop-builds)
 - [Mobile builds](#mobile-builds)
 - [Testing](#testing)
 - [Gazelle automation](#gazelle-automation)
 - [Documentation and examples](#documentation-and-examples)
 
 The external workspace under [`e2e/smoke`](e2e/smoke) is the canonical,
-CI-tested reference for everything below: a Flutter web app with localization
-codegen and protos ([`flutter_app/`](e2e/smoke/flutter_app)), a `build_runner`
+CI-tested reference for everything below: a Flutter web/Linux app with
+localization codegen and protos ([`flutter_app/`](e2e/smoke/flutter_app)), a `build_runner`
 app ([`codegen_app/`](e2e/smoke/codegen_app)), proto packages
 ([`protos/`](e2e/smoke/protos), [`proto_service/`](e2e/smoke/proto_service)),
 and a plain Dart package ([`dart_package/`](e2e/smoke/dart_package)).
@@ -446,6 +447,53 @@ bazel build //my_app:app.web        # build the web bundle
 bazel run //my_app:app.web -- 9000  # serve the built bundle locally
 ```
 
+### Hermetic Linux desktop builds
+
+Linux application builds do not use `clang`, CMake, Ninja, pkg-config, GTK
+headers, or C/C++ libraries from the host. Add the root-only Linux toolchain
+tag to the same `flutter` extension and register its generated toolchain hub:
+
+```starlark
+# MODULE.bazel
+flutter = use_extension("@rules_flutter//flutter:extensions.bzl", "flutter")
+flutter.toolchain(flutter_version = "3.38.4")
+flutter.linux_toolchain()
+use_repo(
+    flutter,
+    "flutter_sdk",
+    "flutter_toolchains",
+    "linux_toolchains",
+)
+register_toolchains("@flutter_toolchains//:all")
+register_toolchains("@linux_toolchains//:all")
+```
+
+Then overlay the standard Flutter Linux runner and build the platform target:
+
+```starlark
+flutter_app(
+    name = "app",
+    embed = [":lib"],
+    linux = {
+        "srcs": glob(
+            ["linux/**"],
+            exclude = ["linux/flutter/ephemeral/**"],
+        ),
+    },
+)
+```
+
+```bash
+bazel build //my_app:app.linux
+```
+
+The generated toolchains cover Linux x86_64 and arm64. Their complete Ubuntu
+Jammy package closure is pinned by snapshot URL, package versions, and archive
+checksums in `rules_flutter`; repository fetches need network access, but the
+build action is offline, sandboxable, and independent of installed host
+packages. Its tree artifact is
+`bazel-bin/my_app/app.linux_build_artifacts/`.
+
 ### Platform dict specs
 
 Each platform attribute accepts either overlay files (a label or list of
@@ -843,14 +891,15 @@ execution) and how to resolve each.
 - Normalize build outputs for APK/AAB/IPA/web bundles and document how to consume them from Bazel.
 - Optimize incremental and remote builds by trimming redundant copies, exercising RBE, and benchmarking cache hit rates.
 - Harden failure surfacing with structured action logs, actionable diagnostics, and better toolchain validation.
-- Expand automated coverage: multi-platform e2e matrix (Linux/macOS/Windows), release build assertions, and remote execution smoke tests.
+- Expand automated coverage: macOS/Windows e2e builds and remote execution smoke tests.
 - Produce task-oriented docs: quickstarts, troubleshooting, and upgrade guides covering common Flutter/Bazel workflows.
 
 ### 🛫 Production readiness (planned)
 
 - Ship CI-backed Android packaging (APK/AAB) with managed SDKs, signing hooks, and release build examples.
 - Complete iOS/macOS pipelines with codesign-aware actions, xcframework integration, and Apple toolchain configuration rules.
-- Deliver Windows and Linux desktop bundling, including runtime discovery, asset staging, and exe/appimage installers.
+- Deliver Windows desktop bundling and Linux installer/image packaging on top
+  of the existing hermetic Linux release bundle.
 - Support advanced Flutter UX: declarative asset rules, localization packaging, configurable build flavors, and web performance tuning.
 - Introduce extensibility: plugin federation, native interop helpers, and more code generation entry points.
 

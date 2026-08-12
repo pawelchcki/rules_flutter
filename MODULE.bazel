@@ -9,6 +9,7 @@ module(
 )
 
 bazel_dep(name = "bazel_skylib", version = "1.4.1")
+bazel_dep(name = "bazel_linux_packages", version = "0.4.1")
 bazel_dep(name = "hermetic_android_toolchains", version = "0.0.0")
 archive_override(
     module_name = "hermetic_android_toolchains",
@@ -65,7 +66,46 @@ use_repo(
 
 register_toolchains("@flutter_toolchains//:all")
 
+# Development-only lockfile generator for the built-in Linux desktop
+# toolchain closure. The flutter extension consumes this same lock directly;
+# keeping the generator here makes package upgrades explicit and reviewable.
+linux_packages = use_extension(
+    "@bazel_linux_packages//apt:extensions.bzl",
+    "apt",
+    dev_dependency = True,
+)
+linux_packages.ubuntu(
+    name = "flutter_linux_packages_lock",
+    architectures = [
+        "amd64",
+        "arm64",
+    ],
+    components = [
+        "main",
+        "universe",
+    ],
+    lockfile = "//flutter/private:linux_packages.lock.json",
+    packages = [
+        "binutils",
+        "clang",
+        "cmake",
+        "libgtk-3-dev",
+        "libstdc++-12-dev",
+        "ninja-build",
+        "patchelf",
+        "pkg-config",
+    ],
+    suites = ["jammy"],
+)
+use_repo(
+    linux_packages,
+    "flutter_linux_packages_lock_amd64",
+    "flutter_linux_packages_lock_arm64",
+)
+
 register_toolchains("//flutter/tests/analysis:fixture_android_toolchain")
+
+register_toolchains("//flutter/tests/analysis:fixture_linux_toolchain")
 
 # These tags must stay non-dev: pub.package-registered repositories keep
 # their fetch-time vendored .pub_cache closure, and the dart_proto_library

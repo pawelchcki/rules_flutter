@@ -107,6 +107,9 @@ flutter_app(
     name = "app",
     dart_defines = {"SMOKE_DEFINE": "smoke-define-e2e-value"},
     embed = [":lib"],
+    linux = {
+        "srcs": [":linux_files"],
+    },
     visibility = ["//visibility:public"],
     web = {
         "srcs": [":web_files"],
@@ -118,6 +121,7 @@ build_test(
     name = "app_build_test",
     targets = [
         ":app.dev",
+        ":app.linux",
         ":app.web",
         # Building the goldens target runs the hermetic FlutterUpdateGoldens
         # action (compile + render + capture), validating golden regeneration
@@ -195,6 +199,22 @@ filegroup(
             "ios/.symlinks/**",
         ],
     ),
+)
+
+filegroup(
+    name = "linux_files",
+    srcs = glob(
+        ["linux/**"],
+        exclude = [
+            "linux/flutter/ephemeral/**",
+        ],
+    ),
+)
+
+sh_test(
+    name = "linux_build_artifacts_test",
+    srcs = ["linux_build_artifacts_test.sh"],
+    data = [":app.linux"],
 )
 
 sh_test(

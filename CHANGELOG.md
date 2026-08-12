@@ -9,6 +9,12 @@ it reaches 1.0.
 
 ### Added
 
+- Hermetic Linux desktop application builds for x86_64 and arm64. A new
+  `flutter.linux_toolchain()` module-extension tag provisions a checksummed,
+  snapshot-pinned Ubuntu Jammy closure containing Clang, CMake, Ninja,
+  pkg-config, GTK 3 development files, binutils, and the C/C++ runtime. Linux
+  `flutter_app` actions consume only those declared inputs and emit a complete
+  release bundle without host compiler or system-package prerequisites.
 - The `pub` extension now returns `extension_metadata`, so `bazel mod tidy`
   maintains the `use_repo(pub, ...)` list instead of you — and reports its
   repositories _exactly_ rather than over-approximating, so tidy prunes as

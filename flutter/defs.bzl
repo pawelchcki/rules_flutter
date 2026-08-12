@@ -77,6 +77,18 @@ ALLOW_REMOTE_EXECUTION_ATTR = {
         default = Label("//flutter/private:tools/web_normalizer.dart"),
         allow_single_file = True,
     ),
+    "_linux_setup": attr.label(
+        default = Label("//flutter/private:linux_toolchain_setup.sh"),
+        allow_single_file = True,
+    ),
+    "_linux_tool_launcher": attr.label(
+        default = Label("//flutter/private:linux_tool_launcher.sh"),
+        allow_single_file = True,
+    ),
+    "_linux_cmake_initial_cache": attr.label(
+        default = Label("//flutter/private:linux_cmake_initial_cache.cmake"),
+        allow_single_file = True,
+    ),
 }
 
 def _allow_remote_exec(ctx):
@@ -1472,6 +1484,17 @@ def _android_environment(ctx):
         files = depset(transitive = transitive),
     )
 
+def _linux_environment(ctx):
+    """Resolve the complete Linux desktop build environment."""
+    if ctx.attr.target != "linux":
+        return None
+
+    resolved = ctx.toolchains["//flutter:linux_toolchain_type"]
+    if resolved == None:
+        fail("flutter_app '{}': target 'linux' requires a registered rules_flutter Linux toolchain. ".format(ctx.label) +
+             "Declare flutter.linux_toolchain() and register @linux_toolchains//:all.")
+    return resolved.linux
+
 def _flutter_app_impl(ctx):
     """Implementation for flutter_app targets."""
 
@@ -1562,6 +1585,7 @@ fi
     )
 
     android = _android_environment(ctx)
+    linux = _linux_environment(ctx)
 
     build_args = list(ctx.attr.build_args)
     if ctx.attr.build_name:
@@ -1583,11 +1607,15 @@ fi
         build_args = build_args,
         env = ctx.attr.env,
         android = android,
+        linux = linux,
         android_test = ctx.attr.android_test,
         allow_remote_exec = _allow_remote_exec(ctx),
         fast_staging = _fast_staging(ctx),
         pub_tool_file = ctx.file._pub_tool,
         web_normalizer_file = ctx.file._web_normalizer if ctx.attr.target == "web" else None,
+        linux_setup_file = ctx.file._linux_setup if ctx.attr.target == "linux" else None,
+        linux_tool_launcher_file = ctx.file._linux_tool_launcher if ctx.attr.target == "linux" else None,
+        linux_cmake_initial_cache_file = ctx.file._linux_cmake_initial_cache if ctx.attr.target == "linux" else None,
     )
 
     runner = ctx.actions.declare_file(ctx.label.name + "_runner.sh")
@@ -1686,6 +1714,7 @@ and Gradle is forced offline so an incomplete closure fails immediately.""",
     toolchains = [
         "//flutter:toolchain_type",
         config_common.toolchain_type("//flutter:android_toolchain_type", mandatory = False),
+        config_common.toolchain_type("//flutter:linux_toolchain_type", mandatory = False),
         config_common.toolchain_type("@bazel_tools//tools/jdk:runtime_toolchain_type", mandatory = False),
     ],
     doc = "Internal rule for flutter_app platform targets.",
