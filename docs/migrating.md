@@ -1,4 +1,4 @@
-# Migrating a script-based Flutter app to rules_flutter
+# Migrating a script-based Flutter app to ruleslab_flutter
 
 > Compatibility level 2 makes Android hermetic and offline by default. Replace
 > `android_sdk`, `android_ndk`, Gradle distribution/init-script, and Gradle-home
@@ -8,7 +8,7 @@
 This guide is a recipe for moving an existing Flutter app — built today with
 `flutter pub get` scripts, `build_runner watch`, ad-hoc protoc invocations, and
 CI images that install the SDK imperatively — onto hermetic Bazel builds with
-`rules_flutter`.
+`ruleslab_flutter`.
 
 It is structured as ordered phases. Each phase is independently useful, lands
 as one green PR, and leaves the existing scripts working until the phase that
@@ -45,7 +45,8 @@ The target end-state:
 
 ## Phase 1: Bootstrap the module and toolchain
 
-Add `rules_flutter` and the toolchain to `MODULE.bazel`. Nothing else changes
+Add `ruleslab_flutter` and the toolchain to `MODULE.bazel`. The project retains
+the `rules_flutter` Bazel module name for compatibility. Nothing else changes
 yet — this PR just proves the SDK fetches and resolves on every machine and CI
 image.
 
@@ -68,7 +69,7 @@ use_repo(
 register_toolchains("@flutter_toolchains//:all")
 ```
 
-The `flutter_version` must be one that `rules_flutter` ships integrity
+The `flutter_version` must be one that `ruleslab_flutter` ships integrity
 metadata for. The SDK repository is immutable after fetch: `bin/cache` is
 sealed read-only, and the launcher is patched so `flutter` invocations never
 write into the repository. Do not run `flutter precache` or `flutter config`
@@ -79,7 +80,7 @@ CI with no host Flutter install.
 
 ## Phase 2: Pin pub.dev dependencies
 
-`rules_flutter` manages hosted packages through a `pub` module extension that
+`ruleslab_flutter` manages hosted packages through a `pub` module extension that
 reads the `pubspec.lock` files you declare — the same locks `pub` writes — and
 turns each into a **hub** repository holding that lock's whole hosted closure.
 

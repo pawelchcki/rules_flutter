@@ -1,6 +1,6 @@
-# Bazel rules for Flutter
+# ruleslab_flutter — Bazel rules for Flutter
 
-[![CI](https://github.com/SpencerC/rules_flutter/actions/workflows/ci.yaml/badge.svg)](https://github.com/SpencerC/rules_flutter/actions/workflows/ci.yaml)
+[![CI](https://github.com/pawelchcki/ruleslab_flutter/actions/workflows/ci.yaml/badge.svg)](https://github.com/pawelchcki/ruleslab_flutter/actions/workflows/ci.yaml)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 
 ## About `ruleslab_flutter`
@@ -19,8 +19,8 @@ by 21,791 additions and 7,101 deletions: 28,892 changed-line operations, or 118%
 of the upstream line count. Excluding generated lockfiles, the diff was 11,191
 lines.
 
-Build Flutter applications with Bazel. `rules_flutter` supplies hermetic Flutter
-toolchains, module extensions for pub.dev dependencies, protobuf-to-Dart
+Build Flutter applications with Bazel. `ruleslab_flutter` supplies hermetic
+Flutter toolchains, module extensions for pub.dev dependencies, protobuf-to-Dart
 generation, `build_runner` integration, Gazelle language support, and packaging
 for web and mobile so teams can ship Flutter code from CI with confidence.
 
@@ -48,14 +48,16 @@ and a plain Dart package ([`dart_package/`](e2e/smoke/dart_package)).
 
 ## Installation
 
-`rules_flutter` uses bzlmod and requires Bazel 8 or newer. Until a release lands in the Bazel Central Registry,
-depend on it with a `git_override` in your `MODULE.bazel`:
+`ruleslab_flutter` uses bzlmod and requires Bazel 8 or newer. It retains the
+`rules_flutter` Bazel module name for compatibility. Until a release lands in
+the Bazel Central Registry, depend on it with a `git_override` in your
+`MODULE.bazel`:
 
 ```starlark
 bazel_dep(name = "rules_flutter", version = "0.0.0")
 git_override(
     module_name = "rules_flutter",
-    remote = "https://github.com/SpencerC/rules_flutter.git",
+    remote = "https://github.com/pawelchcki/ruleslab_flutter.git",
     commit = "<pin a commit from main>",
 )
 ```
@@ -124,7 +126,7 @@ Prefer adding the version to `versions.bzl` for anything long-lived; the
 `integrity` map is an escape hatch for one-off or bleeding-edge pins.
 
 > **Version selection.** When more than one module registers the same-named
-> toolchain, the highest version wins (compared semver-aware). `rules_flutter`
+> toolchain, the highest version wins (compared semver-aware). `ruleslab_flutter`
 > itself registers a default version, so pinning a lower version through the
 > escape hatch has no effect — the default is selected instead. The `integrity`
 > you supply is bound to its exact version and is never applied to a different
@@ -158,7 +160,7 @@ Use a separate Flutter checkout for SDK contribution workflows.
 
 ## Managing pub.dev dependencies
 
-`rules_flutter` ships a `pub` module extension that reads the `pubspec.lock`
+`ruleslab_flutter` ships a `pub` module extension that reads the `pubspec.lock`
 files you declare — the same locks `pub` itself writes — and turns each into a
 **hub** repository carrying that lock's whole hosted package closure. Add it
 next to the Flutter extension and declare one hub per lock:
@@ -505,7 +507,7 @@ bazel build //my_app:app.linux
 
 The generated toolchains cover Linux x86_64 and arm64. Their complete Ubuntu
 Jammy package closure is pinned by snapshot URL, package versions, and archive
-checksums in `rules_flutter`; repository fetches need network access, but the
+checksums in `ruleslab_flutter`; repository fetches need network access, but the
 build action is offline, sandboxable, and independent of installed host
 packages. Its tree artifact is
 `bazel-bin/my_app/app.linux_build_artifacts/`.
@@ -876,7 +878,7 @@ for the common failures (toolchain not registered, unknown version, SDK
 integrity mismatch, stale `pubspec.lock`, sealed-cache write, slow remote
 execution) and how to resolve each.
 
-## Working on rules_flutter
+## Working on ruleslab_flutter
 
 - **Run all tests:** `bazel test //...`
 - **Core rule coverage:** `bazel test //flutter/tests:all_tests`
@@ -889,7 +891,7 @@ execution) and how to resolve each.
 
 ## Roadmap
 
-`rules_flutter` is being delivered in three major stages—Alpha, Beta, and Production-readiness. This roadmap captures what is already in place and what remains to ship a dependable 1.0.
+`ruleslab_flutter` is being delivered in three major stages—Alpha, Beta, and Production-readiness. This roadmap captures what is already in place and what remains to ship a dependable 1.0.
 
 ### ✅ Alpha foundations (complete)
 
@@ -931,7 +933,10 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for details on how to contribute to this 
 
 ## License
 
-This project is licensed under the Apache License 2.0 - see the [LICENSE](LICENSE) file for details.
+Copyright 2024–2026 Spencer Connaughton and `ruleslab_flutter` contributors.
+
+This project is licensed under the Apache License 2.0. See [LICENSE](LICENSE)
+for the license terms and [NOTICE](NOTICE) for attribution.
 
 ## Acknowledgments
 

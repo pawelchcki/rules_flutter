@@ -1,6 +1,6 @@
 # Changelog
 
-All notable changes to `rules_flutter` are documented here. The format is based
+All notable changes to `ruleslab_flutter` are documented here. The format is based
 on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project
 aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html) once
 it reaches 1.0.
@@ -189,6 +189,6 @@ it reaches 1.0.
 
 - Deprecated, ignored `dart_proto_library` `options`/`grpc` attributes.
 
-[Unreleased]: https://github.com/SpencerC/rules_flutter/compare/v0.2.1...HEAD
-[0.2.1]: https://github.com/SpencerC/rules_flutter/compare/v0.2.0...v0.2.1
-[0.2.0]: https://github.com/SpencerC/rules_flutter/commits/v0.2.0
+[Unreleased]: https://github.com/pawelchcki/ruleslab_flutter/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/pawelchcki/ruleslab_flutter/compare/v0.2.0...v0.2.1
+[0.2.0]: https://github.com/pawelchcki/ruleslab_flutter/commits/v0.2.0

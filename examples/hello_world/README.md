@@ -1,9 +1,9 @@
 # hello_world
 
 A minimal Flutter application built with
-[rules_flutter](https://github.com/SpencerC/rules_flutter). Copy this
-directory to start a new Bazel-built Flutter project — it consumes
-`rules_flutter` as an ordinary `bazel_dep`, with no overrides.
+[ruleslab_flutter](https://github.com/pawelchcki/ruleslab_flutter). Copy this
+directory to start a new Bazel-built Flutter project — it consumes the
+`rules_flutter` Bazel module as an ordinary `bazel_dep`, with no overrides.
 
 ```bash
 bazel test //:widget_test    # run the widget test hermetically

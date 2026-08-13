@@ -11,7 +11,7 @@
 > register `@linux_toolchains//:all`; no host compiler, build tool, GTK
 > development package, or C/C++ sysroot is used.
 
-This document states exactly which parts of a `rules_flutter` build are
+This document states exactly which parts of a `ruleslab_flutter` build are
 hermetic, which parts are declared non-hermetic, and why. Everything below is
 grounded in the rule implementations (`flutter/repositories.bzl`,
 `flutter/extensions.bzl`, `flutter/private/flutter_actions.bzl`,
@@ -33,7 +33,7 @@ afterwards:
   against the hashes recorded in `flutter/private/versions.bzl`.
 - **Fetch-time launcher patch.** Stock Flutter's launcher rewrites
   `bin/cache/engine.stamp` and `bin/cache/engine.realm` on *every* invocation.
-  At fetch time, `rules_flutter` patches
+  At fetch time, `ruleslab_flutter` patches
   `bin/internal/update_engine_version.sh` so those files are only written when
   their content is actually wrong — which never happens for a sealed,
   version-pinned SDK. If a Flutter release changes this script's content so

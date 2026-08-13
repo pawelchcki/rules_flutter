@@ -1,4 +1,4 @@
-"""Public API for pub.dev package management in rules_flutter."""
+"""Public API for pub.dev package management in ruleslab_flutter."""
 
 load("//flutter/private:pub_repository.bzl", _pub_dev_repository = "pub_dev_repository")
 

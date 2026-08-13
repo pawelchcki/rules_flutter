@@ -2,7 +2,7 @@
 
 ## Supported versions
 
-`rules_flutter` is pre-1.0 and evolving quickly. Security fixes are applied to
+`ruleslab_flutter` is pre-1.0 and evolving quickly. Security fixes are applied to
 `main` and released in the next version; there is no long-term support branch
 yet. Always test against the latest release.
 
@@ -11,8 +11,7 @@ yet. Always test against the latest release.
 Please **do not** open a public issue for security problems.
 
 - Preferred: use GitHub's private vulnerability reporting —
-  [open a draft advisory](https://github.com/SpencerC/rules_flutter/security/advisories/new).
-- Alternatively, email **spencer@ggx.trade** with the details.
+  [open a draft advisory](https://github.com/pawelchcki/ruleslab_flutter/security/advisories/new).
 
 Include enough to reproduce: the affected version/commit, a minimal
 `MODULE.bazel`/`BUILD.bazel`, and the observed vs. expected behavior. You will
