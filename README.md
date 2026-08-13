@@ -3,6 +3,22 @@
 [![CI](https://github.com/SpencerC/rules_flutter/actions/workflows/ci.yaml/badge.svg)](https://github.com/SpencerC/rules_flutter/actions/workflows/ci.yaml)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 
+## About `ruleslab_flutter`
+
+`ruleslab_flutter` is an independently maintained fork of
+[`SpencerC/rules_flutter`](https://github.com/SpencerC/rules_flutter). Changes
+unique to this fork are primarily LLM-generated under human direction. The
+project prioritizes practical Bazel support and hermetic execution where
+possible; hermeticity is a best-effort, target-specific property rather than a
+blanket guarantee. See [the hermeticity contract](docs/hermeticity.md) for the
+current boundaries.
+
+At the `b529b715cfc2` fork baseline, compared with upstream `dee82b2136b0`, the
+original repository contained 24,486 tracked text lines and this fork differed
+by 21,791 additions and 7,101 deletions: 28,892 changed-line operations, or 118%
+of the upstream line count. Excluding generated lockfiles, the diff was 11,191
+lines.
+
 Build Flutter applications with Bazel. `rules_flutter` supplies hermetic Flutter
 toolchains, module extensions for pub.dev dependencies, protobuf-to-Dart
 generation, `build_runner` integration, Gazelle language support, and packaging
