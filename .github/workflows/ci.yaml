@@ -33,6 +33,7 @@ jobs:
         ]
       exclude: |
         [
+          {"bazelversion": "8.0.0"},
           {"folder": ".", "bzlmodEnabled": false},
           {"folder": "gazelle", "bzlmodEnabled": false},
           {"folder": "e2e/smoke", "bzlmodEnabled": false}

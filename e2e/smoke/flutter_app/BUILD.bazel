@@ -188,7 +188,7 @@ flutter_build_settings(
 # a checked-in, checksummed Maven closure at repository fetch time.
 filegroup(
     name = "android_maven_mirror",
-    srcs = ["android/settings.gradle.kts"],
+    srcs = ["android/settings.gradle"],
 )
 
 flutter_app(

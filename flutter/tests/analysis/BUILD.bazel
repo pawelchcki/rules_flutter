@@ -149,6 +149,7 @@ build_command_test(
         "'build' 'linux' '--no-pub' '--release'",
         "build/linux/x64/release/bundle",
     ],
+    target_compatible_with = ["@platforms//os:linux"],
     target_under_test = ":fixture_linux_app.linux",
 )
 
@@ -167,6 +168,7 @@ build_command_test(
         "'build' 'linux' '--no-pub' '--release' '--flavor' 'enterprise-demo'",
         "build/linux/x64/enterprise-demo/release/bundle",
     ],
+    target_compatible_with = ["@platforms//os:linux"],
     target_under_test = ":fixture_linux_flavored_app.linux",
 )
 
