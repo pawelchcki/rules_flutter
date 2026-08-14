@@ -10,6 +10,9 @@ on:
   # Allows you to run this workflow manually from the Actions tab
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 concurrency:
   # Cancel previous actions from the same PR or branch except 'main' branch.
   # See https://docs.github.com/en/actions/using-jobs/using-concurrency and https://docs.github.com/en/actions/learn-github-actions/contexts for more info.
@@ -17,6 +20,9 @@ concurrency:
   cancel-in-progress: ${{ github.ref_name != 'main' }}
 
 jobs:
+  # Keep the broad cross-platform/version matrix supplied by bazel-contrib,
+  # but do not rely on its wildcard targets as the required test gate: Bazel
+  # deliberately omits manual-tagged tests from `//...` expansion.
   test:
     uses: bazel-contrib/.github/.github/workflows/bazel.yaml@v7.2.3
     with:
@@ -34,8 +40,10 @@ jobs:
         ]
       exclude_windows: true
   # The standalone example consumes rules_flutter as a plain bazel_dep; in-repo
-  # CI overrides it with the working tree. After the first BCR release, a
-  # no-override leg is added as the "did the release actually publish" canary.
+  # CI overrides it with the working tree. Its .bazelversion is the minimum
+  # accepted by rules_flutter, so this also covers the supported Bazel floor.
+  # After the first BCR release, a no-override leg is added as the "did the
+  # release actually publish" canary.
   example:
     strategy:
       fail-fast: false
@@ -49,27 +57,39 @@ jobs:
         run: |
           bazel test --override_module=rules_flutter=$GITHUB_WORKSPACE //...
           bazel build --override_module=rules_flutter=$GITHUB_WORKSPACE //:app.web
-  # bazel_compatibility declares ">=8.0.0". The reusable workflow already
-  # tests the root/gazelle/e2e folders at 8.0.0; this job covers the example
-  # (which isn't a workflow folder) at the floor.
-  bazel-floor:
-    runs-on: ubuntu-24.04
-    env:
-      USE_BAZEL_VERSION: 8.0.0
-    steps:
-      - uses: actions/checkout@v4
-      - name: Example at the minimum supported Bazel
-        working-directory: examples/hello_world
-        run: bazel test --override_module=rules_flutter=$GITHUB_WORKSPACE //...
-  # The docs staleness gate runs only under the pinned .bazelversion: its
-  # goldens match that version's stardoc rendering, so the tests are
-  # manual-tagged and invoked explicitly here.
-  docs:
+          git diff --exit-code -- MODULE.bazel.lock pubspec.lock
+  # Name the required suite explicitly so its manual-tagged analysis tests are
+  # actually executed. Keep the docs target in the same invocation so both use
+  # the pinned .bazelversion expected by the generated-doc goldens.
+  core:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-      - name: Docs staleness gate at the pinned Bazel
-        run: bazel test //docs:update_tests
+      - name: Core and docs tests at the pinned Bazel
+        run: bazel test //flutter/tests:all_tests //docs:update_tests
+
+  # `bazel test //...` does not prove that every intended external-workspace
+  # integration test remains wired into the aggregate suite. This is the same
+  # command contributors are required to run before completing a change.
+  integration:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: External smoke integration suite
+        working-directory: e2e/smoke
+        run: bazel test //:integration_tests
+
+  # Gazelle owns generated BUILD targets. Regenerate them in CI so a change to
+  # sources or plugin behavior cannot merge with stale generated metadata.
+  gazelle:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Generated Bazel targets are up to date
+        run: |
+          bazel run //:gazelle
+          git diff --exit-code
+
   # `bazel mod tidy` must be a no-op: the pub extension reports its
   # repositories through extension_metadata, so use_repo() is machine
   # maintained and a stale list is a review error, not a runtime surprise.
@@ -78,14 +98,14 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        folder: [".", "e2e/smoke"]
+        folder: [".", "e2e/smoke", "examples/hello_world"]
     steps:
       - uses: actions/checkout@v4
       - name: bazel mod tidy is clean
         working-directory: ${{ matrix.folder }}
         run: |
           bazel mod tidy
-          git diff --exit-code -- MODULE.bazel
+          git diff --exit-code -- MODULE.bazel MODULE.bazel.lock
 
   pre-commit:
     runs-on: ubuntu-latest
@@ -95,20 +115,30 @@ jobs:
   # For branch protection settings, this job provides a "stable" name that can be used to gate PR merges
   # on "all matrix jobs were successful".
   conclusion:
-    needs: [test, example, bazel-floor, docs, mod-tidy, pre-commit]
+    needs: [test, example, core, integration, gazelle, mod-tidy, pre-commit]
     runs-on: ubuntu-latest
     if: always()
     steps:
-      - uses: technote-space/workflow-conclusion-action@45ce8e0eb155657ab8ccf346ade734257fd196a5 # v3.0.3
-
-      # Note: possible conclusion values:
-      # https://github.com/technote-space/workflow-conclusion-action/blob/main/src/constant.ts
-      - name: report success
-        if: ${{ env.WORKFLOW_CONCLUSION == 'success' }}
-        working-directory: /tmp
-        run: echo ${{ env.WORKFLOW_CONCLUSION }} && exit 0
-
-      - name: report failure
-        if: ${{ env.WORKFLOW_CONCLUSION == 'failure' }}
-        working-directory: /tmp
-        run: echo ${{ env.WORKFLOW_CONCLUSION }} && exit 1
+      - name: Require every CI job to succeed
+        env:
+          CORE_RESULT: ${{ needs.core.result }}
+          EXAMPLE_RESULT: ${{ needs.example.result }}
+          GAZELLE_RESULT: ${{ needs.gazelle.result }}
+          INTEGRATION_RESULT: ${{ needs.integration.result }}
+          MOD_TIDY_RESULT: ${{ needs.mod-tidy.result }}
+          PRE_COMMIT_RESULT: ${{ needs.pre-commit.result }}
+          TEST_RESULT: ${{ needs.test.result }}
+        run: |
+          for result in \
+            "$TEST_RESULT" \
+            "$EXAMPLE_RESULT" \
+            "$CORE_RESULT" \
+            "$INTEGRATION_RESULT" \
+            "$GAZELLE_RESULT" \
+            "$MOD_TIDY_RESULT" \
+            "$PRE_COMMIT_RESULT"; do
+            if [[ "$result" != "success" ]]; then
+              echo "::error::A required CI job concluded with: $result"
+              exit 1
+            fi
+          done

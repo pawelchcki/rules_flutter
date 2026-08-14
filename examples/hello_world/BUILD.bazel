@@ -7,6 +7,7 @@ flutter_library(
     deps = [
         "@flutter_sdk//flutter/packages/flutter",
         "@flutter_sdk//flutter/packages/flutter_test",
+        "@hello_world_deps//:all",
     ],
 )
 

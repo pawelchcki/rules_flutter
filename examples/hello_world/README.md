@@ -3,7 +3,9 @@
 A minimal Flutter application built with
 [ruleslab_flutter](https://github.com/pawelchcki/ruleslab_flutter). Copy this
 directory to start a new Bazel-built Flutter project — it consumes the
-`rules_flutter` Bazel module as an ordinary `bazel_dep`, with no overrides.
+`rules_flutter` Bazel module as an ordinary `bazel_dep`. The temporary
+`hermetic_android_toolchains` archive override is needed only until that
+transitive module has its first Bazel Central Registry release.
 
 ```bash
 bazel test //:widget_test    # run the widget test hermetically
@@ -22,8 +24,8 @@ toolchains.
 3. The lock is already declared in `MODULE.bazel` as
    `pub.lock(name = "hello_world_deps", file = "//:pubspec.lock")`, so the new
    package joins that hub automatically.
-4. Add `"@hello_world_deps//:all"` to the `deps` of `:lib` (or
-   `"@hello_world_deps//:<package>"` for a single package).
+4. `:lib` already depends on `"@hello_world_deps//:all"`; optionally narrow
+   that to `"@hello_world_deps//:<package>"` for individual packages.
 
 ## Layout
 
@@ -36,4 +38,5 @@ toolchains.
 
 Note: in this repository's CI the example builds against the working tree
 via `--override_module=rules_flutter=<repo root>`; as a standalone checkout
-it resolves the released version from the Bazel Central Registry.
+it resolves the released version from the Bazel Central Registry once 0.2.0
+is published.
