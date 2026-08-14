@@ -4,30 +4,33 @@ description: A simple Flutter hello world app for testing
 version: 1.0.0+1
 
 environment:
-  flutter: ">=3.24.0"
-  sdk: ">=2.17.0 <4.0.0"
+  flutter: ">=3.47.0"
+  sdk: ">=3.12.0 <4.0.0"
 
 dependencies:
   flutter:
     sdk: flutter
   flutter_localizations:
     sdk: flutter
+  cupertino_ui: 1.0.0
   fixnum: ^1.1.0
   protobuf: 3.1.0
+  material_ui: 1.0.0
   vector_math: ^2.1.4
 
 dev_dependencies:
   flutter_test:
     sdk: flutter
   flutter_lints: ^2.0.0
-  intl_utils: ^2.8.7
-
-dependency_overrides:
-  # build_runner 2.4.x needs dart_style 2.x.
-  dart_style: 2.3.7
+  intl_utils: ^2.8.16
 
 flutter:
   uses-material-design: true
+  assets:
+    - assets/common.txt
+    - path: assets/flavored.txt
+      flavors:
+        - smoke
 
 flutter_intl:
   enabled: true

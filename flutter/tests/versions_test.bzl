@@ -4,7 +4,7 @@ See https://bazel.build/rules/testing#testing-starlark-utilities
 
 load("@bazel_skylib//lib:unittest.bzl", "asserts", "unittest")
 load("//flutter/private:toolchains_repo.bzl", "PLATFORMS")
-load("//flutter/private:versions.bzl", "TOOL_VERSIONS")
+load("//flutter/private:versions.bzl", "LATEST_STABLE_VERSION", "TOOL_VERSIONS")
 
 # Platforms that download a sibling's release archive and are re-architected
 # after unpacking, so they verify against that sibling's integrity and have no
@@ -16,6 +16,8 @@ _ARCHIVE_ALIASES = {
 def _smoke_test_impl(ctx):
     env = unittest.begin(ctx)
     asserts.equals(env, "3.24.0", TOOL_VERSIONS.keys()[0])
+    asserts.equals(env, TOOL_VERSIONS.keys()[-1], LATEST_STABLE_VERSION)
+    asserts.equals(env, "3.47.0", LATEST_STABLE_VERSION)
     return unittest.end(env)
 
 def _every_platform_has_integrity_test_impl(ctx):

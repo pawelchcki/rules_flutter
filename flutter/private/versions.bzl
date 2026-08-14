@@ -369,4 +369,15 @@ TOOL_VERSIONS = {
         "linux": "sha256-qRIPpKAQSL3vQ43cOi1Lc4lmLqmKlduG7q8QOCvE78s=",
         "windows": "sha256-jvEQfSJmVHNnVbxRuWnWvUZ4f/AkFlD5Qud0+wyn0Kw=",
     },
+    "3.47.0": {
+        "macos": "sha256-dK8xkq5Ly86201+O0zKvFrf/AK8wBSCwL76kVq4+lV0=",
+        "macos_arm64": "sha256-vVnIXQMqnYHzGtqMAIWLxPde3tlhW2WEOQ6xPG7lCDs=",
+        "linux": "sha256-Js2Z09lLE2fmtQU1oYru8CgsEKU1u+PsSTU03Nq3UpY=",
+        "windows": "sha256-n5bTk8360FvqC0tCxgP/2gJ68Rra3I5M86yH5JEQwco=",
+    },
 }
+
+# The deterministic default used by flutter.toolchain(). The version updater
+# rewrites this alongside TOOL_VERSIONS so the default advances only when the
+# checked-in, integrity-verified stable release table advances.
+LATEST_STABLE_VERSION = "3.47.0"

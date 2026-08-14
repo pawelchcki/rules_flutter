@@ -257,6 +257,13 @@ done
 
 # Close the TOOL_VERSIONS dictionary
 echo "}" >> flutter/private/versions.bzl
+cat >> flutter/private/versions.bzl << EOF
+
+# The deterministic default used by flutter.toolchain(). The version updater
+# rewrites this alongside TOOL_VERSIONS so the default advances only when the
+# checked-in, integrity-verified stable release table advances.
+LATEST_STABLE_VERSION = "${SUPPORTED_VERSIONS[-1]}"
+EOF
 
 info "Successfully updated flutter/private/versions.bzl"
 info "Supported versions: ${SUPPORTED_VERSIONS[*]}"
@@ -268,8 +275,8 @@ with open('flutter/private/versions.bzl', 'r') as f:
     content = f.read()
     # Extract just the TOOL_VERSIONS dictionary
     start = content.find('TOOL_VERSIONS = {')
-    end = content.rfind('}') + 1
-    dict_content = content[start+len('TOOL_VERSIONS = '):]
+    end = content.find('\n}\n', start) + 2
+    dict_content = content[start+len('TOOL_VERSIONS = '):end]
     try:
         ast.literal_eval(dict_content)
         print('✓ Generated versions.bzl is valid Python/Starlark syntax')

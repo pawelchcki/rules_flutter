@@ -1510,6 +1510,18 @@ def _flutter_app_impl(ctx):
 
     flutter_toolchain = ctx.toolchains["//flutter:toolchain_type"]
 
+    if ctx.attr.flavor:
+        if ctx.attr.target not in ["linux", "windows"]:
+            fail("flutter_app '{}': flavor is only supported for linux and windows targets.".format(ctx.label))
+        allowed = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-"
+        if [char for char in ctx.attr.flavor.elems() if char not in allowed]:
+            fail("flutter_app '{}': flavor '{}' must be a safe path segment containing only letters, digits, '_' or '-'.".format(ctx.label, ctx.attr.flavor))
+
+    if ctx.attr.target in ["linux", "windows"]:
+        for arg in ctx.attr.build_args:
+            if arg == "--flavor" or arg.startswith("--flavor="):
+                fail("flutter_app '{}': do not pass --flavor through build_args for {}. Set the first-class flavor field on the platform spec instead.".format(ctx.label, ctx.attr.target))
+
     # Prepare a dedicated workspace for this build by copying the library workspace
     prepared_workspace = ctx.actions.declare_directory(ctx.label.name + "_workspace")
     manifest = ctx.actions.declare_file(ctx.label.name + "_app_overlay.manifest")
@@ -1605,6 +1617,7 @@ fi
         mode = ctx.attr.mode,
         dart_defines = ctx.attr.dart_defines,
         build_args = build_args,
+        flavor = ctx.attr.flavor,
         env = ctx.attr.env,
         android = android,
         linux = linux,
@@ -1673,6 +1686,9 @@ branch (Starlark cannot merge two selects).""",
         "build_args": attr.string_list(
             default = [],
             doc = "Extra arguments appended verbatim to the flutter build command (e.g. --source-maps, --build-name=1.2.3).",
+        ),
+        "flavor": attr.string(
+            doc = "Linux or Windows desktop flavor. Must contain only letters, digits, underscores, and hyphens.",
         ),
         "env": attr.string_dict(
             default = {},
@@ -1866,6 +1882,177 @@ sources (with hot reload) and the developer's package resolution, not the
 prepared Bazel workspace.""",
 )
 
+def _render_widget_preview_script(pubspec_rel, flutter_bin, start_args):
+    """Render the source-workspace runner for flutter_widget_preview."""
+
+    start_args_quoted = " ".join([_shell_quote(arg) for arg in start_args])
+
+    return """#!/bin/bash
+set -euo pipefail
+
+resolve_runfile() {{
+    local rel="$1"
+    local candidate
+    for root in "${{RUNFILES_DIR:-}}" "$PWD" "$PWD.runfiles"; do
+        if [ -z "$root" ]; then
+            continue
+        fi
+        candidate="$root/$rel"
+        if [ -e "$candidate" ]; then
+            echo "$candidate"
+            return 0
+        fi
+    done
+    if [ -e "$rel" ]; then
+        echo "$rel"
+        return 0
+    fi
+    return 1
+}}
+
+WORKSPACE_DIR="${{BUILD_WORKSPACE_DIRECTORY:-}}"
+if [ -z "$WORKSPACE_DIR" ]; then
+    echo "✗ BUILD_WORKSPACE_DIRECTORY is not set; run via 'bazel run' inside a workspace." >&2
+    exit 1
+fi
+
+PUBSPEC_REL="{pubspec_rel}"
+SOURCE_PACKAGE_DIR="$WORKSPACE_DIR"
+if [ -n "$PUBSPEC_REL" ]; then
+    SOURCE_PACKAGE_DIR="$WORKSPACE_DIR/$(dirname "$PUBSPEC_REL")"
+fi
+if [ ! -f "$SOURCE_PACKAGE_DIR/pubspec.yaml" ]; then
+    echo "✗ pubspec.yaml source missing: $SOURCE_PACKAGE_DIR/pubspec.yaml" >&2
+    exit 1
+fi
+
+SUBCOMMAND="start"
+if [ $# -gt 0 ]; then
+    case "$1" in
+        start|clean)
+            SUBCOMMAND="$1"
+            shift
+            ;;
+    esac
+fi
+
+cd "$SOURCE_PACKAGE_DIR"
+if [ "$SUBCOMMAND" = "clean" ]; then
+    if [ $# -gt 0 ]; then
+        echo "✗ flutter_widget_preview clean does not accept additional arguments." >&2
+        exit 2
+    fi
+    rm -rf -- .widget_preview
+    echo "Removed $SOURCE_PACKAGE_DIR/.widget_preview"
+    exit 0
+fi
+
+FLUTTER_BIN="$(resolve_runfile "{flutter_bin}")"
+if [ -z "$FLUTTER_BIN" ] || [ ! -x "$FLUTTER_BIN" ]; then
+    echo "✗ Unable to locate Flutter binary in runfiles: {flutter_bin}" >&2
+    exit 1
+fi
+
+export FLUTTER_SUPPRESS_ANALYTICS=true
+export FLUTTER_ALREADY_LOCKED=true
+export PUB_ENVIRONMENT="flutter_tool:bazel_widget_preview"
+
+if ! PREVIEW_HELP="$("$FLUTTER_BIN" --suppress-analytics --no-version-check widget-preview --help 2>&1)"; then
+    echo "✗ The selected Flutter SDK does not provide Widget Preview." >&2
+    echo "Select Flutter 3.35 or newer (the checked-in default supports it), or pin a compatible SDK with flutter.toolchain(flutter_version = ...)." >&2
+    echo "$PREVIEW_HELP" >&2
+    exit 1
+fi
+
+START_ARGS=({start_args})
+CMD=("$FLUTTER_BIN" "--suppress-analytics" "--no-version-check" "widget-preview" "start")
+if [ ${{#START_ARGS[@]}} -gt 0 ]; then
+    CMD+=("${{START_ARGS[@]}}")
+fi
+if [ $# -gt 0 ]; then
+    CMD+=("$@")
+fi
+
+echo "Running in workspace directory: $SOURCE_PACKAGE_DIR"
+echo "Executing: ${{CMD[*]}}"
+exec "${{CMD[@]}}"
+""".format(
+        pubspec_rel = pubspec_rel,
+        flutter_bin = flutter_bin,
+        start_args = start_args_quoted,
+    )
+
+def _flutter_widget_preview_impl(ctx):
+    """Implementation for flutter_widget_preview."""
+
+    library_info, _, _ = _single_embedded_library(ctx, "flutter_widget_preview")
+    flutter_toolchain, flutter_bin_file = _resolve_flutter_toolchain(ctx)
+
+    runner = ctx.actions.declare_file(ctx.label.name + "_widget_preview_runner.sh")
+    ctx.actions.write(
+        output = runner,
+        content = _render_widget_preview_script(
+            library_info.pubspec.short_path,
+            _runfiles_relative(ctx, flutter_bin_file),
+            ctx.attr.start_args,
+        ),
+        is_executable = True,
+    )
+
+    return [
+        DefaultInfo(
+            executable = runner,
+            files = depset([runner]),
+            runfiles = ctx.runfiles(
+                files = [runner, library_info.pubspec] +
+                        flutter_toolchain.flutterinfo.tool_files,
+                transitive_files = _sdk_files(flutter_toolchain, "web"),
+            ),
+        ),
+    ]
+
+_flutter_widget_preview_rule = rule(
+    implementation = _flutter_widget_preview_impl,
+    attrs = {
+        "embed": attr.label_list(
+            providers = [FlutterLibraryInfo],
+            doc = "Exactly one flutter_library whose source package contains the previews.",
+        ),
+        "start_args": attr.string_list(
+            default = [],
+            doc = "Fixed arguments placed before runtime flags for `flutter widget-preview start`.",
+        ),
+    },
+    executable = True,
+    toolchains = ["//flutter:toolchain_type"],
+    doc = "Runs Flutter Widget Preview against the source checkout with the hermetic SDK.",
+)
+
+def flutter_widget_preview(name, embed, start_args = [], **kwargs):
+    """Defines a source-workspace Flutter Widget Preview runner.
+
+    `bazel run //<package>:<name>` launches `flutter widget-preview start`.
+    Runtime arguments after `--` are forwarded to `start`; an optional explicit
+    `start` subcommand is accepted. `bazel run ... -- clean` removes only the
+    source package's `.widget_preview` directory.
+
+    Widget Preview is intentionally a developer workflow: Flutter may mutate
+    `.widget_preview` in the source checkout and resolve its generated scaffold
+    through the network and the user's pub cache.
+
+    Args:
+      name: Target name.
+      embed: Exactly one flutter_library target.
+      start_args: Fixed arguments passed to `widget-preview start` before runtime flags.
+      **kwargs: Common rule attributes such as visibility, tags, and testonly.
+    """
+    _flutter_widget_preview_rule(
+        name = name,
+        embed = embed,
+        start_args = start_args,
+        **kwargs
+    )
+
 def _to_label_list(value):
     if value == None:
         return []
@@ -1879,6 +2066,7 @@ _PLATFORM_SPEC_KEYS = [
     "build_args",
     "mode",
     "env",
+    "flavor",
     "android_test",
     "android_maven_repo",
     "build_name",
@@ -1948,7 +2136,7 @@ def flutter_app(
     either labels for files that should be overlaid into the Flutter workspace when
     building for that platform, or a dict spec with any of the keys `srcs`,
     `dart_defines`, `build_args`, `mode`, `env`, `android_test`,
-    `android_maven_repo`, `build_name`, `build_number`, and `tags` to customize that
+    `android_maven_repo`, `build_name`, `build_number`, `flavor`, and `tags` to customize that
     platform's build. A target is emitted only when the corresponding attribute
     is provided. Spec `tags` extend the macro-level `tags` (e.g. to mark only
     the mobile platforms `manual`).
@@ -2036,7 +2224,7 @@ def flutter_app(
         if platform_android_maven_repo != None:
             rule_args["android_maven_repo"] = platform_android_maven_repo
 
-        for passthrough in ["android_test", "build_name", "build_number"]:
+        for passthrough in ["android_test", "build_name", "build_number", "flavor"]:
             if spec.get(passthrough) != None:
                 rule_args[passthrough] = spec[passthrough]
 

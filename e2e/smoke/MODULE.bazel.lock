@@ -469,8 +469,8 @@
     },
     "@@rules_flutter+//flutter:extensions.bzl%flutter": {
       "general": {
-        "bzlTransitiveDigest": "MeW9xk8UvLWwWnErfIrhuvoab+lxfTSjZLp5C7fWjiY=",
-        "usagesDigest": "WrNLOMtHbY5BgHMBe3HMWm5GNjO5BJIhgHbmE4/sIow=",
+        "bzlTransitiveDigest": "Kx/I+Iq3FJWVcbTFUXIH6VUOg9Un0PBw9TiqXnoSyQA=",
+        "usagesDigest": "SrkQEQMZngB6PxqtFqbt0slzDqbfAK9AsP0I8iMLgz4=",
         "recordedFileInputs": {},
         "recordedDirentsInputs": {},
         "envVariables": {
@@ -483,7 +483,7 @@
             "attributes": {
               "platform": "macos",
               "integrity": "",
-              "flutter_version": "3.24.0",
+              "flutter_version": "3.47.0",
               "precache": [
                 "web"
               ],
@@ -495,7 +495,7 @@
             "attributes": {
               "platform": "macos_arm64",
               "integrity": "",
-              "flutter_version": "3.24.0",
+              "flutter_version": "3.47.0",
               "precache": [
                 "web"
               ],
@@ -507,7 +507,7 @@
             "attributes": {
               "platform": "linux",
               "integrity": "",
-              "flutter_version": "3.24.0",
+              "flutter_version": "3.47.0",
               "precache": [
                 "web"
               ],
@@ -519,7 +519,7 @@
             "attributes": {
               "platform": "linux_arm64",
               "integrity": "",
-              "flutter_version": "3.24.0",
+              "flutter_version": "3.47.0",
               "precache": [
                 "web"
               ],
@@ -531,7 +531,7 @@
             "attributes": {
               "platform": "windows",
               "integrity": "",
-              "flutter_version": "3.24.0",
+              "flutter_version": "3.47.0",
               "precache": [
                 "web"
               ],

@@ -156,6 +156,19 @@ embed_guard_test = analysistest.make(
     expect_failure = True,
 )
 
+def _failure_test_impl(ctx):
+    env = analysistest.begin(ctx)
+    asserts.expect_failure(env, ctx.attr.expected_failure)
+    return analysistest.end(env)
+
+failure_test = analysistest.make(
+    _failure_test_impl,
+    attrs = {
+        "expected_failure": attr.string(mandatory = True),
+    },
+    expect_failure = True,
+)
+
 def _android_toolchain_roots_test_impl(ctx):
     env = analysistest.begin(ctx)
 

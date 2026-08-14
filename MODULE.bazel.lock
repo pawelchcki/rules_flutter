@@ -263,8 +263,8 @@
   "moduleExtensions": {
     "//flutter:extensions.bzl%flutter": {
       "general": {
-        "bzlTransitiveDigest": "MeW9xk8UvLWwWnErfIrhuvoab+lxfTSjZLp5C7fWjiY=",
-        "usagesDigest": "MPZC/xzGVbRvfxHYU74cPXZyyx32ojSPxKT0ZE+0WUE=",
+        "bzlTransitiveDigest": "Kx/I+Iq3FJWVcbTFUXIH6VUOg9Un0PBw9TiqXnoSyQA=",
+        "usagesDigest": "sXbUHVCwHhLVWzJn3SO6tbHmME5PeyvIa5vhJIqwtT0=",
         "recordedFileInputs": {},
         "recordedDirentsInputs": {},
         "envVariables": {
@@ -277,7 +277,7 @@
             "attributes": {
               "platform": "macos",
               "integrity": "",
-              "flutter_version": "3.24.0",
+              "flutter_version": "3.47.0",
               "precache": [],
               "warm_first_run_stamps": true
             }
@@ -287,7 +287,7 @@
             "attributes": {
               "platform": "macos_arm64",
               "integrity": "",
-              "flutter_version": "3.24.0",
+              "flutter_version": "3.47.0",
               "precache": [],
               "warm_first_run_stamps": true
             }
@@ -297,7 +297,7 @@
             "attributes": {
               "platform": "linux",
               "integrity": "",
-              "flutter_version": "3.24.0",
+              "flutter_version": "3.47.0",
               "precache": [],
               "warm_first_run_stamps": true
             }
@@ -307,7 +307,7 @@
             "attributes": {
               "platform": "linux_arm64",
               "integrity": "",
-              "flutter_version": "3.24.0",
+              "flutter_version": "3.47.0",
               "precache": [],
               "warm_first_run_stamps": true
             }
@@ -317,7 +317,7 @@
             "attributes": {
               "platform": "windows",
               "integrity": "",
-              "flutter_version": "3.24.0",
+              "flutter_version": "3.47.0",
               "precache": [],
               "warm_first_run_stamps": true
             }

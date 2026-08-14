@@ -4,7 +4,7 @@ bazel_dep(name = "rules_flutter", version = "0.2.0")
 
 flutter = use_extension("@rules_flutter//flutter:extensions.bzl", "flutter")
 flutter.toolchain(
-    flutter_version = "3.24.0",
+    flutter_version = "3.47.0",
     precache = ["web"],
 )
 use_repo(
