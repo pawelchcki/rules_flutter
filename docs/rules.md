@@ -278,7 +278,7 @@ Each platform attribute (`web`, `apk`, `ios`, `macos`, `linux`, `windows`) accep
 either labels for files that should be overlaid into the Flutter workspace when
 building for that platform, or a dict spec with any of the keys `srcs`,
 `dart_defines`, `build_args`, `mode`, `env`, `android_test`,
-`android_maven_repo`, `build_name`, `build_number`, and `tags` to customize that
+`android_maven_repo`, `build_name`, `build_number`, `flavor`, and `tags` to customize that
 platform's build. A target is emitted only when the corresponding attribute
 is provided. Spec `tags` extend the macro-level `tags` (e.g. to mark only
 the mobile platforms `manual`).
@@ -393,5 +393,38 @@ Defines a flutter_library target and optional .update/.format helpers.
 | <a id="flutter_library-update_visibility"></a>update_visibility |  Optional visibility override for the `.update` target.   |  `None` |
 | <a id="flutter_library-update_tags"></a>update_tags |  Optional tag list override for the `.update` target.   |  `None` |
 | <a id="flutter_library-kwargs"></a>kwargs |  Forwarded to the underlying flutter_library rule.   |  none |
+
+
+<a id="flutter_widget_preview"></a>
+
+## flutter_widget_preview
+
+<pre>
+load("@rules_flutter//flutter:defs.bzl", "flutter_widget_preview")
+
+flutter_widget_preview(<a href="#flutter_widget_preview-name">name</a>, <a href="#flutter_widget_preview-embed">embed</a>, <a href="#flutter_widget_preview-start_args">start_args</a>, <a href="#flutter_widget_preview-kwargs">**kwargs</a>)
+</pre>
+
+Defines a source-workspace Flutter Widget Preview runner.
+
+`bazel run //<package>:<name>` launches `flutter widget-preview start`.
+Runtime arguments after `--` are forwarded to `start`; an optional explicit
+`start` subcommand is accepted. `bazel run ... -- clean` removes only the
+source package's `.widget_preview` directory.
+
+Widget Preview is intentionally a developer workflow: Flutter may mutate
+`.widget_preview` in the source checkout and resolve its generated scaffold
+through the network and the user's pub cache.
+
+
+**PARAMETERS**
+
+
+| Name  | Description | Default Value |
+| :------------- | :------------- | :------------- |
+| <a id="flutter_widget_preview-name"></a>name |  Target name.   |  none |
+| <a id="flutter_widget_preview-embed"></a>embed |  Exactly one flutter_library target.   |  none |
+| <a id="flutter_widget_preview-start_args"></a>start_args |  Fixed arguments passed to `widget-preview start` before runtime flags.   |  `[]` |
+| <a id="flutter_widget_preview-kwargs"></a>kwargs |  Common rule attributes such as visibility, tags, and testonly.   |  none |
 
 

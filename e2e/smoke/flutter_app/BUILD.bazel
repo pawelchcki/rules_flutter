@@ -8,6 +8,7 @@ load(
     "flutter_goldens",
     "flutter_library",
     "flutter_test",
+    "flutter_widget_preview",
 )
 load("@rules_multirun//:defs.bzl", "command", "multirun")
 load("@rules_shell//shell:sh_test.bzl", "sh_test")
@@ -18,7 +19,10 @@ flutter_library(
         "dart_test.yaml",
         "lib/main.dart",
     ],
-    data = glob(["l10n/**"]),
+    data = glob([
+        "assets/**",
+        "l10n/**",
+    ]),
     generated_srcs = {
         # Mounted at lib/generated/<proto import path>.pb.dart, so main.dart
         # imports package:hello_world/generated/api/v1/service.pb.dart.
@@ -117,12 +121,42 @@ flutter_app(
     },
 )
 
+# A second web build exercises Flutter's WebAssembly compiler while retaining
+# the same deterministic post-build normalization as the JavaScript target.
+flutter_app(
+    name = "wasm_app",
+    create_dev_target = False,
+    embed = [":lib"],
+    web = {
+        "srcs": [":web_files"],
+        "build_args": ["--wasm"],
+    },
+)
+
+# Desktop flavors alter both Flutter's output path and flavor-scoped assets.
+flutter_app(
+    name = "flavored_app",
+    embed = [":lib"],
+    linux = {
+        "flavor": "smoke",
+        "srcs": [":linux_files"],
+    },
+)
+
+flutter_widget_preview(
+    name = "preview",
+    embed = [":lib"],
+    start_args = ["--web-server"],
+)
+
 build_test(
     name = "app_build_test",
     targets = [
         ":app.dev",
         ":app.linux",
         ":app.web",
+        ":flavored_app.linux",
+        ":wasm_app.web",
         # Building the goldens target runs the hermetic FlutterUpdateGoldens
         # action (compile + render + capture), validating golden regeneration
         # on CI without writing to the source tree.
@@ -154,7 +188,7 @@ flutter_build_settings(
 # a checked-in, checksummed Maven closure at repository fetch time.
 filegroup(
     name = "android_maven_mirror",
-    srcs = ["android/settings.gradle.kts"],
+    srcs = ["android/settings.gradle"],
 )
 
 flutter_app(
@@ -215,6 +249,24 @@ sh_test(
     name = "linux_build_artifacts_test",
     srcs = ["linux_build_artifacts_test.sh"],
     data = [":app.linux"],
+)
+
+sh_test(
+    name = "linux_flavor_assets_test",
+    srcs = ["linux_flavor_assets_test.sh"],
+    data = [":flavored_app.linux"],
+)
+
+sh_test(
+    name = "wasm_build_artifacts_test",
+    srcs = ["wasm_build_artifacts_test.sh"],
+    data = [":wasm_app.web"],
+)
+
+sh_test(
+    name = "widget_preview_test",
+    srcs = ["widget_preview_test.sh"],
+    data = [":preview"],
 )
 
 sh_test(

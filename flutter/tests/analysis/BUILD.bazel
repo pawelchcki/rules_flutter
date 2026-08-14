@@ -8,6 +8,7 @@ load(
     "android_toolchain_roots_test",
     "build_command_test",
     "embed_guard_test",
+    "failure_test",
 )
 
 android_toolchain(
@@ -148,7 +149,75 @@ build_command_test(
         "'build' 'linux' '--no-pub' '--release'",
         "build/linux/x64/release/bundle",
     ],
+    target_compatible_with = ["@platforms//os:linux"],
     target_under_test = ":fixture_linux_app.linux",
+)
+
+flutter_app(
+    name = "fixture_linux_flavored_app",
+    embed = [":fixture_lib"],
+    linux = {
+        "flavor": "enterprise-demo",
+    },
+    tags = ["manual"],
+)
+
+build_command_test(
+    name = "linux_flavor_test",
+    expected_substrings = [
+        "'build' 'linux' '--no-pub' '--release' '--flavor' 'enterprise-demo'",
+        "build/linux/x64/enterprise-demo/release/bundle",
+    ],
+    target_compatible_with = ["@platforms//os:linux"],
+    target_under_test = ":fixture_linux_flavored_app.linux",
+)
+
+flutter_app(
+    name = "fixture_windows_flavored_app",
+    embed = [":fixture_lib"],
+    tags = ["manual"],
+    windows = {
+        "flavor": "enterprise_demo",
+    },
+)
+
+build_command_test(
+    name = "windows_flavor_test",
+    expected_substrings = [
+        "'build' 'windows' '--no-pub' '--release' '--flavor' 'enterprise_demo'",
+        "build/windows/x64/enterprise_demo/runner/Release",
+    ],
+    target_under_test = ":fixture_windows_flavored_app.windows",
+)
+
+flutter_app(
+    name = "fixture_invalid_flavor_app",
+    embed = [":fixture_lib"],
+    linux = {
+        "flavor": "../unsafe",
+    },
+    tags = ["manual"],
+)
+
+failure_test(
+    name = "invalid_desktop_flavor_test",
+    expected_failure = "must be a safe path segment",
+    target_under_test = ":fixture_invalid_flavor_app.linux",
+)
+
+flutter_app(
+    name = "fixture_build_args_flavor_app",
+    embed = [":fixture_lib"],
+    tags = ["manual"],
+    windows = {
+        "build_args": ["--flavor=unsafe"],
+    },
+)
+
+failure_test(
+    name = "desktop_build_args_flavor_test",
+    expected_failure = "Set the first-class flavor field",
+    target_under_test = ":fixture_build_args_flavor_app.windows",
 )
 
 flutter_app(
@@ -268,7 +337,11 @@ test_suite(
         ":android_toolchain_roots_test",
         ":build_command_customization_test",
         ":build_command_defaults_test",
+        ":desktop_build_args_flavor_test",
         ":embed_unassembled_cache_test",
+        ":invalid_desktop_flavor_test",
+        ":linux_flavor_test",
         ":linux_hermetic_toolchain_test",
+        ":windows_flavor_test",
     ],
 )

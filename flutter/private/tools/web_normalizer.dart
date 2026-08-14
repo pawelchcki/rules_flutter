@@ -167,6 +167,11 @@ void _repairServiceWorker(Directory output, List<File> normalized) {
   final String content = worker.readAsStringSync();
   final Match? match = _resourcesMap.firstMatch(content);
   if (match == null) {
+    // Flutter 3.47+ emits a retirement worker that only unregisters itself
+    // and reloads clients. It has no cache manifest to repair.
+    if (isRetirementServiceWorker(content)) {
+      return;
+    }
     throw StateError(
       'Normalized Flutter web files, but flutter_service_worker.js has no safe RESOURCES map',
     );
@@ -208,6 +213,16 @@ void _repairServiceWorker(Directory output, List<File> normalized) {
   );
   final String repaired = content.replaceRange(match.start, match.end, repairedMatch);
   worker.writeAsStringSync(repaired);
+}
+
+/// Whether [content] is Flutter's non-caching service-worker retirement shim.
+///
+/// Public only so the hermetic normalizer test can verify real SDK output.
+bool isRetirementServiceWorker(String content) {
+  return content.contains('self.registration.unregister()') &&
+      RegExp(r'''self\.addEventListener\(["']activate["']''').hasMatch(content) &&
+      !RegExp(r'''self\.addEventListener\(["']fetch["']''').hasMatch(content) &&
+      !RegExp(r'\bcaches\s*\.').hasMatch(content);
 }
 
 Uint8List _uint64BigEndian(int value) {

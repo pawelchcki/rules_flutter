@@ -566,7 +566,7 @@ PUBSPEC="{pubspec_path}"
 # Top-level name:/version:, read with POSIX awk — this action has no Flutter
 # SDK input, so it must not need an interpreter.
 read_key() {{
-    awk -v key="$1" -F: '$0 ~ "^" key ":" {{ v = $2; gsub(/^[[:space:]]*["'"'"']?|["'"'"']?[[:space:]]*$/, "", v); print v; exit }} /^environment:/ {{ exit }}' "$PUBSPEC"
+    awk -v key="$1" -F: '$0 ~ "^" key ":" {{ v = $2; sub(/[[:space:]]+#.*$/, "", v); gsub(/^[[:space:]]*["'"'"']?|["'"'"']?[[:space:]]*$/, "", v); print v; exit }} /^environment:/ {{ exit }}' "$PUBSPEC"
 }}
 NAME="$(read_key name)"
 VERSION="$(read_key version)"
@@ -1205,6 +1205,7 @@ def flutter_build_action(
         mode = "release",
         dart_defines = {},
         build_args = [],
+        flavor = "",
         env = {},
         android = None,
         linux = None,
@@ -1228,6 +1229,7 @@ def flutter_build_action(
         mode: Flutter build mode (release, profile, or debug)
         dart_defines: Dict of compile-time --dart-define key/value pairs
         build_args: Extra args appended verbatim to the flutter build command
+        flavor: Linux or Windows desktop flavor selected through flutter_app.
         env: Extra environment variables exported before invoking flutter
         android: Hermetic SDK/optional NDK/Gradle/Maven/JDK environment for
             apk/appbundle targets. Every component is a declared action input.
@@ -1290,11 +1292,11 @@ def flutter_build_action(
         },
         "linux": {
             "args": ["build", "linux", "--no-pub"],
-            "output_dir": "build/linux/{arch}/{mode}/bundle",
+            "output_dir": "build/linux/{arch}{flavor}/{mode}/bundle",
         },
         "windows": {
             "args": ["build", "windows", "--no-pub"],
-            "output_dir": "build/windows/x64/runner/{Mode}",
+            "output_dir": "build/windows/x64{flavor}/runner/{Mode}",
         },
     }
 
@@ -1305,13 +1307,16 @@ def flutter_build_action(
 
     command_args = list(config["args"])
     command_args.append("--" + mode)
+    if flavor:
+        command_args.extend(["--flavor", flavor])
     for key in sorted(dart_defines.keys()):
         command_args.append("--dart-define={}={}".format(key, dart_defines[key]))
     command_args.extend(build_args)
     build_command = " ".join([shell_quote(arg) for arg in command_args])
 
     output_arch = linux.flutter_arch if target == "linux" and linux else "x64"
-    output_dir = config["output_dir"].replace("{arch}", output_arch).replace("{mode}", mode).replace("{Mode}", mode.capitalize())
+    flavor_dir = "/" + flavor if flavor else ""
+    output_dir = config["output_dir"].replace("{arch}", output_arch).replace("{flavor}", flavor_dir).replace("{mode}", mode).replace("{Mode}", mode.capitalize())
 
     env_exports = "\n".join([
         "export {}={}".format(key, shell_quote(env[key]))

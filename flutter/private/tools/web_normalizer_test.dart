@@ -17,12 +17,11 @@ void _write(File file, String content) {
 String _worker(Map<String, String> resources) =>
     "'use strict';\nconst RESOURCES = ${jsonEncode(resources)};\nconst CORE = [];\n";
 
-Map<String, dynamic> _workerResources(File worker) {
+Map<String, dynamic>? _workerResources(File worker) {
   final Match? match = RegExp(
     r'const\s+RESOURCES\s*=\s*(\{[\s\S]*?\});',
   ).firstMatch(worker.readAsStringSync());
-  _expect(match != null, 'service worker has no RESOURCES map');
-  return jsonDecode(match!.group(1)!) as Map<String, dynamic>;
+  return match == null ? null : jsonDecode(match.group(1)!) as Map<String, dynamic>;
 }
 
 String _fingerprintIn(String content) {
@@ -67,7 +66,7 @@ void _testDefaultTemplate(Directory root) {
   final String indexFingerprint =
       _fingerprintIn(File('${output.path}/index.html').readAsStringSync());
   _expect(bootstrapFingerprint == indexFingerprint, 'default template fingerprints differ');
-  final Map<String, dynamic> resources = _workerResources(worker);
+  final Map<String, dynamic> resources = _workerResources(worker)!;
   _expect(
     resources['flutter_bootstrap.js'] ==
         md5Hex(File('${output.path}/flutter_bootstrap.js').readAsBytesSync()),
@@ -119,7 +118,7 @@ void _testLegacyNestedTemplate(Directory root) {
   final String fingerprint = _fingerprintIn(content);
   _expect(content.contains('?v=$fingerprint'), 'legacy query version was not normalized');
   _expect(
-    _workerResources(worker)['nested/index.html'] ==
+    _workerResources(worker)!['nested/index.html'] ==
         md5Hex(File('${output.path}/nested/index.html').readAsBytesSync()),
     'nested index MD5 was not repaired',
   );
@@ -144,6 +143,29 @@ void _testHardcodedVersion(Directory root) {
     File('${output.path}/index.html').readAsStringSync() == '<script>$hardcoded</script>',
     'inlined deliberately hardcoded numeric version changed',
   );
+}
+
+void _testRetirementWorker(Directory root) {
+  final Directory fixture = _caseDirectory(root, 'retirement-worker');
+  final Directory output = Directory('${fixture.path}/output')..createSync();
+  final Directory templates = Directory('${fixture.path}/web')..createSync();
+  _write(
+    File('${templates.path}/index.html'),
+    'serviceWorkerVersion: {{flutter_service_worker_version}}',
+  );
+  _write(File('${output.path}/index.html'), 'serviceWorkerVersion: "505"');
+  const String retirementWorker = """
+self.addEventListener('activate', (event) => {
+  event.waitUntil(self.registration.unregister());
+});
+""";
+  final File worker = File('${output.path}/flutter_service_worker.js');
+  _write(worker, retirementWorker);
+
+  normalizeWebBuild(output.path, templates.path);
+
+  _fingerprintIn(File('${output.path}/index.html').readAsStringSync());
+  _expect(worker.readAsStringSync() == retirementWorker, 'retirement worker changed');
 }
 
 void _testUnsafeManifestFails(Directory root) {
@@ -196,14 +218,21 @@ void _verifyRealOutput(String outputPath, String logPath) {
   final String indexFingerprint = _fingerprintIn(index.readAsStringSync());
   _expect(bootstrapFingerprint == indexFingerprint, 'real web fingerprints differ');
 
-  final Map<String, dynamic> resources = _workerResources(worker);
-  _expect(
-    resources['flutter_bootstrap.js'] == md5Hex(bootstrap.readAsBytesSync()),
-    'real bootstrap MD5 does not match',
-  );
-  final String indexMd5 = md5Hex(index.readAsBytesSync());
-  _expect(resources['index.html'] == indexMd5, 'real index MD5 does not match');
-  _expect(resources['/'] == indexMd5, 'real root / MD5 does not match');
+  final Map<String, dynamic>? resources = _workerResources(worker);
+  if (resources == null) {
+    _expect(
+      isRetirementServiceWorker(worker.readAsStringSync()),
+      'real service worker is neither cache-backed nor a safe retirement worker',
+    );
+  } else {
+    _expect(
+      resources['flutter_bootstrap.js'] == md5Hex(bootstrap.readAsBytesSync()),
+      'real bootstrap MD5 does not match',
+    );
+    final String indexMd5 = md5Hex(index.readAsBytesSync());
+    _expect(resources['index.html'] == indexMd5, 'real index MD5 does not match');
+    _expect(resources['/'] == indexMd5, 'real root / MD5 does not match');
+  }
 
   const String expectedLog = "Target: web\n"
       "Mode: release\n"
@@ -231,6 +260,7 @@ void main(List<String> arguments) {
     _testTokenTemplate(root, emptyWorker: true);
     _testLegacyNestedTemplate(root);
     _testHardcodedVersion(root);
+    _testRetirementWorker(root);
     _testUnsafeManifestFails(root);
   } finally {
     root.deleteSync(recursive: true);

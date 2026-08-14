@@ -77,7 +77,6 @@ toolchains, so no host Flutter install is needed:
 ```starlark
 flutter = use_extension("@rules_flutter//flutter:extensions.bzl", "flutter")
 flutter.toolchain(
-    flutter_version = "3.38.4",
     # Artifact groups that must be present in the SDK cache after fetch.
     # Stable archives already ship web, Android, and the host desktop
     # platform (plus iOS on macOS); anything missing is fetched via
@@ -90,6 +89,16 @@ use_repo(
     "flutter_toolchains",
 )
 register_toolchains("@flutter_toolchains//:all")
+```
+
+With no `flutter_version`, `flutter.toolchain()` selects the newest stable SDK
+whose archive hashes are checked into `flutter/private/versions.bzl` (currently
+3.47.0). This is deterministic: it never asks the network which release is
+latest. `bazel run //tools:update_flutter_versions` advances both the table and
+this default. To hold a project on another checked-in version, pin it explicitly:
+
+```starlark
+flutter.toolchain(flutter_version = "3.38.4")
 ```
 
 #### Using a version not in the built-in table
@@ -126,11 +135,11 @@ Prefer adding the version to `versions.bzl` for anything long-lived; the
 `integrity` map is an escape hatch for one-off or bleeding-edge pins.
 
 > **Version selection.** When more than one module registers the same-named
-> toolchain, the highest version wins (compared semver-aware). `ruleslab_flutter`
-> itself registers a default version, so pinning a lower version through the
-> escape hatch has no effect — the default is selected instead. The `integrity`
-> you supply is bound to its exact version and is never applied to a different
-> version that wins selection.
+> toolchain, the highest requested version wins (compared semver-aware). The
+> `integrity` you supply is bound to its exact version and is never applied to
+> a different version that wins selection. This repository's own self-test
+> toolchain tag is ignored when `rules_flutter` is a dependency, so it does not
+> constrain downstream pins.
 
 #### SDK hermeticity guarantees
 
@@ -474,7 +483,7 @@ tag to the same `flutter` extension and register its generated toolchain hub:
 ```starlark
 # MODULE.bazel
 flutter = use_extension("@rules_flutter//flutter:extensions.bzl", "flutter")
-flutter.toolchain(flutter_version = "3.38.4")
+flutter.toolchain(flutter_version = "3.47.0")
 flutter.linux_toolchain()
 use_repo(
     flutter,
@@ -524,6 +533,7 @@ labels, treated as `srcs`) or a dict spec with any of these keys:
 | `build_args`         | Extra arguments appended verbatim to `flutter build`.                                                                                                                      |
 | `mode`               | Build mode: `release` (default), `profile`, or `debug`.                                                                                                                    |
 | `env`                | Extra environment variables exported in the build action.                                                                                                                  |
+| `flavor`             | Linux/Windows only: a flavor made from letters, digits, `_`, or `-`; passed as `--flavor` and used to locate Flutter's flavor-specific output directory.                   |
 | `android_maven_repo` | Complete vendored Maven/plugin/Flutter-engine closure required by `apk`/`appbundle`.                                                                                       |
 | `android_test`       | `apk` only: additionally build the instrumentation APK (see [Mobile builds](#mobile-builds)).                                                                              |
 | `build_name`         | Overrides the pubspec version name (`--build-name`).                                                                                                                       |
@@ -534,6 +544,43 @@ labels, treated as `srcs`) or a dict spec with any of these keys:
 can also be set at the macro level, shared by all platforms. Per-platform
 values merge over the shared ones: `build_args` concatenates after the shared
 list, dicts merge with platform keys winning, and `mode` overrides.
+
+For Linux and Windows, use the first-class `flavor` field rather than putting
+`--flavor` in `build_args` (the latter is rejected because Bazel must know the
+corresponding output directory):
+
+```starlark
+flutter_app(
+    name = "app",
+    embed = [":lib"],
+    linux = {"srcs": [":linux_files"], "flavor": "staging"},
+    windows = {"srcs": [":windows_files"], "flavor": "staging"},
+)
+```
+
+Flutter then emits, and the rules collect, paths such as
+`build/linux/x64/staging/release/bundle` and
+`build/windows/x64/staging/runner/Release`. Flavor-scoped assets declared with
+the pubspec `assets[].flavors` field follow the same selection. Android, iOS,
+and macOS flavor configuration remains outside this first-class field for now.
+
+### WebAssembly builds
+
+Web targets accept Flutter's `--wasm` build flag through `build_args`; their
+output receives the same deterministic web normalization as JavaScript builds:
+
+```starlark
+flutter_app(
+    name = "wasm_app",
+    create_dev_target = False,
+    embed = [":lib"],
+    web = {"srcs": [":web_files"], "build_args": ["--wasm"]},
+)
+```
+
+```bash
+bazel build //my_app:wasm_app.web
+```
 
 ### Per-environment configuration
 
@@ -626,6 +673,36 @@ bazel run //my_app:app.dev --//my_app:env=dev -- --web-port=8080
 
 Opt out with `create_dev_target = False`; pass fixed args via
 `dev_run_args = [...]`.
+
+### Widget Preview
+
+`flutter_widget_preview` exposes Flutter's experimental Widget Preview through
+the selected hermetic SDK and requires exactly one `flutter_library`:
+
+```starlark
+load("@rules_flutter//flutter:defs.bzl", "flutter_widget_preview")
+
+flutter_widget_preview(
+    name = "preview",
+    embed = [":lib"],
+    start_args = ["--web-server"],
+)
+```
+
+```bash
+# `start` is optional; runtime flags follow the fixed start_args.
+bazel run //my_app:preview
+bazel run //my_app:preview -- start --help
+
+# Remove only this package's generated preview scaffold.
+bazel run //my_app:preview -- clean
+```
+
+Like the web development server, preview runs in the source checkout rather
+than a Bazel-prepared workspace. Flutter creates and updates `.widget_preview`
+there, and scaffold resolution may use the network and the developer's pub
+cache. `clean` deletes that package-local directory. The runner reports an
+actionable error when the selected SDK predates Widget Preview support.
 
 ## Mobile builds
 
@@ -910,6 +987,8 @@ execution) and how to resolve each.
 - Optimize incremental and remote builds by trimming redundant copies, exercising RBE, and benchmarking cache hit rates.
 - Harden failure surfacing with structured action logs, actionable diagnostics, and better toolchain validation.
 - Expand automated coverage: macOS/Windows e2e builds and remote execution smoke tests.
+- Delivered first-class Linux/Windows desktop flavors, including flavor-aware
+  output collection and Linux asset-selection coverage.
 - Produce task-oriented docs: quickstarts, troubleshooting, and upgrade guides covering common Flutter/Bazel workflows.
 
 ### 🛫 Production readiness (planned)
@@ -918,7 +997,8 @@ execution) and how to resolve each.
 - Complete iOS/macOS pipelines with codesign-aware actions, xcframework integration, and Apple toolchain configuration rules.
 - Deliver Windows desktop bundling and Linux installer/image packaging on top
   of the existing hermetic Linux release bundle.
-- Support advanced Flutter UX: declarative asset rules, localization packaging, configurable build flavors, and web performance tuning.
+- Support advanced Flutter UX: declarative asset rules, localization packaging,
+  broader Android/Apple flavor configuration, and web performance tuning.
 - Introduce extensibility: plugin federation, native interop helpers, and more code generation entry points.
 
 ### 🎯 Release checkpoints

@@ -33,7 +33,7 @@ load("//flutter/private:pub_lock_hub.bzl", "pub_lock_hub")
 load("//flutter/private:pub_repository.bzl", "pub_dev_repository")
 load("//flutter/private:pubspec_lock.bzl", "lock_hosted_packages", "parse_pubspec_lock")
 load("//flutter/private:version_select.bzl", "highest_version")
-load("//flutter/private:versions.bzl", "TOOL_VERSIONS")
+load("//flutter/private:versions.bzl", "LATEST_STABLE_VERSION", "TOOL_VERSIONS")
 load(":repositories.bzl", "flutter_register_toolchains")
 
 _DEFAULT_NAME = "flutter"
@@ -43,7 +43,10 @@ flutter_toolchain = tag_class(attrs = {
 Base name for generated repositories, allowing more than one flutter toolchain to be registered.
 Overriding the default is only permitted in the root module.
 """, default = _DEFAULT_NAME),
-    "flutter_version": attr.string(doc = "Explicit version of flutter.", mandatory = True),
+    "flutter_version": attr.string(
+        doc = "Flutter version. Defaults to the newest integrity-verified stable release in the checked-in version table.",
+        default = LATEST_STABLE_VERSION,
+    ),
     "precache": attr.string_list(doc = """\
 Artifact groups (web, android, ios, macos, linux, windows) that must be present
 in the SDK cache after fetch. Stable archives already ship these; when one is
@@ -187,6 +190,12 @@ def _toolchain_extension(module_ctx):
     warm_stamps = {}
     for mod in module_ctx.modules:
         for toolchain in mod.tags.toolchain:
+            # This repository uses the extension to test itself. When it is a
+            # dependency, keep its apparent repository mappings available to
+            # internal repository rules but do not let its self-test SDK pin
+            # constrain the consuming root module's explicit selection.
+            if mod.name == "rules_flutter" and not mod.is_root:
+                continue
             if toolchain.name != _DEFAULT_NAME and not mod.is_root:
                 fail("""\
                 Only the root module may override the default name for the flutter toolchain.
