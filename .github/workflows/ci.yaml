@@ -102,9 +102,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: bazel mod tidy is clean
+        if: matrix.folder != 'examples/hello_world'
         working-directory: ${{ matrix.folder }}
         run: |
           bazel mod tidy
+          git diff --exit-code -- MODULE.bazel MODULE.bazel.lock
+      - name: bazel mod tidy is clean for the unreleased example
+        if: matrix.folder == 'examples/hello_world'
+        working-directory: examples/hello_world
+        run: |
+          bazel mod tidy --override_module=rules_flutter=$GITHUB_WORKSPACE
           git diff --exit-code -- MODULE.bazel MODULE.bazel.lock
 
   pre-commit:
