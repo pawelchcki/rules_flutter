@@ -2,6 +2,21 @@
 
 load("@bazel_skylib//lib:unittest.bzl", "asserts", "unittest")
 load("//flutter/private:common.bzl", "detect_target_platform")
+load("//flutter/private:flutter_compile.bzl", "flutter_cfe_uri")
+
+def _cfe_uri_test_impl(ctx):
+    env = unittest.begin(ctx)
+    asserts.equals(
+        env,
+        "org-dartlang-bazel:///bazel-out/k8-fastbuild/bin/app.dart",
+        flutter_cfe_uri("bazel-out/k8-fastbuild/bin/app.dart"),
+    )
+    asserts.equals(
+        env,
+        "org-dartlang-bazel:///workspace/lib/main.dart",
+        flutter_cfe_uri("/workspace\\lib\\main.dart"),
+    )
+    return unittest.end(env)
 
 def _ios_detection_test_impl(ctx):
     env = unittest.begin(ctx)
@@ -82,6 +97,7 @@ _t2_test = unittest.make(_linux_detection_test_impl)
 _t3_test = unittest.make(_windows_detection_test_impl)
 _t4_test = unittest.make(_android_detection_test_impl)
 _t5_test = unittest.make(_ios_priority_over_macos_test_impl)
+_t6_test = unittest.make(_cfe_uri_test_impl)
 
 def flutter_application_test_suite(name):
-    unittest.suite(name, _t0_test, _t1_test, _t2_test, _t3_test, _t4_test, _t5_test)
+    unittest.suite(name, _t0_test, _t1_test, _t2_test, _t3_test, _t4_test, _t5_test, _t6_test)

@@ -5,6 +5,12 @@ Flutter compilation differs from vanilla Dart in that it uses:
 - The frontend_server_aot.dart.snapshot instead of `dart compile kernel`
 """
 
+_CFE_URI_SCHEME = "org-dartlang-bazel"
+
+def flutter_cfe_uri(path):
+    """Maps an execroot-relative path to the stable Flutter CFE URI space."""
+    return _CFE_URI_SCHEME + ":///" + path.replace("\\", "/").lstrip("/")
+
 def flutter_kernel_compile_action(
         ctx,
         dartaotruntime,
@@ -60,7 +66,7 @@ def flutter_kernel_compile_action(
             to the frontend_server via `--native-assets`. The frontend
             server embeds the manifest into the resulting kernel so the
             engine can resolve `package:` Native Assets at runtime.
-        dart_plugin_registrant_uri: Optional `org-dartlang-root:///<exec
+        dart_plugin_registrant_uri: Optional `org-dartlang-bazel:///<exec
             path>` URI of the generated plugin registrant. When set, the
             registrant is compiled into the kernel as an extra source and
             advertised via `-Dflutter.dart_plugin_registrant=` so the
@@ -73,6 +79,12 @@ def flutter_kernel_compile_action(
     args = ctx.actions.args()
     args.add(frontend_server)
 
+    # Give every execroot-relative input a stable URI. Without this mapping,
+    # frontend_server resolves relative paths against the absolute sandbox
+    # execroot and writes that per-invocation path into the kernel dill.
+    args.add("--filesystem-root", ".")
+    args.add("--filesystem-scheme", _CFE_URI_SCHEME)
+
     # --sdk-root points to the directory containing the platform dill.
     # --platform-dill specifies the exact filename when it's not the
     # default "platform_strong.dill" (e.g. web's dart2wasm_platform.dill).
@@ -81,7 +93,7 @@ def flutter_kernel_compile_action(
         args.add("--platform", platform_dill.path)
 
     args.add("--target", target)
-    args.add("--packages", package_config)
+    args.add("--packages", flutter_cfe_uri(package_config.path))
     args.add("--output-dill", output)
 
     # Suppress frontend_server's interactive-protocol chatter (boundary-key
@@ -104,10 +116,8 @@ def flutter_kernel_compile_action(
         args.add("-D" + d)
 
     if dart_plugin_registrant_uri:
-        # Root the multi-root scheme at the action cwd (the execroot) so the
-        # registrant's exec path resolves and its importUri equals the -D.
-        args.add("--filesystem-root", ".")
-        args.add("--filesystem-scheme", "org-dartlang-root")
+        # The registrant uses the same stable execroot mapping, so its
+        # importUri equals the -D regardless of the sandbox location.
         args.add("--source", dart_plugin_registrant_uri)
         args.add("--source", "package:flutter/src/dart_plugin_registrant.dart")
         args.add("-Dflutter.dart_plugin_registrant=" + dart_plugin_registrant_uri)
@@ -120,7 +130,7 @@ def flutter_kernel_compile_action(
     if entrypoint_uri:
         args.add(entrypoint_uri)
     else:
-        args.add(main)
+        args.add(flutter_cfe_uri(main.path))
 
     # Suppress Dart/Flutter analytics (avoids writes to $HOME/.dart/ in sandbox).
     # Provide a writable HOME scoped to this action's output directory.

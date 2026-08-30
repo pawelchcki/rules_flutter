@@ -22,7 +22,7 @@ selecting the platform-specific toolchain repo at the call site: the rule
 discovers the font File via `ctx.toolchains[...]` instead.
 """
 
-load("@rules_dart//dart:providers.bzl", "DartInfo")
+load("@rules_dart//dart:utils.bzl", "dart_info_no_package")
 load("//flutter:providers.bzl", "FlutterInfo")
 
 _MATERIAL_ICONS_BUNDLE_PATH = "fonts/MaterialIcons-Regular.otf"
@@ -54,13 +54,7 @@ def _flutter_material_icons_impl(ctx):
         # DartInfo). The empty depsets contribute nothing to the consumer's
         # package_config.json or transitive sources — material_icons ships
         # zero Dart code; only the font.
-        DartInfo(
-            package_name = "rules_flutter_material_icons",
-            lib_root = "",
-            transitive_srcs = depset(),
-            transitive_packages = depset(),
-            transitive_code_asset_files = depset(),
-        ),
+        dart_info_no_package(),
         FlutterInfo(
             asset_dirs = depset(),
             shader_srcs = depset(),

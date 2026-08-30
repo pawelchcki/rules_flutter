@@ -21,11 +21,6 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      # rules_dart is a local_path_override dependency — clone it next to this repo.
-      # Use git clone instead of actions/checkout which rejects paths outside the workspace.
-      - name: Clone rules_dart
-        run: git clone --depth 1 https://github.com/aran/rules_dart.git ../rules_dart
-
       - name: Mount Bazel cache
         uses: actions/cache@v5
         with:
@@ -83,11 +78,6 @@ jobs:
             os: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-
-      # rules_dart is a local_path_override dependency — clone it next to this repo.
-      # Use git clone instead of actions/checkout which rejects paths outside the workspace.
-      - name: Clone rules_dart
-        run: git clone --depth 1 https://github.com/aran/rules_dart.git ../rules_dart
 
       # The Xcode build number is part of the cache key so a runner-image Xcode
       # bump invalidates the cache instead of restoring one whose cached Swift

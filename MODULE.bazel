@@ -45,6 +45,15 @@ bazel_dep(name = "rules_dart", version = "0.4.9")
 bazel_dep(name = "rules_python", version = "2.0.0")
 bazel_dep(name = "yaml.bzl", version = "0.1.2")
 
+# Use the deterministic Dart compilation fix from rules_dart PR #3 until it is
+# available in a release.
+archive_override(
+    module_name = "rules_dart",
+    sha256 = "44b144bc5a4cce234160122a9f556a91c6b9a310bd262a3eacdc18625138b8ca",
+    strip_prefix = "rules_dart-6cd2d1146614a6c982e492b2e558debf6f41d450",
+    urls = ["https://github.com/aran/rules_dart/archive/6cd2d1146614a6c982e492b2e558debf6f41d450.tar.gz"],
+)
+
 # Provides the copy_to_directory toolchain that rules_dart's source-set
 # co-location (colocate_packages) uses to assemble a package's hand-written +
 # generated files into one directory for the kernel compile.

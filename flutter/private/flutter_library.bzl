@@ -1,7 +1,7 @@
 """Implementation of the flutter_library rule."""
 
-load("@rules_dart//dart:providers.bzl", "DartCodeAssetInfo", "DartInfo", "DartPackageInfo")
-load("@rules_dart//dart:utils.bzl", "derive_lib_root", "derive_package_name")
+load("@rules_dart//dart:providers.bzl", "DartCodeAssetInfo", "DartInfo")
+load("@rules_dart//dart:utils.bzl", "dart_info", "derive_lib_root", "derive_package_name")
 load("//flutter:providers.bzl", "FlutterInfo")
 
 def build_pub_contributions(package_name, fonts_json, font_files_dict, pkg_assets_dict, pkg_shaders_dict):
@@ -227,10 +227,6 @@ def build_flutter_providers(ctx, package_name, lib_root, extra_plugins = [], ext
     Returns:
         Tuple of (DartInfo, FlutterInfo).
     """
-    transitive_srcs = depset(
-        direct = ctx.files.srcs,
-        transitive = [dep[DartInfo].transitive_srcs for dep in ctx.attr.deps],
-    )
 
     # Code assets ride on the package record, which is what makes them
     # propagate the way pub does: depending on a package that owns one is
@@ -238,28 +234,6 @@ def build_flutter_providers(ctx, package_name, lib_root, extra_plugins = [], ext
     # (`DartCodeAssetInfo`); everything Flutter adds — bundle filename, the
     # per-platform bundle slot — is applied later by the application rule.
     own_code_assets = [dep[DartCodeAssetInfo] for dep in ctx.attr.code_assets]
-    this_pkg = DartPackageInfo(
-        package_name = package_name,
-        lib_root = lib_root,
-        language_version = language_version,
-        code_assets = tuple(own_code_assets),
-        has_unreplaced_hook = ctx.attr.has_unreplaced_hook,
-    )
-    transitive_packages = depset(
-        direct = [this_pkg],
-        transitive = [dep[DartInfo].transitive_packages for dep in ctx.attr.deps],
-    )
-    transitive_code_asset_files = depset(
-        direct = [
-            a.dynamic_library
-            for a in own_code_assets
-            if a.dynamic_library != None
-        ],
-        transitive = [
-            dep[DartInfo].transitive_code_asset_files
-            for dep in ctx.attr.deps
-        ],
-    )
 
     transitive_asset_dirs = depset(
         direct = ctx.files.assets,
@@ -395,12 +369,15 @@ def build_flutter_providers(ctx, package_name, lib_root, extra_plugins = [], ext
         ],
     )
 
-    dart_info = DartInfo(
+    dart_info_provider = dart_info(
+        label = ctx.label,
         package_name = package_name,
         lib_root = lib_root,
-        transitive_srcs = transitive_srcs,
-        transitive_packages = transitive_packages,
-        transitive_code_asset_files = transitive_code_asset_files,
+        deps = ctx.attr.deps,
+        srcs = ctx.files.srcs,
+        code_assets = own_code_assets,
+        language_version = language_version,
+        has_unreplaced_hook = ctx.attr.has_unreplaced_hook,
     )
     flutter_info = FlutterInfo(
         asset_dirs = transitive_asset_dirs,
@@ -418,7 +395,7 @@ def build_flutter_providers(ctx, package_name, lib_root, extra_plugins = [], ext
         pub_assets = pub_assets,
         pub_shaders = pub_shaders,
     )
-    return (dart_info, flutter_info)
+    return (dart_info_provider, flutter_info)
 
 def _flutter_library_impl(ctx):
     package_name = derive_package_name(

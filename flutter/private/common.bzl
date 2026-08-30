@@ -11,7 +11,7 @@ load("@rules_dart//dart:utils.bzl", "collect_packages", "collect_transitive_srcs
 load("//flutter:providers.bzl", "FlutterInfo")
 load("//flutter/private:app_entrypoint.bzl", "app_main_package_uri", "compile_package_config", "resolve_kernel_entrypoint", "synthesize_app_package")
 load("//flutter/private:flutter_asset_bundle.bzl", "flutter_asset_bundle_action")
-load("//flutter/private:flutter_compile.bzl", "flutter_kernel_compile_action")
+load("//flutter/private:flutter_compile.bzl", "flutter_cfe_uri", "flutter_kernel_compile_action")
 load("//flutter/private:flutter_library.bzl", "aggregate_pub_contributions", "dedup_plugins")
 load("//flutter/private:flutter_shader_compile.bzl", "flutter_shader_compile_action")
 load("//flutter/private:plugin_registrant.bzl", "generate_dart_plugin_registrant")
@@ -273,7 +273,7 @@ def flutter_compile_kernel(ctx, flutter_sdk_info, aot = None, platform_dill = No
         target_platform = target_platform,
         agent_import = staged_agent.basename if staged_agent else None,
     )
-    registrant_uri = "org-dartlang-root:///" + registrant.path if registrant else None
+    registrant_uri = flutter_cfe_uri(registrant.path) if registrant else None
 
     # Resolve the kernel entrypoint: the user's main, keyed by its package:
     # URI for hot-reload parity with the dev tool.

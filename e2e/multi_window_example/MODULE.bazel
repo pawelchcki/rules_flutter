@@ -11,6 +11,14 @@ bazel_dep(name = "rules_cc", version = "0.2.19")
 bazel_dep(name = "rules_swift", version = "3.6.1")
 bazel_dep(name = "platforms", version = "1.1.0")
 
+# Keep in sync with the root rules_dart override.
+archive_override(
+    module_name = "rules_dart",
+    sha256 = "44b144bc5a4cce234160122a9f556a91c6b9a310bd262a3eacdc18625138b8ca",
+    strip_prefix = "rules_dart-6cd2d1146614a6c982e492b2e558debf6f41d450",
+    urls = ["https://github.com/aran/rules_dart/archive/6cd2d1146614a6c982e492b2e558debf6f41d450.tar.gz"],
+)
+
 local_path_override(
     module_name = "rules_flutter",
     path = "../..",
