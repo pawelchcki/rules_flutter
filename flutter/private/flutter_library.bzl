@@ -4,6 +4,10 @@ load("@rules_dart//dart:providers.bzl", "DartCodeAssetInfo", "DartInfo")
 load("@rules_dart//dart:utils.bzl", "dart_info", "derive_lib_root", "derive_package_name")
 load("//flutter:providers.bzl", "FlutterInfo")
 
+def asset_package_name(asset_namespace, package_name):
+    """Returns the asset bundle namespace for a first-party library."""
+    return package_name if asset_namespace == "package" else ""
+
 def build_pub_contributions(package_name, fonts_json, font_files_dict, pkg_assets_dict, pkg_shaders_dict):
     """Build pub_fonts/pub_assets/pub_shaders contribution structs from rule attrs.
 
@@ -405,12 +409,11 @@ def _flutter_library_impl(ctx):
     )
     lib_root = derive_lib_root(ctx.label.workspace_root, ctx.label.package)
 
-    # The asset-prefix package name uses the rule's `package_name` attr
-    # verbatim (empty string sentinel = bare paths, non-empty = `packages/X/`).
-    # Distinct from the Dart package name in DartInfo, which always derives a
-    # value via derive_package_name. Users opting out of asset prefixing leave
-    # `package_name` unset.
-    asset_pkg = ctx.attr.package_name
+    # Dart package identity and asset identity are independent. Applications
+    # still need an explicit Dart package name for package: imports, while
+    # their own assets use the root namespace that `flutter build` gives the
+    # root pubspec. Pub packages retain packages/<name>/ by default.
+    asset_pkg = asset_package_name(ctx.attr.asset_namespace, package_name)
     extra_pub_fonts, extra_pub_assets, extra_pub_shaders = build_pub_contributions(
         asset_pkg,
         ctx.attr.fonts_json,
@@ -461,6 +464,11 @@ flutter_library = rule(
         "package_name": attr.string(
             doc = "The Dart package name. If omitted, defaults to the last component of the Bazel package path.",
         ),
+        "asset_namespace": attr.string(
+            doc = "Asset bundle namespace. `package` (default) emits packages/<package_name>/ paths; `root` emits bare application paths.",
+            default = "package",
+            values = ["package", "root"],
+        ),
         "code_assets": attr.label_list(
             doc = "`dart_code_asset` targets standing in for this package's " +
                   "`hook/build.dart` output. Declared on the owning package " +
@@ -477,19 +485,19 @@ flutter_library = rule(
             doc = "Dart language version (`<major>.<minor>`) for this package's `package_config.json` entry. Mirrors `dart_library`'s attribute. Empty string means defer to the toolchain default.",
         ),
         "fonts_json": attr.string(
-            doc = "JSON-encoded list of font-family declarations (mirrors `flutter.fonts` in pubspec.yaml). Each entry: `{family: str, fonts: [{asset: str, weight: int?, style: str?}]}`. The `asset` paths are package-relative and must each match a key in `font_files`. The asset bundle aggregator prefixes family + asset paths with `packages/<package_name>/` when this rule's `package_name` is non-empty (empty = bare paths, used for non-package contributions like the toolchain MaterialIcons target).",
+            doc = "JSON-encoded list of font-family declarations (mirrors `flutter.fonts` in pubspec.yaml). Each entry: `{family: str, fonts: [{asset: str, weight: int?, style: str?}]}`. The `asset` paths are package-relative and must each match a key in `font_files`. The asset bundle aggregator prefixes family + asset paths with `packages/<package_name>/` when asset_namespace is `package`; `root` emits bare paths.",
             default = "",
         ),
         "font_files": attr.label_keyed_string_dict(
-            doc = "Map of font File label -> package-relative asset path. The string value must match an `asset` field in `fonts_json`. The file is bundled at `packages/<package_name>/<path>` (or bare `<path>` when `package_name` is empty).",
+            doc = "Map of font File label -> package-relative asset path. The string value must match an `asset` field in `fonts_json`. The file is bundled according to asset_namespace.",
             allow_files = True,
         ),
         "pkg_assets": attr.label_keyed_string_dict(
-            doc = "Map of asset File label -> package-relative path (mirrors `flutter.assets` in pubspec.yaml). Bundled at `packages/<package_name>/<path>` (or bare `<path>` when `package_name` is empty); also included in AssetManifest.",
+            doc = "Map of asset File label -> package-relative path (mirrors `flutter.assets` in pubspec.yaml). Bundled according to asset_namespace and included in AssetManifest.",
             allow_files = True,
         ),
         "pkg_shaders": attr.label_keyed_string_dict(
-            doc = "Map of shader File label -> package-relative path (mirrors `flutter.shaders` in pubspec.yaml). Routed through the impellerc compile and bundled at `packages/<package_name>/<path>` (or bare `<path>` when `package_name` is empty).",
+            doc = "Map of shader File label -> package-relative path (mirrors `flutter.shaders` in pubspec.yaml). Routed through impellerc and bundled according to asset_namespace.",
             allow_files = True,
         ),
     },

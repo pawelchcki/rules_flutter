@@ -37,7 +37,7 @@ therefore `package:test_api`) so the generated bootstrap compiles.
 """
 
 load("@rules_dart//dart:providers.bzl", "DartInfo")
-load("@rules_dart//dart:utils.bzl", "COPY_TO_DIRECTORY_TOOLCHAINS", "collect_packages", "collect_transitive_srcs", "runfiles_path")
+load("@rules_dart//dart:utils.bzl", "COPY_TO_DIRECTORY_TOOLCHAINS", "collect_packages", "collect_transitive_srcs", "dart_analyzable_info", "dart_analyzable_info_with_package", "derive_lib_root", "runfiles_path")
 load(
     "//flutter/private:app_entrypoint.bzl",
     "compile_package_config",
@@ -52,7 +52,7 @@ load(
     "flutter_compile_shaders",
     "merge_dart_defines",
 )
-load("//flutter/private:flutter_compile.bzl", "flutter_kernel_compile_action")
+load("//flutter/private:flutter_compile.bzl", "flutter_cfe_uri", "flutter_kernel_compile_action")
 
 def _make_bootstrap_content(test_relative_import):
     """Generate the per-test bootstrap Dart source.
@@ -143,6 +143,18 @@ def _has_flutter_test(deps):
                 return True
     return False
 
+def partition_analyzable_sources(srcs, lib_root):
+    """Splits direct test sources into package lib files and support files."""
+    lib_prefix = (lib_root + "/" if lib_root else "") + "lib/"
+    package_srcs = []
+    support_srcs = []
+    for src in srcs:
+        if src.short_path.startswith(lib_prefix):
+            package_srcs.append(src)
+        else:
+            support_srcs.append(src)
+    return (package_srcs, support_srcs)
+
 def _flutter_test_impl(ctx):
     flutter_toolchain = ctx.toolchains["@rules_flutter//flutter:toolchain_type"]
     flutter_sdk_info = flutter_toolchain.flutter_sdk_info
@@ -162,15 +174,23 @@ def _flutter_test_impl(ctx):
             "to deps so the generated bootstrap can import RemoteListener."
         ).format(name = ctx.label.name))
 
-    # Per-target bootstrap. Imports the user's test by a path computed from the
-    # bootstrap's bin-dir back through the exec root to the test's source path.
+    # Per-target bootstrap. Import the user's test through the same stable CFE
+    # filesystem URI space used for every compilation input. A relative import
+    # from bazel-out can escape to the wrong URI root for nested Bazel packages.
     bootstrap = ctx.actions.declare_file(ctx.label.name + "_bootstrap.dart")
-    bootstrap_depth = len(bootstrap.dirname.split("/"))
-    test_import = "../" * bootstrap_depth + ctx.file.main.path
+    test_import = flutter_cfe_uri(ctx.file.main.path)
     ctx.actions.write(bootstrap, _make_bootstrap_content(test_import))
 
     # Collect transitive Dart sources and packages for the kernel compile.
-    all_srcs = list(ctx.files.srcs) + collect_transitive_srcs(ctx.attr.deps).to_list() + [ctx.file.main, bootstrap]
+    # Only package-owned lib/ sources may enter package colocation. Test
+    # entrypoints/support files and the generated bootstrap live outside lib/;
+    # allowing a nested package root to claim them would move them into the
+    # assembled package tree while the bootstrap still imports their logical
+    # source path.
+    app_lib_root = derive_lib_root(ctx.label.workspace_root, ctx.label.package)
+    direct_srcs = depset(direct = list(ctx.files.srcs) + [ctx.file.main]).to_list()
+    package_direct_srcs, support_direct_srcs = partition_analyzable_sources(direct_srcs, app_lib_root)
+    package_inputs = collect_transitive_srcs(ctx.attr.deps).to_list() + package_direct_srcs
     packages = collect_packages(ctx.attr.deps)
 
     # Register the test's own package (when declared) so `package:<self>/foo`
@@ -179,10 +199,10 @@ def _flutter_test_impl(ctx):
     # so `part` directives and the package's single rootUri resolve. Without
     # the colocation, a test that imports `package:<self>/foo.dart` fails to
     # find foo.dart's generated `.g.dart` / `.freezed.dart` siblings.
-    packages = synthesize_app_package(packages, ctx.attr.package_name)
-    pc = compile_package_config(ctx, packages, all_srcs)
+    packages = synthesize_app_package(packages, ctx.attr.package_name, app_lib_root)
+    pc = compile_package_config(ctx, packages, package_inputs)
     package_config = pc.config_file
-    all_srcs = pc.srcs
+    all_srcs = pc.srcs + support_direct_srcs + [bootstrap]
 
     # Compile bootstrap+test to kernel using the debug platform dill (asserts on).
     kernel_dill = ctx.actions.declare_file(ctx.label.name + ".dill")
@@ -284,6 +304,22 @@ def _flutter_test_impl(ctx):
         dependency_attributes = ["deps"],
     )
 
+    package_srcs, support_srcs = partition_analyzable_sources(direct_srcs, app_lib_root)
+    if package_srcs:
+        analyzable_info = dart_analyzable_info_with_package(
+            label = ctx.label,
+            package_name = ctx.attr.package_name,
+            lib_root = app_lib_root,
+            deps = ctx.attr.deps,
+            srcs = support_srcs,
+            package_srcs = package_srcs,
+        )
+    else:
+        analyzable_info = dart_analyzable_info(
+            deps = ctx.attr.deps,
+            srcs = support_srcs,
+        )
+
     return [
         DefaultInfo(
             executable = executable,
@@ -291,6 +327,7 @@ def _flutter_test_impl(ctx):
         ),
         env_info,
         instrumented_files_info,
+        analyzable_info,
     ]
 
 # flutter_test takes the compilation attrs plus the asset-bundle attrs.

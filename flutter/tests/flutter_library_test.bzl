@@ -2,7 +2,7 @@
 
 load("@bazel_skylib//lib:unittest.bzl", "asserts", "unittest")
 load("@rules_dart//dart:utils.bzl", "derive_lib_root", "derive_package_name")
-load("//flutter/private:flutter_library.bzl", "dedup_plugins")
+load("//flutter/private:flutter_library.bzl", "asset_package_name", "dedup_plugins")
 
 def _package_name_explicit_attr_wins_test_impl(ctx):
     env = unittest.begin(ctx)
@@ -68,6 +68,12 @@ def _dedup_plugins_preserves_order_test_impl(ctx):
     asserts.equals(env, {}, result[0].platforms)
     return unittest.end(env)
 
+def _asset_namespace_test_impl(ctx):
+    env = unittest.begin(ctx)
+    asserts.equals(env, "my_app", asset_package_name("package", "my_app"))
+    asserts.equals(env, "", asset_package_name("root", "my_app"))
+    return unittest.end(env)
+
 _t0_test = unittest.make(_package_name_explicit_attr_wins_test_impl)
 _t1_test = unittest.make(_package_name_falls_back_to_label_package_test_impl)
 _t2_test = unittest.make(_package_name_falls_back_to_label_name_test_impl)
@@ -75,6 +81,7 @@ _t3_test = unittest.make(_lib_root_workspace_root_and_package_test_impl)
 _t4_test = unittest.make(_lib_root_strips_trailing_lib_test_impl)
 _t5_test = unittest.make(_dedup_plugins_removes_duplicates_test_impl)
 _t6_test = unittest.make(_dedup_plugins_preserves_order_test_impl)
+_t7_test = unittest.make(_asset_namespace_test_impl)
 
 def flutter_library_test_suite(name):
-    unittest.suite(name, _t0_test, _t1_test, _t2_test, _t3_test, _t4_test, _t5_test, _t6_test)
+    unittest.suite(name, _t0_test, _t1_test, _t2_test, _t3_test, _t4_test, _t5_test, _t6_test, _t7_test)

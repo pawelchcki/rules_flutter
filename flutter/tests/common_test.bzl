@@ -86,6 +86,17 @@ def _synthesize_app_package_replaces_collision_test_impl(ctx):
     asserts.equals(env, "", result[1].lib_root)
     return unittest.end(env)
 
+def _synthesize_app_package_retains_nested_root_test_impl(ctx):
+    env = unittest.begin(ctx)
+    packages = [
+        struct(package_name = "my_app", lib_root = "", language_version = ""),
+    ]
+    result = synthesize_app_package(packages, "my_app", "apps/mobile")
+    asserts.equals(env, 1, len(result))
+    asserts.equals(env, "my_app", result[0].package_name)
+    asserts.equals(env, "apps/mobile", result[0].lib_root)
+    return unittest.end(env)
+
 _t0_test = unittest.make(_wrapper_import_depth_4_test_impl)
 _t1_test = unittest.make(_wrapper_import_depth_3_test_impl)
 _t2_test = unittest.make(_app_main_package_uri_lib_main_test_impl)
@@ -94,6 +105,7 @@ _t4_test = unittest.make(_app_main_package_uri_none_test_impl)
 _t5_test = unittest.make(_resolve_wrapper_main_import_prefers_package_uri_test_impl)
 _t6_test = unittest.make(_resolve_wrapper_main_import_falls_back_to_relative_test_impl)
 _t7_test = unittest.make(_synthesize_app_package_replaces_collision_test_impl)
+_t8_test = unittest.make(_synthesize_app_package_retains_nested_root_test_impl)
 
 def common_test_suite(name):
-    unittest.suite(name, _t0_test, _t1_test, _t2_test, _t3_test, _t4_test, _t5_test, _t6_test, _t7_test)
+    unittest.suite(name, _t0_test, _t1_test, _t2_test, _t3_test, _t4_test, _t5_test, _t6_test, _t7_test, _t8_test)

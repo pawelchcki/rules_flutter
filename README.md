@@ -20,7 +20,7 @@ If you're already using `flutter build`, here's what you gain by switching to Ba
 ## Compatibility
 
 - **Bazel**: 9+
-- **Flutter SDK**: 3.44.1
+- **Flutter SDK**: 3.44.7
 
 ## Prerequisites
 
@@ -63,7 +63,7 @@ bazel_dep(
 )
 
 flutter = use_extension("@rules_flutter//flutter:extensions.bzl", "flutter")
-flutter.toolchain(flutter_version = "3.44.1")
+flutter.toolchain(flutter_version = "3.44.7")
 use_repo(flutter, "flutter_toolchains")
 
 register_toolchains("@flutter_toolchains//:all")
@@ -871,7 +871,7 @@ silent. Pub's solver treats the running Dart SDK's version and the Flutter SDK's
 version as constraints, so an installation older than the pinned toolchain
 quietly selects older packages — and the lock it writes is still perfectly
 valid, so nothing downstream can tell. Resolving `e2e/plugin_example` with a
-host Flutter 3.41.6 (Dart 3.11.4) pins `meta 1.17.0`; the pinned 3.44.1
+host Flutter 3.41.6 (Dart 3.11.4) pins `meta 1.17.0`; the pinned 3.44.7
 toolchain (Dart 3.12.1) pins `meta 1.18.0`.
 
 The fetched toolchain is engine artifacts plus a Dart SDK — there is no
@@ -919,7 +919,7 @@ flutter_sdk_info = ctx.toolchains["@rules_flutter//flutter:toolchain_type"].flut
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `version` | `str` | Flutter SDK version string (e.g. `"3.44.1"`). |
+| `version` | `str` | Flutter SDK version string (e.g. `"3.44.7"`). |
 | `engine_revision` | `str` | Engine commit hash. |
 | `dart` | `File` | The `dart` executable from the Flutter-bundled Dart SDK. |
 | `dartaotruntime` | `File` | The `dartaotruntime` executable for running AOT snapshots. |

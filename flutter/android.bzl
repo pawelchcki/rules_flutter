@@ -55,7 +55,7 @@ load("@rules_java//java:java_import.bzl", _java_import = "java_import")
 load("@rules_kotlin//kotlin:android.bzl", _kt_android_library = "kt_android_library")
 load("//flutter/private:constants.bzl", _ANDROID_MIN_SDK_VERSION = "ANDROID_MIN_SDK_VERSION", _ANDROID_TARGET_SDK_VERSION = "ANDROID_TARGET_SDK_VERSION")
 load("//flutter/private:flutter_android_application.bzl", _flutter_android_bundle = "flutter_android_bundle")
-load("//flutter/private:flutter_android_manifest_merge.bzl", _flutter_android_manifest_merge = "flutter_android_manifest_merge")
+load("//flutter/private:flutter_android_manifest_merge.bzl", _flutter_android_manifest_merge = "flutter_android_manifest_merge", _flutter_android_manifest_version = "flutter_android_manifest_version")
 load("//flutter/private:flutter_android_plugin_library.bzl", _flutter_android_plugin_library = "flutter_android_plugin_library")
 load("//flutter/private:flutter_android_registrant.bzl", _flutter_android_registrant = "flutter_android_registrant")
 
@@ -370,6 +370,8 @@ def flutter_android_app(
         android_abi = "arm64",
         min_sdk_version = ANDROID_MIN_SDK_VERSION,
         target_sdk_version = ANDROID_TARGET_SDK_VERSION,
+        version_name = None,
+        version_code = None,
         manifest = None,
         debug_manifest = None,
         permissions = [],
@@ -453,6 +455,10 @@ def flutter_android_app(
             engine and the Android platform the application is built for.
         min_sdk_version: Minimum Android SDK version.
         target_sdk_version: Target Android SDK version.
+        version_name: Optional Android `versionName`. When omitted, the input
+            manifest and rules_android defaults are unchanged.
+        version_code: Optional positive Android `versionCode`. When omitted,
+            the input manifest and rules_android defaults are unchanged.
         manifest: Override AndroidManifest.xml. If not set, auto-discovered
             from android/app/src/main/ or generated from template.
         debug_manifest: Debug variant manifest merged into `-c dbg` APKs.
@@ -479,6 +485,8 @@ def flutter_android_app(
     """
     display_name = app_name or name
     tags = kwargs.pop("tags", ["manual"])
+    if version_code != None and version_code <= 0:
+        fail("flutter_android_app(name = %r): version_code must be positive" % name)
 
     # -- Internal targets (all __{name}_ prefixed) --
 
@@ -680,6 +688,16 @@ def flutter_android_app(
             tags = tags,
         )
         actual_manifest = "__%s_manifest_with_permissions" % name
+
+    if version_name != None or version_code != None:
+        _flutter_android_manifest_version(
+            name = "__%s_manifest_versioned" % name,
+            manifest = actual_manifest,
+            version_name = version_name or "",
+            version_code = version_code or 0,
+            tags = tags,
+        )
+        actual_manifest = "__%s_manifest_versioned" % name
 
     # 9. Final android_binary.
     _android_binary(

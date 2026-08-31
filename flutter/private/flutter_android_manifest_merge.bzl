@@ -75,3 +75,42 @@ flutter_android_manifest_merge = rule(
     ],
     doc = "Merges a variant AndroidManifest.xml overlay's permissions into a base manifest.",
 )
+
+def _flutter_android_manifest_version_impl(ctx):
+    flutter_sdk_info = ctx.toolchains["@rules_flutter//flutter:toolchain_type"].flutter_sdk_info
+    output = ctx.actions.declare_file(ctx.label.name + "/AndroidManifest.xml")
+    arguments = [
+        ctx.file._merge_tool.path,
+        "--base",
+        ctx.file.manifest.path,
+        "--output",
+        output.path,
+    ]
+    if ctx.attr.version_name:
+        arguments.extend(["--version-name", ctx.attr.version_name])
+    if ctx.attr.version_code:
+        arguments.extend(["--version-code", str(ctx.attr.version_code)])
+    ctx.actions.run(
+        executable = flutter_sdk_info.dart,
+        arguments = arguments,
+        inputs = depset(
+            direct = [ctx.file._merge_tool, ctx.file.manifest],
+            transitive = [flutter_sdk_info.tool_files],
+        ),
+        outputs = [output],
+        mnemonic = "FlutterManifestVersion",
+        progress_message = "Stamping Android manifest version %s" % ctx.label,
+    )
+    return [DefaultInfo(files = depset([output]))]
+
+flutter_android_manifest_version = rule(
+    implementation = _flutter_android_manifest_version_impl,
+    attrs = {
+        "manifest": attr.label(allow_single_file = True, mandatory = True),
+        "version_name": attr.string(),
+        "version_code": attr.int(),
+        "_merge_tool": attr.label(default = _TOOL, allow_single_file = True),
+    },
+    toolchains = ["@rules_flutter//flutter:toolchain_type"],
+    doc = "Adds versionName/versionCode to the root Android manifest.",
+)

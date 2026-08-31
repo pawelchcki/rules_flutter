@@ -7,6 +7,7 @@ load(":flutter_library_test.bzl", "flutter_library_test_suite")
 load(":flutter_plugin_test.bzl", "flutter_plugin_test_suite")
 load(":flutter_pub_package_test.bzl", "flutter_pub_package_test_suite")
 load(":flutter_pubspec_test.bzl", "flutter_pubspec_test_suite")
+load(":flutter_test_test.bzl", "flutter_test_test_suite")
 load(":linux_sysroot_link_test.bzl", "linux_sysroot_link_test_suite")
 load(":macos_test.bzl", "macos_test_suite")
 load(":manifest_merge_test.bzl", "manifest_merge_test_suite")
@@ -47,6 +48,8 @@ flutter_plugin_test_suite(name = "flutter_plugin_test")
 flutter_pub_package_test_suite(name = "flutter_pub_package_test")
 
 flutter_pubspec_test_suite(name = "flutter_pubspec_test")
+
+flutter_test_test_suite(name = "flutter_test_test")
 
 plugin_registrant_test_suite(name = "plugin_registrant_test")
 

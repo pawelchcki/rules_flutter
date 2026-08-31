@@ -8,6 +8,7 @@ arm relies on.
 
 load("@bazel_skylib//lib:unittest.bzl", "analysistest", "asserts")
 load("//flutter:android.bzl", "flutter_android_manifest_merge")
+load("//flutter/private:flutter_android_manifest_merge.bzl", "flutter_android_manifest_version")
 
 def _merge_action_test_impl(ctx):
     env = analysistest.begin(ctx)
@@ -54,6 +55,19 @@ def _merge_action_test_impl(ctx):
 
 _merge_action_test = analysistest.make(_merge_action_test_impl)
 
+def _version_action_test_impl(ctx):
+    env = analysistest.begin(ctx)
+    actions = [a for a in analysistest.target_actions(env) if a.mnemonic == "FlutterManifestVersion"]
+    asserts.equals(env, 1, len(actions))
+    argv = actions[0].argv
+    asserts.true(env, "--version-name" in argv)
+    asserts.equals(env, "1.0.0", argv[argv.index("--version-name") + 1])
+    asserts.true(env, "--version-code" in argv)
+    asserts.equals(env, "8", argv[argv.index("--version-code") + 1])
+    return analysistest.end(env)
+
+_version_action_test = analysistest.make(_version_action_test_impl)
+
 def manifest_merge_test_suite(name):
     """Defines the analysis tests for flutter_android_manifest_merge.
 
@@ -72,7 +86,23 @@ def manifest_merge_test_suite(name):
         target_under_test = ":_manifest_merge_under_test",
     )
 
+    flutter_android_manifest_version(
+        name = "_manifest_version_under_test",
+        manifest = "manifest_merge/AndroidManifest.xml",
+        version_name = "1.0.0",
+        version_code = 8,
+        tags = ["manual"],
+    )
+
+    _version_action_test(
+        name = name + "_version_action",
+        target_under_test = ":_manifest_version_under_test",
+    )
+
     native.test_suite(
         name = name,
-        tests = [":" + name + "_action"],
+        tests = [
+            ":" + name + "_action",
+            ":" + name + "_version_action",
+        ],
     )

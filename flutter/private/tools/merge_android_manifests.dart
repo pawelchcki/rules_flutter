@@ -29,7 +29,8 @@
 import 'dart:io';
 
 /// Pointer at the Tier-1 escape hatch, appended to every rejection.
-const _escapeHatch = 'If the overlay needs constructs this merger does not '
+const _escapeHatch =
+    'If the overlay needs constructs this merger does not '
     'support, pass an explicit merged manifest via the `debug_manifest` '
     'attribute of `flutter_android_app` instead.';
 
@@ -49,8 +50,9 @@ class OverlayPermission {
 
 Never _reject(String overlayPath, String detail) {
   throw FormatException(
-      'Cannot merge debug variant manifest $overlayPath: $detail\n'
-      '$_escapeHatch');
+    'Cannot merge debug variant manifest $overlayPath: $detail\n'
+    '$_escapeHatch',
+  );
 }
 
 /// Minimal strict XML scanner shared by the overlay parser and the base
@@ -124,14 +126,16 @@ class _Scanner {
       _skipSpaces();
       if (atEnd || (text[pos] != '"' && text[pos] != "'")) {
         throw FormatException(
-            'attribute $attrName in <$name> has an unquoted value');
+          'attribute $attrName in <$name> has an unquoted value',
+        );
       }
       final quote = text[pos];
       pos++;
       final end = text.indexOf(quote, pos);
       if (end == -1) {
         throw FormatException(
-            'attribute $attrName in <$name> has an unterminated value');
+          'attribute $attrName in <$name> has an unterminated value',
+        );
       }
       if (attributes.containsKey(attrName)) {
         throw FormatException('duplicate attribute $attrName in <$name>');
@@ -166,15 +170,19 @@ class _Scanner {
 /// Parses the overlay under the strict contract documented at the top of
 /// this file. Throws [FormatException] on any construct outside it.
 List<OverlayPermission> parseOverlayPermissions(
-    String overlayXml, String overlayPath) {
+  String overlayXml,
+  String overlayPath,
+) {
   final scanner = _Scanner(overlayXml);
 
   Never rejectAt(String detail) => _reject(overlayPath, detail);
 
   void checkNoPlaceholder(String value, String context) {
     if (value.contains(r'${')) {
-      rejectAt('$context contains a Gradle placeholder token "$value"; '
-          'placeholders are not substituted by rules_flutter.');
+      rejectAt(
+        '$context contains a Gradle placeholder token "$value"; '
+        'placeholders are not substituted by rules_flutter.',
+      );
     }
   }
 
@@ -186,8 +194,10 @@ List<OverlayPermission> parseOverlayPermissions(
   }
   for (final entry in rootAttrs.entries) {
     if (entry.key != 'xmlns' && !entry.key.startsWith('xmlns:')) {
-      rejectAt('the <manifest> root carries attribute "${entry.key}"; only '
-          'xmlns:* namespace declarations are supported.');
+      rejectAt(
+        'the <manifest> root carries attribute "${entry.key}"; only '
+        'xmlns:* namespace declarations are supported.',
+      );
     }
     checkNoPlaceholder(entry.value, 'the "${entry.key}" attribute');
   }
@@ -206,8 +216,10 @@ List<OverlayPermission> parseOverlayPermissions(
     if (scanner.text[scanner.pos] != '<') {
       final text = scanner.text.substring(scanner.pos).trim();
       final excerpt = text.length > 40 ? '${text.substring(0, 40)}…' : text;
-      rejectAt('unexpected text content "$excerpt"; only <uses-permission> '
-          'elements, comments, and whitespace are supported.');
+      rejectAt(
+        'unexpected text content "$excerpt"; only <uses-permission> '
+        'elements, comments, and whitespace are supported.',
+      );
     }
     final (name, attrs, selfClosing, isEnd) = scanner.readTag();
     if (isEnd) {
@@ -218,14 +230,18 @@ List<OverlayPermission> parseOverlayPermissions(
       return permissions;
     }
     if (!_permissionElements.contains(name)) {
-      rejectAt('element <$name> is not supported; only <uses-permission> '
-          'and <uses-permission-sdk-23> may appear.');
+      rejectAt(
+        'element <$name> is not supported; only <uses-permission> '
+        'and <uses-permission-sdk-23> may appear.',
+      );
     }
     if (attrs.length != 1 || !attrs.containsKey('android:name')) {
       final extras = attrs.keys.where((k) => k != 'android:name');
       if (extras.isNotEmpty) {
-        rejectAt('<$name> carries attribute "${extras.first}"; exactly one '
-            'android:name attribute is supported.');
+        rejectAt(
+          '<$name> carries attribute "${extras.first}"; exactly one '
+          'android:name attribute is supported.',
+        );
       }
       rejectAt('<$name> is missing its android:name attribute.');
     }
@@ -248,7 +264,9 @@ List<OverlayPermission> parseOverlayPermissions(
 }
 
 void _requireOnlyTrailingInsignificant(
-    _Scanner scanner, Never Function(String) rejectAt) {
+  _Scanner scanner,
+  Never Function(String) rejectAt,
+) {
   scanner.skipInsignificant();
   if (!scanner.atEnd) {
     rejectAt('unexpected content after </manifest>.');
@@ -267,12 +285,14 @@ int _baseInsertionPoint(String baseXml, String basePath) {
   final (name, _, selfClosing, isEnd) = scanner.readTag();
   if (isEnd || name != 'manifest') {
     throw FormatException(
-        'base manifest $basePath has root element <$name>, not <manifest>.');
+      'base manifest $basePath has root element <$name>, not <manifest>.',
+    );
   }
   if (selfClosing) {
     throw FormatException(
-        'base manifest $basePath has a self-closing <manifest/> root; '
-        'there is no element body to merge permissions into.');
+      'base manifest $basePath has a self-closing <manifest/> root; '
+      'there is no element body to merge permissions into.',
+    );
   }
   return scanner.pos;
 }
@@ -282,8 +302,10 @@ int _baseInsertionPoint(String baseXml, String basePath) {
 /// excluded; the rest of the base is scanned leniently (we only need names,
 /// never a full parse).
 Set<String> _basePermissionNames(String baseXml) {
-  final withoutComments =
-      baseXml.replaceAll(RegExp(r'<!--.*?-->', dotAll: true), '');
+  final withoutComments = baseXml.replaceAll(
+    RegExp(r'<!--.*?-->', dotAll: true),
+    '',
+  );
   final names = <String>{};
   final tag = RegExp(r'<uses-permission(?:-sdk-23)?[\s/>]([^>]*)>?');
   final nameAttr = RegExp('android:name\\s*=\\s*["\']([^"\']*)["\']');
@@ -310,13 +332,16 @@ String mergeManifests({
 
   final seen = <String>{};
   final inserted = StringBuffer()
-    ..write('\n    <!-- Permissions merged by rules_flutter '
-        'from $overlayPath into $basePath. -->');
+    ..write(
+      '\n    <!-- Permissions merged by rules_flutter '
+      'from $overlayPath into $basePath. -->',
+    );
   for (final permission in overlayPermissions) {
     if (existing.contains(permission.name)) continue;
     if (!seen.add(permission.name)) continue;
     inserted.write(
-        '\n    <${permission.element} android:name="${permission.name}"/>');
+      '\n    <${permission.element} android:name="${permission.name}"/>',
+    );
   }
 
   return baseXml.substring(0, insertAt) +
@@ -324,10 +349,57 @@ String mergeManifests({
       baseXml.substring(insertAt);
 }
 
+String _xmlAttribute(String value) => value
+    .replaceAll('&', '&amp;')
+    .replaceAll('"', '&quot;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;');
+
+/// Adds or replaces version metadata on the root manifest element.
+String stampManifestVersions({
+  required String manifestXml,
+  required String manifestPath,
+  String? versionName,
+  String? versionCode,
+}) {
+  if (versionName == null && versionCode == null) return manifestXml;
+  if (versionName != null && versionName.isEmpty) {
+    throw const FormatException('Android versionName must not be empty.');
+  }
+  if (versionCode != null && !RegExp(r'^[1-9][0-9]*$').hasMatch(versionCode)) {
+    throw FormatException(
+      'Android versionCode must be a positive integer, got "$versionCode".',
+    );
+  }
+
+  final openEnd = _baseInsertionPoint(manifestXml, manifestPath);
+  final openStart = manifestXml.lastIndexOf('<manifest', openEnd);
+  var openTag = manifestXml.substring(openStart, openEnd);
+
+  String setAttribute(String text, String name, String value) {
+    final attr = RegExp('''\\s+android:$name\\s*=\\s*(?:"[^"]*"|'[^']*')''');
+    final replacement = ' android:$name="${_xmlAttribute(value)}"';
+    if (attr.hasMatch(text)) return text.replaceFirst(attr, replacement);
+    return text.substring(0, text.length - 1) + replacement + '>';
+  }
+
+  if (versionName != null) {
+    openTag = setAttribute(openTag, 'versionName', versionName);
+  }
+  if (versionCode != null) {
+    openTag = setAttribute(openTag, 'versionCode', versionCode);
+  }
+  return manifestXml.substring(0, openStart) +
+      openTag +
+      manifestXml.substring(openEnd);
+}
+
 void main(List<String> args) {
   String? basePath;
   String? overlayPath;
   String? outputPath;
+  String? versionName;
+  String? versionCode;
 
   for (var i = 0; i < args.length; i++) {
     if (args[i] == '--base' && i + 1 < args.length) {
@@ -336,26 +408,44 @@ void main(List<String> args) {
       overlayPath = args[++i];
     } else if (args[i] == '--output' && i + 1 < args.length) {
       outputPath = args[++i];
+    } else if (args[i] == '--version-name' && i + 1 < args.length) {
+      versionName = args[++i];
+    } else if (args[i] == '--version-code' && i + 1 < args.length) {
+      versionCode = args[++i];
     }
   }
 
-  if (basePath == null || overlayPath == null || outputPath == null) {
-    stderr.writeln('Usage: dart merge_android_manifests.dart '
-        '--base <path> --overlay <path> --output <path>');
+  if (basePath == null ||
+      outputPath == null ||
+      (overlayPath == null && versionName == null && versionCode == null)) {
+    stderr.writeln(
+      'Usage: dart merge_android_manifests.dart '
+      '--base <path> [--overlay <path>] --output <path> '
+      '[--version-name <name>] [--version-code <code>]',
+    );
     exit(1);
   }
 
-  final String merged;
+  final String result;
   try {
-    merged = mergeManifests(
-      baseXml: File(basePath).readAsStringSync(),
-      overlayXml: File(overlayPath).readAsStringSync(),
-      basePath: basePath,
-      overlayPath: overlayPath,
+    var manifest = File(basePath).readAsStringSync();
+    if (overlayPath != null) {
+      manifest = mergeManifests(
+        baseXml: manifest,
+        overlayXml: File(overlayPath).readAsStringSync(),
+        basePath: basePath,
+        overlayPath: overlayPath,
+      );
+    }
+    result = stampManifestVersions(
+      manifestXml: manifest,
+      manifestPath: basePath,
+      versionName: versionName,
+      versionCode: versionCode,
     );
   } on FormatException catch (e) {
     stderr.writeln(e.message);
     exit(1);
   }
-  File(outputPath).writeAsStringSync(merged);
+  File(outputPath).writeAsStringSync(result);
 }

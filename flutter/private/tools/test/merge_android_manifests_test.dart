@@ -27,11 +27,11 @@ const _base = '''
 ''';
 
 String merge(String base, String overlay) => mergeManifests(
-      baseXml: base,
-      overlayXml: overlay,
-      basePath: 'out/base/AndroidManifest.xml',
-      overlayPath: 'android/app/src/debug/AndroidManifest.xml',
-    );
+  baseXml: base,
+  overlayXml: overlay,
+  basePath: 'out/base/AndroidManifest.xml',
+  overlayPath: 'android/app/src/debug/AndroidManifest.xml',
+);
 
 void main() {
   group('mergeManifests', () {
@@ -39,8 +39,10 @@ void main() {
       final merged = merge(_base, _pristineOverlay);
       expect(
         merged,
-        contains('<uses-permission '
-            'android:name="android.permission.INTERNET"/>'),
+        contains(
+          '<uses-permission '
+          'android:name="android.permission.INTERNET"/>',
+        ),
       );
       // Inserted between the root open tag and <application>.
       final open = merged.indexOf('>');
@@ -110,8 +112,10 @@ void main() {
       final merged = merge(_base, overlay);
       expect(
         merged,
-        contains('<uses-permission-sdk-23 '
-            'android:name="android.permission.VIBRATE"/>'),
+        contains(
+          '<uses-permission-sdk-23 '
+          'android:name="android.permission.VIBRATE"/>',
+        ),
       );
     });
 
@@ -152,8 +156,11 @@ void main() {
         } on FormatException catch (e) {
           caught = e;
         }
-        expect(caught, isA<FormatException>(),
-            reason: 'overlay must be rejected:\n$overlay');
+        expect(
+          caught,
+          isA<FormatException>(),
+          reason: 'overlay must be rejected:\n$overlay',
+        );
         final message = caught.toString();
         for (final part in messageParts) {
           expect(message, contains(part));
@@ -163,10 +170,7 @@ void main() {
       }
 
       test('an overlay whose root is not <manifest>', () {
-        expectRejection(
-          '<resources></resources>',
-          ['<resources>'],
-        );
+        expectRejection('<resources></resources>', ['<resources>']);
       });
 
       test('a non-xmlns attribute on the overlay root', () {
@@ -234,6 +238,62 @@ void main() {
         () => merge('<manifest xmlns:android="x"/>', _pristineOverlay),
         throwsA(isA<FormatException>()),
       );
+    });
+  });
+
+  group('stampManifestVersions', () {
+    test('adds both attributes to the manifest root', () {
+      final stamped = stampManifestVersions(
+        manifestXml: _base,
+        manifestPath: 'AndroidManifest.xml',
+        versionName: '1.2.3',
+        versionCode: '42',
+      );
+      final root = stamped.substring(0, stamped.indexOf('>'));
+      expect(root, contains('android:versionName="1.2.3"'));
+      expect(root, contains('android:versionCode="42"'));
+    });
+
+    test('replaces existing attributes and escapes the name', () {
+      const manifest = '''
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    android:versionName='old' android:versionCode="1">
+    <application/>
+</manifest>
+''';
+      final stamped = stampManifestVersions(
+        manifestXml: manifest,
+        manifestPath: 'AndroidManifest.xml',
+        versionName: 'new & better',
+        versionCode: '8',
+      );
+      expect('android:versionName'.allMatches(stamped).length, 1);
+      expect('android:versionCode'.allMatches(stamped).length, 1);
+      expect(stamped, contains('android:versionName="new &amp; better"'));
+      expect(stamped, contains('android:versionCode="8"'));
+    });
+
+    test('is byte-identical when both values are omitted', () {
+      expect(
+        stampManifestVersions(
+          manifestXml: _base,
+          manifestPath: 'AndroidManifest.xml',
+        ),
+        _base,
+      );
+    });
+
+    test('rejects malformed version codes', () {
+      for (final code in ['0', '-1', '1.5', 'abc']) {
+        expect(
+          () => stampManifestVersions(
+            manifestXml: _base,
+            manifestPath: 'AndroidManifest.xml',
+            versionCode: code,
+          ),
+          throwsA(isA<FormatException>()),
+        );
+      }
     });
   });
 }

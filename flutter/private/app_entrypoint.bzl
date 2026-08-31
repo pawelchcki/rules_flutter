@@ -17,31 +17,33 @@ alive across hot restart.
 
 load("@rules_dart//dart:utils.bzl", "colocate_packages", "generate_package_config")
 
-def synthesize_app_package(packages, package_name):
+def synthesize_app_package(packages, package_name, lib_root = ""):
     """Replace transitive same-package entries with the app's synthesized package.
 
     A `flutter_application` / `flutter_test` / `flutter_web_application` whose
     own sources live under `lib/` is conceptually the *root* of its Dart
     package — but any `dart_library` it depends on with the same
-    `package_name` exposes a `DartPackageInfo` with `lib_root=""` too, which
-    would collide with the root mapping (two packages can't share a
-    `rootUri`). Drop those colliding transitive entries and append one fresh
-    `lib_root=""` entry for the app itself.
+    `package_name` exposes a `DartPackageInfo` for the same logical package.
+    Drop those duplicate-name transitive entries and append one fresh entry
+    for the app itself, retaining the declaring Bazel package root.
 
     Args:
       packages: List of `DartPackageInfo` (from `collect_packages`).
       package_name: The app's `package_name`. Always non-empty — every
         Flutter consumer rule declares it as a mandatory attribute.
+      lib_root: The app's short_path-based Bazel package root (parent of
+        `lib/`). Empty only when the declaring BUILD file is at the workspace
+        root.
 
     Returns:
-      The packages list with same-`lib_root==""` entries replaced by one
+      The packages list with same-name entries replaced by one
       synthesized app entry. `language_version` is left blank — the app's
       language version comes from the analyzer/compiler defaults, matching
       what `flutter build` does.
     """
-    return [p for p in packages if p.lib_root != ""] + [struct(
+    return [p for p in packages if p.package_name != package_name] + [struct(
         package_name = package_name,
-        lib_root = "",
+        lib_root = lib_root,
         language_version = "",
     )]
 

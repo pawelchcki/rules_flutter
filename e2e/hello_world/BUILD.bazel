@@ -86,6 +86,8 @@ flutter_android_app(
     package_name = "com.example.helloworld",
     app_name = "Hello World",
     application = ":hello_world_app",
+    version_code = 8,
+    version_name = "1.0.0",
     # Android cross-builds fine on macOS/Linux (covered by those CI runners),
     # but the rules_android resource compiler launches its JVM with -Xms3G,
     # which eagerly commits 3 GiB and OOMs on the GitHub windows-latest runner's

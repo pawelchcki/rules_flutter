@@ -1,0 +1,76 @@
+load("@bazel_skylib//rules:build_test.bzl", "build_test")
+load("@rules_dart//dart:defs.bzl", "dart_analyze_test", "dart_test")
+load("@rules_flutter//flutter:defs.bzl", "flutter_application", "flutter_library", "flutter_test")
+load("@rules_flutter//flutter:web.bzl", "flutter_web_app")
+
+flutter_library(
+    name = "app_lib",
+    asset_namespace = "root",
+    fonts_json = json.encode([{
+        "family": "NestedFixture",
+        "fonts": [{"asset": "assets/fixture.ttf"}],
+    }]),
+    font_files = {"assets/fixture.ttf": "assets/fixture.ttf"},
+    package_name = "nested_app",
+    pkg_assets = {"assets/message.txt": "assets/message.txt"},
+    srcs = glob(["lib/**"]),
+    deps = [
+        "@deps//:flutter",
+        "@rules_flutter//flutter:material_icons",
+    ],
+)
+
+flutter_application(
+    name = "app",
+    main = "lib/main.dart",
+    package_name = "nested_app",
+    deps = [":app_lib"],
+)
+
+flutter_web_app(
+    name = "app_web",
+    compiler = "dart2js",
+    deps = [":app_lib"],
+    package_name = "nested_app",
+    pwa = False,
+    renderer = "canvaskit",
+)
+
+flutter_test(
+    name = "widget_test",
+    main = "test/widget_test.dart",
+    package_name = "nested_app",
+    srcs = [
+        "lib/support.dart",
+        "test/test_support.dart",
+    ],
+    deps = [
+        ":app_lib",
+        "@deps//:flutter_test",
+    ],
+)
+
+dart_analyze_test(
+    name = "widget_test_analyze",
+    target = ":widget_test",
+)
+
+build_test(
+    name = "application_build_test",
+    targets = [":app"],
+)
+
+build_test(
+    name = "web_build_test",
+    targets = [":app_web"],
+)
+
+dart_test(
+    name = "root_assets_test",
+    data = [":app"],
+    main = "test/root_assets_test.dart",
+    deps = [
+        "@deps//:test",
+        "@rules_dart//dart/runfiles",
+    ],
+)
