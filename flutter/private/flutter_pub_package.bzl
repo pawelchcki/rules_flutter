@@ -398,8 +398,18 @@ _MAVEN_COORD_TO_LABEL = {
     "androidx.browser:browser": "@rules_android_maven//:androidx_browser_browser",
     "androidx.fragment:fragment": "@rules_android_maven//:androidx_fragment_fragment",
     "androidx.activity:activity": "@rules_android_maven//:androidx_activity_activity",
+    "androidx.datastore:datastore": "@rules_android_maven//:androidx_datastore_datastore",
+    "androidx.datastore:datastore-preferences": "@rules_android_maven//:androidx_datastore_datastore_preferences",
+    "androidx.exifinterface:exifinterface": "@rules_android_maven//:androidx_exifinterface_exifinterface",
+    "androidx.preference:preference": "@rules_android_maven//:androidx_preference_preference",
+    "com.google.android.gms:play-services-auth": "@rules_android_maven//:com_google_android_gms_play_services_auth",
+    "com.google.android.gms:play-services-location": "@rules_android_maven//:com_google_android_gms_play_services_location",
+    "com.google.android.play:app-update": "@rules_android_maven//:com_google_android_play_app_update",
+    "com.google.android.play:app-update-ktx": "@rules_android_maven//:com_google_android_play_app_update_ktx",
     "com.google.android.material:material": "@rules_android_maven//:com_google_android_material_material",
+    "com.google.crypto.tink:tink-android": "@rules_android_maven//:com_google_crypto_tink_tink_android",
     "com.getkeepsafe.relinker:relinker": "@rules_android_maven//:com_getkeepsafe_relinker_relinker",
+    "net.openid:appauth": "@rules_android_maven//:net_openid_appauth",
 }
 
 # Coordinates we deliberately ignore — provided by the kt_android_library
@@ -467,6 +477,19 @@ def _parse_gradle_deps(content):
             break
     return coords
 
+def resolve_gradle_maven_deps(content):
+    """Resolve supported Gradle coordinates to deterministic Bazel labels."""
+    seen = {}
+    labels = []
+    for coord in _parse_gradle_deps(content):
+        if coord in _MAVEN_COORDS_PROVIDED:
+            continue
+        label = _MAVEN_COORD_TO_LABEL.get(coord)
+        if label and label not in seen:
+            seen[label] = True
+            labels.append(label)
+    return sorted(labels)
+
 def _resolve_plugin_maven_deps(ctx):
     """Translate the spoke's `android/build.gradle*` deps to Bazel labels.
 
@@ -493,17 +516,7 @@ def _resolve_plugin_maven_deps(ctx):
             break
     if not content:
         return []
-    coords = _parse_gradle_deps(content)
-    seen = {}
-    labels = []
-    for coord in coords:
-        if coord in _MAVEN_COORDS_PROVIDED:
-            continue
-        label = _MAVEN_COORD_TO_LABEL.get(coord)
-        if label and label not in seen:
-            seen[label] = True
-            labels.append(label)
-    return sorted(labels)
+    return resolve_gradle_maven_deps(content)
 
 def _glob_block(srcs_dirs, extensions):
     """Format a `glob([...])` expression covering the given extensions.
@@ -1096,6 +1109,7 @@ genrule(
 load("@rules_flutter//flutter:android.bzl", "flutter_android_engine")
 load("@rules_java//java:java_library.bzl", "java_library")
 load("@rules_kotlin//kotlin:android.bzl", "kt_android_library")
+load("@rules_kotlin//kotlin:core.bzl", "kt_javac_options")
 
 # Private engine target — gives the plugin's Kotlin/Java the FlutterPlugin
 # SPI plus the embedding's androidx dependencies (via the engine's
@@ -1123,8 +1137,14 @@ java_library(
     visibility = ["//visibility:private"],
 )
 {synthesized_manifest}
+kt_javac_options(
+    name = "_javac_options",
+    release = "17",
+)
+
 kt_android_library(
     name = "lib",
+    javac_opts = ":_javac_options",
     srcs = {srcs},
 {custom_package}{manifest}{resource_files}{proguard_specs}    visibility = ["//visibility:public"],
     deps = [
@@ -1190,6 +1210,27 @@ def _detect_unreplaced_hook(ctx):
             return candidate
     return ""
 
+def overlay_version_candidates(version):
+    """Return exact-to-broad overlay directories for a pub version."""
+    core = version.split("+")[0].split("-")[0]
+    parts = core.split(".")
+    candidates = [version]
+    if len(parts) >= 3:
+        candidates.append("{}.{}.{}".format(parts[0], parts[1], parts[2]))
+    if len(parts) >= 2:
+        candidates.append("{}.{}".format(parts[0], parts[1]))
+    if len(parts) >= 1:
+        candidates.append(parts[0])
+    candidates.append("")  # bare <pkg>/<relpath>
+
+    result = []
+    seen = {}
+    for candidate in candidates:
+        if candidate not in seen:
+            seen[candidate] = True
+            result.append(candidate)
+    return result
+
 def _resolve_overlay_template(ctx, overlay_root_label, package_name, version, relpath):
     """Look up an overlay template at `<root>/<package>/<version-ladder>/<relpath>`.
 
@@ -1216,19 +1257,8 @@ def _resolve_overlay_template(ctx, overlay_root_label, package_name, version, re
     if not pkg_dir.exists:
         return ""
 
-    # Build the version ladder.
-    parts = version.split(".")
-    candidates = []
-    if len(parts) >= 3:
-        candidates.append("{}.{}.{}".format(parts[0], parts[1], parts[2]))
-    if len(parts) >= 2:
-        candidates.append("{}.{}".format(parts[0], parts[1]))
-    if len(parts) >= 1:
-        candidates.append(parts[0])
-    candidates.append("")  # bare <pkg>/<relpath>
-
     relpath_parts = relpath.split("/")
-    for candidate in candidates:
+    for candidate in overlay_version_candidates(version):
         tpl = pkg_dir.get_child(candidate) if candidate else pkg_dir
         for part in relpath_parts:
             tpl = tpl.get_child(part)

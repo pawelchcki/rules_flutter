@@ -372,6 +372,7 @@ def flutter_android_app(
         target_sdk_version = ANDROID_TARGET_SDK_VERSION,
         version_name = None,
         version_code = None,
+        manifest_values = {},
         manifest = None,
         debug_manifest = None,
         permissions = [],
@@ -402,6 +403,10 @@ def flutter_android_app(
     `permissions` adds `<uses-permission>` elements to the effective manifest
     in every mode and every compilation mode, so it is the answer in all
     three — see the attribute's documentation below.
+
+    `manifest_values` supplies Gradle-style `${name}` substitutions used by
+    application and plugin manifests. The package/min/target SDK values remain
+    owned by this macro and cannot be overridden through that dictionary.
 
     Debug variant manifests (the Gradle merge Bazel lacks): flutter create
     declares `android.permission.INTERNET` only in
@@ -700,14 +705,17 @@ def flutter_android_app(
         actual_manifest = "__%s_manifest_versioned" % name
 
     # 9. Final android_binary.
+    binary_manifest_values = dict(manifest_values)
+    binary_manifest_values.update({
+        "applicationId": package_name,
+        "minSdkVersion": min_sdk_version,
+        "targetSdkVersion": target_sdk_version,
+    })
+
     _android_binary(
         name = name,
         manifest = actual_manifest,
-        manifest_values = {
-            "applicationId": package_name,
-            "minSdkVersion": min_sdk_version,
-            "targetSdkVersion": target_sdk_version,
-        },
+        manifest_values = binary_manifest_values,
         resource_files = resources if resources else None,
         assets = ["__%s_flutter_assets" % name],
         assets_dir = "assets",

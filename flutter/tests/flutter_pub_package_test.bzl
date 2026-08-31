@@ -14,8 +14,10 @@ load("@bazel_skylib//lib:unittest.bzl", "asserts", "unittest")
 load(
     "//flutter/private:flutter_pub_package.bzl",
     "make_android_subpackage_build_content",
+    "overlay_version_candidates",
     "parse_android_manifest_package",
     "parse_gradle_android_namespace",
+    "resolve_gradle_maven_deps",
 )
 
 # Verbatim shape of record_android 1.5.1's android/build.gradle (trimmed):
@@ -107,6 +109,53 @@ def _parse_android_manifest_package_test_impl(ctx):
 
 parse_android_manifest_package_test = unittest.make(_parse_android_manifest_package_test_impl)
 
+def _overlay_version_candidates_test_impl(ctx):
+    env = unittest.begin(ctx)
+
+    asserts.equals(
+        env,
+        ["0.8.13+13", "0.8.13", "0.8", "0", ""],
+        overlay_version_candidates("0.8.13+13"),
+    )
+    asserts.equals(
+        env,
+        ["2.4.0-beta.1", "2.4.0", "2.4", "2", ""],
+        overlay_version_candidates("2.4.0-beta.1"),
+    )
+    asserts.equals(
+        env,
+        ["3.1.2", "3.1", "3", ""],
+        overlay_version_candidates("3.1.2"),
+    )
+
+    return unittest.end(env)
+
+overlay_version_candidates_test = unittest.make(_overlay_version_candidates_test_impl)
+
+def _resolve_gradle_maven_deps_test_impl(ctx):
+    env = unittest.begin(ctx)
+
+    asserts.equals(
+        env,
+        [
+            "@rules_android_maven//:androidx_browser_browser",
+            "@rules_android_maven//:net_openid_appauth",
+        ],
+        resolve_gradle_maven_deps("""
+dependencies {
+    implementation 'net.openid:appauth:0.11.1'
+    implementation(\"androidx.browser:browser:1.9.0\")
+    implementation \"org.jetbrains.kotlin:kotlin-stdlib:$kotlin_version\"
+    implementation 'net.openid:appauth:0.11.1'
+    implementation 'unknown.example:ignored:1.0'
+}
+"""),
+    )
+
+    return unittest.end(env)
+
+resolve_gradle_maven_deps_test = unittest.make(_resolve_gradle_maven_deps_test_impl)
+
 def _record_android_subpackage_test_impl(ctx):
     """record_android shape: Kotlin + res/ + manifest + dep-less gradle."""
     env = unittest.begin(ctx)
@@ -152,6 +201,8 @@ def _record_android_subpackage_test_impl(ctx):
     # (mirroring the Flutter embedding POM), not from a per-plugin list —
     # a dep-less build.gradle still compiles against NotificationCompat etc.
     asserts.true(env, '":_engine",' in content, content)
+    asserts.true(env, 'release = "17"' in content, content)
+    asserts.true(env, 'javac_opts = ":_javac_options"' in content, content)
     asserts.false(
         env,
         "@rules_android_maven//:androidx" in content,
@@ -242,6 +293,8 @@ def flutter_pub_package_test_suite(name):
         name,
         parse_gradle_android_namespace_test,
         parse_android_manifest_package_test,
+        overlay_version_candidates_test,
+        resolve_gradle_maven_deps_test,
         record_android_subpackage_test,
         resources_without_manifest_test,
         no_resources_subpackage_test,
