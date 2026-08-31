@@ -38,6 +38,7 @@ therefore `package:test_api`) so the generated bootstrap compiles.
 
 load("@rules_dart//dart:providers.bzl", "DartInfo")
 load("@rules_dart//dart:utils.bzl", "COPY_TO_DIRECTORY_TOOLCHAINS", "collect_packages", "collect_transitive_srcs", "dart_analyzable_info", "dart_analyzable_info_with_package", "derive_lib_root", "runfiles_path")
+load("//flutter:providers.bzl", "FlutterInfo")
 load(
     "//flutter/private:app_entrypoint.bzl",
     "compile_package_config",
@@ -50,9 +51,11 @@ load(
     "detect_target_platform",
     "flutter_build_assets",
     "flutter_compile_shaders",
+    "host_target_arch",
     "merge_dart_defines",
 )
 load("//flutter/private:flutter_compile.bzl", "flutter_cfe_uri", "flutter_kernel_compile_action")
+load("//flutter/private:flutter_native_assets.bzl", "bridge_dart_code_assets", "collect_bundled_code_asset_files", "write_native_assets_manifest")
 
 def _make_bootstrap_content(test_relative_import):
     """Generate the per-test bootstrap Dart source.
@@ -204,6 +207,75 @@ def _flutter_test_impl(ctx):
     package_config = pc.config_file
     all_srcs = pc.srcs + support_direct_srcs + [bootstrap]
 
+    # Tests execute on the host under flutter_tester. Resolve that platform
+    # before kernel compilation because frontend_server must embed the Native
+    # Assets manifest into the dill.
+    is_macos = ctx.target_platform_has_constraint(
+        ctx.attr._macos_constraint[platform_common.ConstraintValueInfo],
+    )
+    is_ios = ctx.target_platform_has_constraint(
+        ctx.attr._ios_constraint[platform_common.ConstraintValueInfo],
+    )
+    is_linux = ctx.target_platform_has_constraint(
+        ctx.attr._linux_constraint[platform_common.ConstraintValueInfo],
+    )
+    is_windows = ctx.target_platform_has_constraint(
+        ctx.attr._windows_constraint[platform_common.ConstraintValueInfo],
+    )
+    is_android = ctx.target_platform_has_constraint(
+        ctx.attr._android_constraint[platform_common.ConstraintValueInfo],
+    )
+    target_platform = detect_target_platform(is_ios, is_macos, is_linux, is_windows, is_android)
+
+    # Mirror flutter_application's Native Assets aggregation. In particular,
+    # this lifts rules_dart's curated replacements (such as sqlite3) from the
+    # Dart package graph without requiring the test to name a native target.
+    transitive_native_asset_depsets = []
+    for dep in ctx.attr.deps:
+        if FlutterInfo not in dep:
+            continue
+        info = dep[FlutterInfo]
+        if hasattr(info, "native_assets") and info.native_assets != None:
+            transitive_native_asset_depsets.append(info.native_assets)
+    native_assets_list = depset(transitive = transitive_native_asset_depsets).to_list()
+    declared_ids = {asset.asset_id: True for asset in native_assets_list}
+    native_assets_list = native_assets_list + [
+        asset
+        for asset in bridge_dart_code_assets(ctx, ctx.attr.deps)
+        if asset.asset_id not in declared_ids
+    ]
+
+    native_assets_manifest = ctx.actions.declare_file(ctx.label.name + ".native_assets.json")
+    write_native_assets_manifest(
+        ctx = ctx,
+        output_file = native_assets_manifest,
+        native_assets = native_assets_list,
+        target_os = target_platform,
+        target_arch = host_target_arch(ctx, flutter_sdk_info),
+    )
+    bundled_code_assets = collect_bundled_code_asset_files(native_assets_list).to_list()
+
+    # Native Asset manifest entries intentionally contain stable basenames,
+    # not checkout- or output-base-dependent absolute paths. Stage every
+    # bundled library in one test-private directory and launch flutter_tester
+    # there so the VM can resolve those basenames at runtime.
+    native_asset_runtime_files = []
+    native_asset_basenames = {}
+    for asset in bundled_code_assets:
+        if asset.basename in native_asset_basenames:
+            fail(
+                "flutter_test %s has two bundled native assets named %s (%s and %s)" % (
+                    ctx.label,
+                    asset.basename,
+                    native_asset_basenames[asset.basename].short_path,
+                    asset.short_path,
+                ),
+            )
+        native_asset_basenames[asset.basename] = asset
+        staged = ctx.actions.declare_file(ctx.label.name + "_native_assets/" + asset.basename)
+        ctx.actions.symlink(output = staged, target_file = asset)
+        native_asset_runtime_files.append(staged)
+
     # Compile bootstrap+test to kernel using the debug platform dill (asserts on).
     kernel_dill = ctx.actions.declare_file(ctx.label.name + ".dill")
     flutter_kernel_compile_action(
@@ -219,6 +291,7 @@ def _flutter_test_impl(ctx):
         aot = False,
         defines = merge_dart_defines(ctx),
         target = "flutter",
+        native_assets_manifest = native_assets_manifest,
     )
 
     # Build a `flutter_assets/` tree for the test. Material widgets pull
@@ -226,23 +299,6 @@ def _flutter_test_impl(ctx):
     # (e.g. MaterialIcons) need to land in the bundle for tests that resolve
     # them via `rootBundle`. Tests run on the host, so shaders compile against
     # the host platform.
-    is_macos = ctx.target_platform_has_constraint(
-        ctx.attr._macos_constraint[platform_common.ConstraintValueInfo],
-    )
-    is_ios = ctx.target_platform_has_constraint(
-        ctx.attr._ios_constraint[platform_common.ConstraintValueInfo],
-    )
-    is_linux = ctx.target_platform_has_constraint(
-        ctx.attr._linux_constraint[platform_common.ConstraintValueInfo],
-    )
-    is_win = ctx.target_platform_has_constraint(
-        ctx.attr._windows_constraint[platform_common.ConstraintValueInfo],
-    )
-    is_android = ctx.target_platform_has_constraint(
-        ctx.attr._android_constraint[platform_common.ConstraintValueInfo],
-    )
-    target_platform = detect_target_platform(is_ios, is_macos, is_linux, is_win, is_android)
-
     compiled_shaders = flutter_compile_shaders(ctx, flutter_sdk_info, target_platform)
     flutter_assets = flutter_build_assets(
         ctx,
@@ -275,6 +331,8 @@ def _flutter_test_impl(ctx):
         # Display path for the suite. Used in package:test report output.
         "FLUTTER_TEST_PATH": ctx.file.main.short_path,
     }
+    if native_asset_runtime_files:
+        env["FLUTTER_TEST_NATIVE_ASSET"] = runfiles_path(native_asset_runtime_files[0], workspace_name)
     env_info = testing.TestEnvironment(env)
 
     runtime_files = [
@@ -282,7 +340,8 @@ def _flutter_test_impl(ctx):
         flutter_sdk_info.flutter_tester,
         flutter_sdk_info.icu_data,
         flutter_assets,
-    ]
+        native_assets_manifest,
+    ] + native_asset_runtime_files
     tool_runfiles = tool[DefaultInfo].default_runfiles
     runfiles = ctx.runfiles(
         files = runtime_files + ctx.files.data,

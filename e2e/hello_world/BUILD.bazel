@@ -176,6 +176,19 @@ flutter_test(
     ],
 )
 
+# Exercises the complete flutter_test Native Assets path: a Dart package owns
+# a code asset, the test names only that package, frontend_server embeds the
+# manifest, and flutter_tester resolves the staged library at runtime.
+flutter_test(
+    name = "native_asset_test",
+    package_name = "hello_world",
+    main = "test/native_asset_test.dart",
+    deps = [
+        "@deps//:flutter_test",
+        "@rules_flutter//flutter/tests/dart_asset_fixture:asset_fixture",
+    ],
+)
+
 # -- build_test targets verify that rules produce outputs without errors -------
 
 build_test(

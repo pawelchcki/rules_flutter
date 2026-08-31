@@ -33,9 +33,12 @@ dart_code_asset(
 dart_library(
     name = "asset_fixture",
     package_name = "asset_fixture",
-    srcs = ["lib/fixture.dart"],
+    srcs = [
+        "lib/fixture.dart",
+        "lib/src/ffi/asset_fixture.g.dart",
+    ],
     code_assets = [":code_asset"],
-    visibility = ["//flutter/tests:__pkg__"],
+    visibility = ["//visibility:public"],
 )
 
 # The other half of the contract: a package that ships a build hook nothing

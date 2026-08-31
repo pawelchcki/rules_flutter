@@ -35,6 +35,7 @@ void main(List<String> args) async {
   final icuKey = Platform.environment['FLUTTER_TEST_ICU'];
   final dillKey = Platform.environment['FLUTTER_TEST_DILL'];
   final assetsKey = Platform.environment['FLUTTER_TEST_ASSETS'];
+  final nativeAssetKey = Platform.environment['FLUTTER_TEST_NATIVE_ASSET'];
   if (testerKey == null || icuKey == null || dillKey == null) {
     stderr.writeln(
       'flutter_test runner: FLUTTER_TEST_TESTER, FLUTTER_TEST_ICU, and '
@@ -47,6 +48,12 @@ void main(List<String> args) async {
   final icu = r.rlocation(icuKey);
   final dill = r.rlocation(dillKey);
   final assetsDir = assetsKey == null ? null : r.rlocation(assetsKey);
+  final nativeAsset = nativeAssetKey == null
+      ? null
+      : r.rlocation(nativeAssetKey);
+  final nativeAssetsDir = nativeAsset == null
+      ? null
+      : File(nativeAsset).parent.path;
   final testPath = Platform.environment['FLUTTER_TEST_PATH'] ?? 'test.dart';
   final coverageOutput = Platform.environment['COVERAGE_OUTPUT_FILE'];
 
@@ -55,6 +62,7 @@ void main(List<String> args) async {
     icu: icu,
     dill: dill,
     assetsDir: assetsDir,
+    nativeAssetsDir: nativeAssetsDir,
     testPath: testPath,
     coverageOutput: coverageOutput,
   );
@@ -65,6 +73,7 @@ Future<int> _runOnce({
   required String icu,
   required String dill,
   required String? assetsDir,
+  required String? nativeAssetsDir,
   required String testPath,
   required String? coverageOutput,
 }) async {
@@ -75,6 +84,7 @@ Future<int> _runOnce({
       icu: icu,
       dill: dill,
       assetsDir: assetsDir,
+      nativeAssetsDir: nativeAssetsDir,
       testPath: testPath,
       coverageOutput: coverageOutput,
     );
@@ -141,6 +151,7 @@ class _Harness {
     required String icu,
     required String dill,
     required String? assetsDir,
+    required String? nativeAssetsDir,
     required String testPath,
     required String? coverageOutput,
   }) async {
@@ -165,13 +176,35 @@ class _Harness {
       dill,
     ];
 
+    final processEnvironment = <String, String>{
+      'FLUTTER_TEST': 'true',
+      'FLUTTER_TEST_HARNESS_PORT': '${_server.port}',
+    };
+    if (nativeAssetsDir != null) {
+      if (Platform.isLinux) {
+        processEnvironment['LD_LIBRARY_PATH'] = [
+          nativeAssetsDir,
+          if (Platform.environment['LD_LIBRARY_PATH'] case final value?) value,
+        ].join(':');
+      } else if (Platform.isMacOS) {
+        processEnvironment['DYLD_LIBRARY_PATH'] = [
+          nativeAssetsDir,
+          if (Platform.environment['DYLD_LIBRARY_PATH'] case final value?)
+            value,
+        ].join(':');
+      } else if (Platform.isWindows) {
+        processEnvironment['PATH'] = [
+          nativeAssetsDir,
+          if (Platform.environment['PATH'] case final value?) value,
+        ].join(';');
+      }
+    }
+
     _process = await Process.start(
       command.first,
       command.sublist(1),
-      environment: {
-        'FLUTTER_TEST': 'true',
-        'FLUTTER_TEST_HARNESS_PORT': '${_server.port}',
-      },
+      workingDirectory: nativeAssetsDir,
+      environment: processEnvironment,
     );
 
     // Capture flutter_tester output so engine errors are visible. In coverage
@@ -185,20 +218,20 @@ class _Harness {
         .transform(utf8.decoder)
         .transform(const LineSplitter())
         .listen((line) {
-      stderr.writeln('[flutter_tester] $line');
-      if (enableVmService && !vmServiceUriCompleter.isCompleted) {
-        final m = vmServicePattern.firstMatch(line);
-        if (m != null) {
-          vmServiceUriCompleter.complete(Uri.parse(m.group(1)!));
-        }
-      }
-    });
+          stderr.writeln('[flutter_tester] $line');
+          if (enableVmService && !vmServiceUriCompleter.isCompleted) {
+            final m = vmServicePattern.firstMatch(line);
+            if (m != null) {
+              vmServiceUriCompleter.complete(Uri.parse(m.group(1)!));
+            }
+          }
+        });
     _process!.stderr
         .transform(utf8.decoder)
         .transform(const LineSplitter())
         .listen((line) {
-      stderr.writeln('[flutter_tester] $line');
-    });
+          stderr.writeln('[flutter_tester] $line');
+        });
 
     // Wait for the bootstrap to dial back. If flutter_tester crashes before
     // connecting, surface that as the failure rather than blocking forever.
@@ -240,14 +273,17 @@ class _Harness {
       }
     };
 
-    _ws!.listen(_onSocketMessage, onDone: () {
-      _socketClosed = true;
-      if (!suiteReady.isCompleted) suiteReady.complete(null);
-      for (final c in _pendingTests.values) {
-        if (!c.isCompleted) c.complete();
-      }
-      _pendingTests.clear();
-    });
+    _ws!.listen(
+      _onSocketMessage,
+      onDone: () {
+        _socketClosed = true;
+        if (!suiteReady.isCompleted) suiteReady.complete(null);
+        for (final c in _pendingTests.values) {
+          if (!c.isCompleted) c.complete();
+        }
+        _pendingTests.clear();
+      },
+    );
 
     // Send the initial suite handshake.
     _send(0, _initialMessage(testPath));
@@ -258,16 +294,19 @@ class _Harness {
     Uri? coverageVmServiceUri;
     if (enableVmService) {
       try {
-        coverageVmServiceUri = await vmServiceUriCompleter.future
-            .timeout(const Duration(seconds: 30));
+        coverageVmServiceUri = await vmServiceUriCompleter.future.timeout(
+          const Duration(seconds: 30),
+        );
         await _resumeIsolatesViaVmService(coverageVmServiceUri);
       } catch (e) {
         vmServiceCoverageError = 'failed to bring up VM service: $e';
       }
     }
 
-    final root = await suiteReady.future
-        .timeout(const Duration(minutes: 5), onTimeout: () => null);
+    final root = await suiteReady.future.timeout(
+      const Duration(minutes: 5),
+      onTimeout: () => null,
+    );
 
     final results = _Results();
     if (root != null) {
@@ -361,10 +400,7 @@ class _Harness {
     List<String> nameStack,
   ) async {
     final groupName = group['name'] as String? ?? '';
-    final stack = [
-      ...nameStack,
-      if (groupName.isNotEmpty) groupName,
-    ];
+    final stack = [...nameStack, if (groupName.isNotEmpty) groupName];
 
     final setUpAll = group['setUpAll'] as Map?;
     if (setUpAll != null) {
@@ -415,7 +451,9 @@ class _Harness {
 
     final metadata = test['metadata'] as Map?;
     final skipReason = metadata == null ? null : metadata['skipReason'];
-    final skipFlag = metadata == null ? false : (metadata['skip'] as bool? ?? false);
+    final skipFlag = metadata == null
+        ? false
+        : (metadata['skip'] as bool? ?? false);
     if (fixture == null && skipFlag) {
       results.recordSkipped(reportName, skipReason as String?);
       return;
@@ -478,16 +516,19 @@ class _Harness {
     // ceiling so a wedged test surfaces as a failure here instead of
     // hanging until Bazel's outer test timeout. Kill the tester and treat
     // the socket as gone so the remaining tests bail out fast.
-    await completer.future.timeout(const Duration(minutes: 5), onTimeout: () {
-      stderr.writeln(
-        'flutter_test: test "$reportName" did not finish within 5 minutes; '
-        'killing flutter_tester.',
-      );
-      _socketClosed = true;
-      try {
-        _process?.kill(ProcessSignal.sigkill);
-      } catch (_) {}
-    });
+    await completer.future.timeout(
+      const Duration(minutes: 5),
+      onTimeout: () {
+        stderr.writeln(
+          'flutter_test: test "$reportName" did not finish within 5 minutes; '
+          'killing flutter_tester.',
+        );
+        _socketClosed = true;
+        try {
+          _process?.kill(ProcessSignal.sigkill);
+        } catch (_) {}
+      },
+    );
     _pendingTests.remove(ch.inputId);
     _inbound.remove(ch.inputId);
 
@@ -600,9 +641,9 @@ class _Results {
 
   void recordSkipped(String name, String? reason) {
     skipped++;
-    stdout.writeln(reason == null
-        ? '  SKIP  $name'
-        : '  SKIP  $name (${reason.trim()})');
+    stdout.writeln(
+      reason == null ? '  SKIP  $name' : '  SKIP  $name (${reason.trim()})',
+    );
   }
 
   void recordError(String message) {
@@ -624,10 +665,7 @@ class _Results {
 }
 
 String _indent(String body, String prefix) {
-  return body
-      .split('\n')
-      .map((l) => l.isEmpty ? l : '$prefix$l')
-      .join('\n');
+  return body.split('\n').map((l) => l.isEmpty ? l : '$prefix$l').join('\n');
 }
 
 // ---------------------------------------------------------------------------
@@ -713,12 +751,14 @@ class _VmServiceRpc {
     final id = '${_id++}';
     final c = Completer<Map<String, dynamic>>();
     _pending[id] = c;
-    _ws.add(json.encode({
-      'jsonrpc': '2.0',
-      'id': id,
-      'method': method,
-      if (params != null) 'params': params,
-    }));
+    _ws.add(
+      json.encode({
+        'jsonrpc': '2.0',
+        'id': id,
+        'method': method,
+        if (params != null) 'params': params,
+      }),
+    );
     return c.future.then((response) {
       _pending.remove(id);
       if (response.containsKey('error')) {

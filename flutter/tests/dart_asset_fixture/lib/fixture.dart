@@ -1,2 +1,4 @@
+export 'src/ffi/asset_fixture.g.dart';
+
 /// Stands in for a pub package that owns a native code asset.
 String fixtureName() => 'asset_fixture';
