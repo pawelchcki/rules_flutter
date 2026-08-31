@@ -22,9 +22,10 @@ load(":repositories.bzl", "flutter_register_toolchains")
 
 _DEFAULT_NAME = "flutter"
 
-# Flutter SDK packages that exist as source under packages/ in the Flutter repo.
-# sky_engine is excluded — it provides dart:ui which is already in platform_strong.dill.
-_FLUTTER_SDK_PACKAGES = {"flutter": True, "flutter_test": True, "flutter_driver": True, "flutter_localizations": True, "flutter_web_plugins": True}
+# Flutter SDK packages that exist as source in the Flutter monorepo. sky_engine
+# is needed even though dart:ui is compiled into platform_strong.dill: the Dart
+# analyzer reads its _embedder.yaml to resolve that SDK library.
+_FLUTTER_SDK_PACKAGES = {"flutter": True, "flutter_test": True, "flutter_driver": True, "flutter_localizations": True, "flutter_web_plugins": True, "sky_engine": True}
 
 def _parse_version(v):
     """Splits a version string into a list of ints for comparison."""

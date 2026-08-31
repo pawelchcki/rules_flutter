@@ -12,12 +12,19 @@ def _flutter_sdk_package_impl(repository_ctx):
     package_name = repository_ctx.attr.package_name
 
     # Download Flutter SDK source, extracting only the relevant package.
+    # sky_engine is materialized under bin/cache/pkg by a real Flutter SDK,
+    # but its source lives in the engine subtree of the monorepo.
+    package_path = (
+        "engine/src/flutter/sky/packages/sky_engine"
+        if package_name == "sky_engine"
+        else "packages/{}".format(package_name)
+    )
     repository_ctx.download_and_extract(
         url = _GITHUB_URL_TEMPLATE.format(version = flutter_version),
         sha256 = repository_ctx.attr.sha256 if repository_ctx.attr.sha256 else "",
-        stripPrefix = "flutter-{version}/packages/{pkg}".format(
+        stripPrefix = "flutter-{version}/{package_path}".format(
             version = flutter_version,
-            pkg = package_name,
+            package_path = package_path,
         ),
     )
 
@@ -68,6 +75,7 @@ load("@rules_dart//dart:defs.bzl", "dart_library")
 dart_library(
     name = "{name}",
     srcs = glob(["lib/**/*.dart"]),
+    resources = glob(["lib/**"], exclude = ["lib/**/*.dart"]),
 {deps}    package_name = "{name}",
     visibility = ["//visibility:public"],
 )
