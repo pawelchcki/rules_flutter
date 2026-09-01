@@ -287,6 +287,7 @@ def _flutter_web_bundle_impl(ctx):
             srcs = all_srcs,
             package_config = config_file,
             output_dir = output_js_fallback_dir,
+            dart2js_wrapper = ctx.file._dart2js_wrapper,
             optimization_level = ctx.attr.optimization_level,
             source_maps = ctx.attr.source_maps,
             defines = user_defines,
@@ -315,6 +316,7 @@ def _flutter_web_bundle_impl(ctx):
             srcs = all_srcs,
             package_config = config_file,
             output_dir = output_js_dir,
+            dart2js_wrapper = ctx.file._dart2js_wrapper,
             optimization_level = ctx.attr.optimization_level,
             source_maps = ctx.attr.source_maps,
             defines = user_defines,
@@ -749,6 +751,10 @@ flutter_web_bundle = rule(
         "_dart2js_platform_dill": attr.label(
             default = Label("@flutter_web_sdk//:web-sdk/kernel/dart2js_platform.dill"),
             allow_single_file = True,
+        ),
+        "_dart2js_wrapper": attr.label(
+            default = Label("//flutter/private/tools:run_dart2js.dart"),
+            allow_single_file = [".dart"],
         ),
         "_ddc_outline_dill": attr.label(
             default = Label("@flutter_web_sdk//:web-sdk/kernel/ddc_outline.dill"),

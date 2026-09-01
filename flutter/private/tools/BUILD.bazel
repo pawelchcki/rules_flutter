@@ -4,6 +4,7 @@ exports_files(
     [
         "generate_asset_manifest.dart",
         "bundle_app.dart",
+        "run_dart2js.dart",
         "merge_android_manifests.dart",
         "merge_plists.dart",
     ],

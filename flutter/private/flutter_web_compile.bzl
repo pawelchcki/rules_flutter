@@ -110,6 +110,7 @@ def flutter_dart2js_action(
         srcs,
         package_config,
         output_dir,
+        dart2js_wrapper,
         optimization_level = 2,
         source_maps = False,
         defines = [],
@@ -131,6 +132,8 @@ def flutter_dart2js_action(
         package_config: The package_config.json File.
         output_dir: Output directory (declare_directory). dart2js writes
             main.dart.js and any *.part.js files here.
+        dart2js_wrapper: Dart source launcher that removes dart2js's unstable
+            auxiliary dependency metadata after a successful compilation.
         optimization_level: Optimization level (0-4).
         source_maps: Whether to generate source maps.
         defines: Dart -D defines.
@@ -166,9 +169,14 @@ def flutter_dart2js_action(
 
     ctx.actions.run(
         executable = dart,
-        arguments = [args],
+        arguments = [
+            dart2js_wrapper.path,
+            dart.path,
+            output_dir.path,
+            args,
+        ],
         inputs = depset(
-            direct = [main_dart, package_config, dart2js_platform_dill] + srcs,
+            direct = [main_dart, package_config, dart2js_platform_dill, dart2js_wrapper] + srcs,
             transitive = [flutter_sdk_files, depset(web_sdk_files)],
         ),
         outputs = [output_dir],
